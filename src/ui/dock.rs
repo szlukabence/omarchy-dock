@@ -46,6 +46,15 @@ struct State {
     /// as state changes, so a refresh never has to build widgets.
     indicators: Vec<gtk::Widget>,
     badges: Vec<gtk::Label>,
+    /// The slot widgets, needed to anchor the name label over the right icon.
+    slots: Vec<gtk::Widget>,
+    /// The hovered icon's name, drawn in the reserved band at the top of the
+    /// surface. GTK's own tooltips follow the pointer, which puts the name
+    /// below the icon and over the panel; a dock wants it above the icon.
+    tip_label: gtk::Label,
+    /// Bumped on every hover change so a late tooltip timer is discarded.
+    tip_generation: u64,
+    tooltip_delay: u64,
     items: Vec<gtk::Widget>,
     springs: Vec<Spring>,
     /// Displacement away from the screen edge, in pixels, for launch bounce
@@ -220,6 +229,14 @@ impl DockSurface {
         }
         let widget_count = widgets.len();
 
+        // Name label lives in the reserved band at the top of the surface, so
+        // it is never clipped and never takes input.
+        let tip_label = gtk::Label::new(None);
+        tip_label.add_css_class("dock-tip-label");
+        tip_label.set_can_target(false);
+        tip_label.set_visible(false);
+        fixed.put(&tip_label, 0.0, 2.0);
+
         let state = Rc::new(RefCell::new(State {
             fixed: fixed.clone(),
             springs: vec![Spring::at(1.0); widget_count],
@@ -227,6 +244,10 @@ impl DockSurface {
             data: items.to_vec(),
             indicators,
             badges,
+            slots: slots.iter().cloned().map(|s| s.upcast::<gtk::Widget>()).collect(),
+            tip_label: tip_label.clone(),
+            tip_generation: 0,
+            tooltip_delay: cfg.dock.tooltip_delay_ms,
             items: widgets,
             geom,
             cfg: cfg.clone(),
@@ -281,6 +302,19 @@ impl DockSurface {
             }
         }
 
+        // Test hook: pointer input cannot be synthesised against a layer
+        // surface, so this forces a hover to verify magnification and the name
+        // label without a real pointer.
+        if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_HOVER") {
+            if let Ok(i) = n.parse::<usize>() {
+                let st = state.clone();
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || set_hover(&st, Some(i)),
+                );
+            }
+        }
+
         surface.attach_peek(cfg);
 
         // Anything already demanding attention should bounce on appear.
@@ -326,14 +360,7 @@ impl DockSurface {
                     None => badge.set_visible(false),
                 }
             }
-            if let Some(w) = s.items.get(i) {
-                let tip = if item.windows.len() > 1 {
-                    format!("{} ({} windows)", item.label, item.windows.len())
-                } else {
-                    item.label.clone()
-                };
-                w.set_tooltip_text(Some(&tip));
-            }
+
         }
 
         s.data = items.to_vec();
@@ -770,15 +797,51 @@ fn attach_motion(fixed: &gtk::Fixed, state: &Rc<RefCell<State>>, icon: f64) {
 }
 
 fn set_hover(state: &Rc<RefCell<State>>, hit: Option<usize>) {
-    {
+    let (delay, generation) = {
         let mut s = state.borrow_mut();
         if s.hovered == hit {
             return;
         }
         s.hovered = hit;
         s.retarget();
-    }
+        // Any pending tooltip belongs to the slot we just left.
+        s.tip_generation += 1;
+        s.tip_label.set_visible(false);
+        (s.tooltip_delay, s.tip_generation)
+    };
     ensure_ticking(state);
+
+    let Some(index) = hit else { return };
+
+    let st = state.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
+        let s = st.borrow();
+        // Discard a timer whose hover has since moved on.
+        if s.tip_generation != generation || s.hovered != Some(index) {
+            return;
+        }
+        let Some(item) = s.data.get(index) else { return };
+        if !item.interactive() || item.label.is_empty() {
+            return;
+        }
+
+        let text = if item.windows.len() > 1 {
+            format!("{} ({} windows)", item.label, item.windows.len())
+        } else {
+            item.label.clone()
+        };
+        s.tip_label.set_text(&text);
+        s.tip_label.set_visible(true);
+
+        // Centre the label over its icon, then keep it inside the surface so a
+        // long name on the first or last icon is not cut off.
+        let (_, width, _, _) = s.tip_label.measure(gtk::Orientation::Horizontal, -1);
+        let width = width as f64;
+        let Some((sx, _)) = s.geom.slots.get(index).copied() else { return };
+        let extent = s.geom.extents.get(index).copied().unwrap_or(0.0);
+        let x = (sx + extent / 2.0 - width / 2.0).clamp(0.0, (s.geom.window_w - width).max(0.0));
+        s.fixed.move_(&s.tip_label, x, 2.0);
+    });
 }
 
 /// Install a frame-clock callback if one is not already running.

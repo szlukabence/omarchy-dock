@@ -84,6 +84,8 @@ pub struct Dock {
     pub radius: f64,
     /// Reserve screen space so windows never sit under the dock.
     pub reserve_space: bool,
+    /// How long the pointer must rest on an icon before its name appears.
+    pub tooltip_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +155,8 @@ pub struct Items {
     /// Desktop-entry ids or Hyprland window classes, in dock order.
     pub pinned: Vec<String>,
     pub folders: Vec<Folder>,
+    /// Show the folder stacks listed in `folders`.
+    pub show_folders: bool,
     pub show_trash: bool,
     /// Show apps that are running but not pinned.
     pub show_running: bool,
@@ -179,6 +183,7 @@ impl Default for Dock {
             spacing: None,
             radius: 22.0,
             reserve_space: false,
+            tooltip_delay_ms: 400,
         }
     }
 }
@@ -229,7 +234,13 @@ impl Default for Monitors {
 
 impl Default for Items {
     fn default() -> Self {
-        Self { pinned: Vec::new(), folders: Vec::new(), show_trash: true, show_running: true }
+        Self {
+            pinned: Vec::new(),
+            folders: Vec::new(),
+            show_folders: true,
+            show_trash: true,
+            show_running: true,
+        }
     }
 }
 
@@ -349,13 +360,23 @@ impl Config {
         }
     }
 
-    /// Headroom above the panel for a magnified icon to grow into.
+    /// Vertical space a hovered icon's name label occupies.
+    ///
+    /// Reserved inside the surface rather than shown in a popover: a
+    /// non-autohide popover is drawn within its parent surface's bounds, so a
+    /// label would be clipped by the dock's own edge, and an autohide one
+    /// would take a pointer grab and fight the hover that summoned it.
+    pub const LABEL_BAND: f64 = 26.0;
+
+    /// Headroom beyond the panel: room for a magnified icon to grow into, plus
+    /// the name label above it.
     pub fn headroom(&self) -> f64 {
-        if self.magnify.enabled {
+        let zoom = if self.magnify.enabled {
             (self.magnify.zoom - 1.0) * self.dock.icon_size + self.magnify.lift + 4.0
         } else {
             0.0
-        }
+        };
+        zoom + Self::LABEL_BAND
     }
 }
 

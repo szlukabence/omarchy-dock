@@ -97,11 +97,26 @@ where
     });
     list.append(&field("Hover zoom", &zoom));
 
+    // ── icon spacing ────────────────────────────────────────────────────────
+    // 0 means "derive it from the zoom factor", which is the default and keeps
+    // magnified icons from overlapping. Any other value pins it.
+    let spacing = gtk::SpinButton::with_range(0.0, 64.0, 1.0);
+    spacing.set_value(cfg.dock.spacing.unwrap_or(0.0));
+    spacing.set_tooltip_text(Some("0 = automatic (derived from hover zoom)"));
+    spacing.connect_value_changed(|s| {
+        let v = s.value();
+        edit(move |c| c.dock.spacing = if v <= 0.0 { None } else { Some(v) })
+    });
+    list.append(&field("Icon spacing", &spacing));
+
     list.append(&separator());
 
     // ── toggles ─────────────────────────────────────────────────────────────
     list.append(&toggle("Show running apps", cfg.items.show_running, |v| {
         edit(move |c| c.items.show_running = v)
+    }));
+    list.append(&toggle("Show folders", cfg.items.show_folders, |v| {
+        edit(move |c| c.items.show_folders = v)
     }));
     list.append(&toggle("Show Trash", cfg.items.show_trash, |v| {
         edit(move |c| c.items.show_trash = v)

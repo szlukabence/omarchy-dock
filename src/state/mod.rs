@@ -313,7 +313,7 @@ impl DockState {
         // Stacks and Trash form the dock's tail section, as on macOS.
         let tail_start = items.len();
 
-        for folder in &cfg.items.folders {
+        for folder in cfg.items.folders.iter().filter(|_| cfg.items.show_folders) {
             let path = crate::config::expand_tilde(&folder.path);
             let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
             items.push(DockItem {

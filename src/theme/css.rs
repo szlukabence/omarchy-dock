@@ -36,6 +36,9 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
     // whether the panel is dark or light, or one of them vanishes.
     // Dividers need to read against the panel in both polarities.
     let divider = fg.with_alpha(0.34);
+    // The label floats over the desktop, not the panel, so it needs to be more
+    // opaque than the glass or it is unreadable against a busy wallpaper.
+    let tip_bg = bg.with_alpha((cfg.theme.opacity + 0.32).min(0.96));
 
     let (hairline, shadow_alpha) = if palette.is_dark() {
         (Rgb { r: 255, g: 255, b: 255 }.with_alpha(0.10), 0.45)
@@ -146,6 +149,16 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
 .dock-menu-sep {{
   margin: 4px 6px;
   background-color: {hairline};
+}}
+
+/* Name of the hovered icon, drawn in the reserved band above the panel. */
+.dock-tip-label {{
+  background-color: {tip_bg};
+  color: @dock_fg;
+  border: 1px solid {hairline};
+  border-radius: 7px;
+  padding: 2px 8px;
+  font-size: 12px;
 }}
 
 .dock-stack {{ min-width: 260px; }}

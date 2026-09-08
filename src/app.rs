@@ -374,6 +374,8 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
         || old.magnify.lift != new.magnify.lift
         || old.items.pinned != new.items.pinned
         || old.items.show_trash != new.items.show_trash
+        || old.items.show_folders != new.items.show_folders
+        || old.items.folders.len() != new.items.folders.len()
         || old.monitors.mode != new.monitors.mode
         || old.monitors.primary != new.monitors.primary
 }

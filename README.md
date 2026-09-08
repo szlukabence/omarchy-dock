@@ -51,7 +51,9 @@ Notable keys:
 | `autohide.mode` | `never` \| `intelligent` \| `always` (default: `intelligent`) |
 | `launcher.enabled`, `.icon`, `.command` | Omarchy menu button at the head of the dock; empty command runs `omarchy-menu toggle` |
 | `monitors.mode` | `all` \| `primary` \| `focused` |
-| `items.folders` | Folder stacks; seeded from omadock's `pinnedFolders` |
+| `items.folders`, `items.show_folders` | Folder stacks; seeded from omadock's `pinnedFolders` |
+| `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |
+| `dock.tooltip_delay_ms` | Delay before a hovered icon's name appears |
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 
 Put `"---"` anywhere in `items.pinned` to insert a divider. A divider is also
@@ -59,7 +61,8 @@ added automatically between pinned apps and running-but-unpinned ones, and
 before Trash; dividers that would end up at either end are dropped.
 
 Right-click the launcher button for a settings panel covering position,
-auto-hide, icon size, hover zoom, and the section toggles. It writes
+auto-hide, icon size, hover zoom, icon spacing, and the folder/Trash/running
+toggles. It writes
 `config.toml`, so the panel, a hand-edited file, and `omarchy-dockctl` all take
 the same path into the running dock.
 
