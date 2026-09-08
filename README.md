@@ -15,6 +15,17 @@ control socket for hotkeys.
 Not yet: drag-and-drop, and the status widgets (clock, battery, network,
 MPRIS).
 
+## Install
+
+```bash
+makepkg -si                 # Arch package, from this tree
+omarchy-dockctl install     # hook, shell plugin, menu entries
+```
+
+`install --blur` additionally turns on Hyprland blur and opts the dock's layer
+into it. That is opt-in because it changes how the *whole* desktop renders —
+Omarchy ships blur off — and only `theme.style = "glass"` needs it.
+
 ## Build
 
 ```bash
@@ -47,6 +58,7 @@ Set `theme.style = "glass"` for the translucent rounded slab instead.
 
 ```bash
 omarchy-dockctl install     # theme-set hook, shell plugin, menu entries
+omarchy-dockctl install --blur   # ...and Hyprland blur, for style = "glass"
 omarchy-dockctl status
 omarchy-dockctl uninstall
 ```
@@ -97,6 +109,9 @@ Notable keys:
 | `launcher.enabled`, `.icon`, `.command` | Omarchy menu button at the head of the dock; empty command runs `omarchy-menu toggle` |
 | `monitors.mode` | `all` \| `primary` \| `focused` |
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
+| `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
+| `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
+| `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |
 | `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |
 | `dock.tooltip_delay_ms` | Delay before a hovered icon's name appears |
 | `theme.style` | `omarchy` (default) \| `glass` |
@@ -105,6 +120,11 @@ Notable keys:
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 | `items.glyph_ui` | Draw launcher, folders and Trash as monochrome glyphs (default: on) |
 | `dock.avoid_bar` | Offset past the Omarchy bar when both share an edge (default: on) |
+
+Workspace tiles switch on click; dropping an app icon on one sends that
+window there, and dropping on the scratchpad tile stashes it. A Chromium web
+app with no `.desktop` file can still be pinned — its window class encodes its
+URL, so the dock reconstructs `omarchy launch or focus webapp` for it.
 
 Put `"---"` anywhere in `items.pinned` to insert a divider, or add one from the
 settings panel. Drag pinned icons and dividers to reorder them — the dock parts to show where

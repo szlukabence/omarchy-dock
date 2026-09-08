@@ -37,7 +37,8 @@ fn main() -> std::process::ExitCode {
              reload             re-read config and rebuild\n  \
              restyle            re-read the Omarchy theme only\n\n\
              omarchy integration:\n  \
-             install            theme-set hook, shell plugin, and menu entries\n  \
+             install [--blur]   theme-set hook, shell plugin, and menu entries;\n                     \
+             --blur also sets up Hyprland blur for `style = glass`\n  \
              uninstall          remove all three\n  \
              status             show what is installed"
         );
@@ -48,7 +49,12 @@ fn main() -> std::process::ExitCode {
     // handled before we try to reach the socket — installing is exactly what
     // someone does *before* the dock is running.
     match args[0].as_str() {
-        "install" => return report(integrate::install(), "installed"),
+        "install" => {
+            // `--blur` also turns on Hyprland blur, which only the glass style
+            // needs and which Omarchy ships off for the whole desktop.
+            let blur = args.iter().any(|a| a == "--blur");
+            return report(integrate::install(blur), "installed");
+        }
         "uninstall" => return report(integrate::uninstall(), "removed"),
         "status" => {
             for r in integrate::status() {
@@ -89,6 +95,9 @@ fn report(
     match result {
         Ok(items) => {
             for r in &items {
+                // Not everything reported was acted on: install also reports
+                // the optional pieces it deliberately left alone.
+                let verb = if r.installed { verb } else { "skipped" };
                 println!("{verb}: {} — {}", r.label, r.path.display());
                 if let Some(note) = &r.note {
                     println!("          {note}");

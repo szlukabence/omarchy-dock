@@ -137,6 +137,47 @@ pub fn chromium_app_class(exec: &str) -> Option<String> {
     Some(format!("chrome-{host}__{path}-Default").to_lowercase())
 }
 
+/// The inverse of `chromium_app_class`: recover a launchable web app from the
+/// class of a running Chromium window.
+///
+/// Omarchy encodes the whole URL in the window class, so a web app that has no
+/// `.desktop` file — one launched ad hoc with `omarchy launch webapp` — can
+/// still be pinned and relaunched later. Without this, pinning such a window
+/// stores a class nothing can start, and the icon is dead the moment the
+/// window closes.
+///
+/// Returns the display label and the URL.
+pub fn webapp_from_class(class: &str) -> Option<(String, String)> {
+    let rest = class.strip_prefix("chrome-")?.strip_suffix("-Default")?;
+    let (host, path) = rest.split_once("__")?;
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    // `_` stood in for `/` on the way out.
+    let path = path.replace('_', "/");
+    let url = if path.is_empty() {
+        format!("https://{host}")
+    } else {
+        format!("https://{host}/{path}")
+    };
+    // "mail.google.com" reads better than the raw class, and Omarchy's own
+    // web-app entries are named after the site rather than the host.
+    let label = host.strip_prefix("www.").unwrap_or(host).to_string();
+    Some((label, url))
+}
+
+/// The command Omarchy itself uses to start or focus a web app.
+pub fn webapp_command(class: &str, url: &str) -> String {
+    // `launch or focus` rather than `launch`: a second click should raise the
+    // window that is already open, which is what the dock means by a click.
+    format!("omarchy launch or focus webapp {} {}", shell_quote(class), shell_quote(url))
+}
+
+/// Single-quote a value for a shell command line.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Extract the web-app URL from an `Exec=` line, covering both Omarchy's
 /// wrapper and a direct `--app=` invocation.
 fn webapp_url(exec: &str) -> Option<String> {
@@ -157,6 +198,60 @@ fn unquote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_web_app_class_round_trips_back_to_its_url() {
+        // The class is derived from the URL, so the URL can be recovered from
+        // the class — which is what makes an ad-hoc web app pinnable.
+        for exec in [
+            "chromium --app=https://mail.google.com/mail",
+            "omarchy-launch-webapp https://mail.google.com/mail",
+        ] {
+            let class = chromium_app_class(exec).unwrap();
+            assert_eq!(class, "chrome-mail.google.com__mail-default");
+        }
+
+        let (label, url) =
+            webapp_from_class("chrome-mail.google.com__mail-Default").unwrap();
+        assert_eq!(label, "mail.google.com");
+        assert_eq!(url, "https://mail.google.com/mail");
+    }
+
+    #[test]
+    fn a_nested_path_survives_the_round_trip() {
+        let class = chromium_app_class("chromium --app=https://example.com/a/b").unwrap();
+        assert_eq!(class, "chrome-example.com__a_b-default");
+        // Case differs because Chromium lowercases; the inverse is case-blind
+        // about the marker parts only, so feed it the real form.
+        let (_, url) = webapp_from_class("chrome-example.com__a_b-Default").unwrap();
+        assert_eq!(url, "https://example.com/a/b");
+    }
+
+    #[test]
+    fn a_bare_host_web_app_has_no_path() {
+        let (label, url) = webapp_from_class("chrome-example.com__-Default").unwrap();
+        assert_eq!(label, "example.com");
+        assert_eq!(url, "https://example.com");
+    }
+
+    #[test]
+    fn an_ordinary_window_class_is_not_mistaken_for_a_web_app() {
+        // These would otherwise become pins that launch a nonsense URL.
+        assert!(webapp_from_class("chromium").is_none());
+        assert!(webapp_from_class("org.gnome.Nautilus").is_none());
+        assert!(webapp_from_class("chrome-Default").is_none());
+        // No dot in the host: not a hostname.
+        assert!(webapp_from_class("chrome-localhost__-Default").is_none());
+    }
+
+    #[test]
+    fn a_webapp_command_quotes_its_arguments() {
+        // The class and URL go onto a shell command line, so a quote in either
+        // must not end the argument.
+        let cmd = webapp_command("chrome-x.com__-Default", "https://x.com/a'b");
+        assert!(cmd.starts_with("omarchy launch or focus webapp "));
+        assert!(cmd.contains(r"'https://x.com/a'\''b'"), "{cmd}");
+    }
+
     use super::*;
 
     #[test]

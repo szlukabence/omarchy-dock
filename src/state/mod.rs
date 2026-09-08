@@ -524,13 +524,32 @@ impl DockState {
                 }
             }
 
+            // A pin can name a Chromium web-app class directly — that is what
+            // pinning an ad-hoc web app stores, since it has no .desktop file.
+            // Recovering the URL from the class is what keeps such a pin
+            // clickable after its window closes.
+            let webapp =
+                entry.is_none().then(|| matcher::webapp_from_class(id)).flatten();
+
             let mut pinned_item = self.make_item(
                 id.clone(),
-                entry.map(|e| e.name.clone()).unwrap_or_else(|| id.clone()),
-                entry.map(|e| e.icon.clone()).filter(|i| !i.is_empty()).unwrap_or_else(|| id.clone()),
+                entry
+                    .map(|e| e.name.clone())
+                    .or_else(|| webapp.as_ref().map(|(l, _)| l.clone()))
+                    .unwrap_or_else(|| id.clone()),
+                entry
+                    .map(|e| e.icon.clone())
+                    .filter(|i| !i.is_empty())
+                    .or_else(|| webapp.as_ref().map(|_| "web-browser".to_string()))
+                    .unwrap_or_else(|| id.clone()),
                 windows,
                 true,
-                entry.map(|e| e.command()).unwrap_or_default(),
+                entry.map(|e| e.command()).unwrap_or_else(|| {
+                    webapp
+                        .as_ref()
+                        .map(|(_, url)| matcher::webapp_command(id, url))
+                        .unwrap_or_default()
+                }),
                 entry.map(|e| e.actions.clone()).unwrap_or_default(),
             );
             pinned_item.pin_index = Some(pin_index);
@@ -551,12 +570,30 @@ impl DockState {
                 }
                 let entry = self.matcher.match_class(c.match_key());
                 let key = entry.map(|e| e.id.clone()).unwrap_or_else(|| c.match_key().to_string());
-                let label =
-                    entry.map(|e| e.name.clone()).unwrap_or_else(|| c.class.clone());
+                // A Chromium web app with no .desktop file still encodes its
+                // whole URL in its window class, so it can be given a real
+                // Omarchy launch command rather than being pinnable but dead.
+                let webapp = entry
+                    .is_none()
+                    .then(|| matcher::webapp_from_class(c.match_key()))
+                    .flatten();
+                let label = entry
+                    .map(|e| e.name.clone())
+                    .or_else(|| webapp.as_ref().map(|(l, _)| l.clone()))
+                    .unwrap_or_else(|| c.class.clone());
                 let icon = entry
                     .map(|e| e.icon.clone())
                     .filter(|i| !i.is_empty())
+                    // Omarchy's own web apps use the browser's icon when they
+                    // have none of their own.
+                    .or_else(|| webapp.as_ref().map(|_| "web-browser".to_string()))
                     .unwrap_or_else(|| c.class.clone());
+                let exec = entry.map(|e| e.command()).unwrap_or_else(|| {
+                    webapp
+                        .as_ref()
+                        .map(|(_, url)| matcher::webapp_command(c.match_key(), url))
+                        .unwrap_or_default()
+                });
 
                 match groups.iter_mut().find(|g| g.0 == key) {
                     Some(g) => g.3.push(c.address.clone()),
@@ -565,7 +602,7 @@ impl DockState {
                         label,
                         icon,
                         vec![c.address.clone()],
-                        entry.map(|e| e.command()).unwrap_or_default(),
+                        exec,
                         entry.map(|e| e.actions.clone()).unwrap_or_default(),
                     )),
                 }

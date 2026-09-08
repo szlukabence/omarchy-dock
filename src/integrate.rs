@@ -365,9 +365,105 @@ pub fn remove_menu_block(existing: &str) -> String {
     format!("{before}\n{}", after.trim_start_matches('\n'))
 }
 
+// ── Hyprland layer rule ─────────────────────────────────────────────────────
+
+/// Fences around the block we own inside the user's Hyprland config.
+const HYPR_BEGIN: &str = "-- >>> omarchy-dock — managed block, edits are overwritten >>>";
+const HYPR_END: &str = "-- <<< omarchy-dock <<<";
+
+fn looknfeel_path() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("hypr/looknfeel.lua")
+}
+
+/// The blur setup the glass style needs.
+///
+/// Omarchy ships `decoration.blur.enabled = false`, and Hyprland's per-layer
+/// blur does nothing while the subsystem is off — so a layer rule alone is not
+/// enough, global blur has to be turned on too. That is a real change to how
+/// the whole desktop renders, which is why this is opt-in rather than part of
+/// a plain install.
+fn hypr_block() -> String {
+    format!(
+        "{HYPR_BEGIN}\n\
+         -- Only needed for `theme.style = \"glass\"`. The Omarchy style is opaque\n\
+         -- and needs none of this. Remove with `omarchy-dockctl uninstall`.\n\
+         --\n\
+         -- Omarchy ships blur disabled globally, and Hyprland's per-layer blur\n\
+         -- does nothing until the subsystem is on — so this turns it on, then\n\
+         -- opts only the dock's own layer into it.\n\
+         hl.config({{ decoration = {{ blur = {{ enabled = true, size = 6, passes = 3 }} }} }})\n\
+         hl.layer_rule({{ match = {{ namespace = \"^omarchy-dock$\" }}, blur = true, ignore_alpha = 0.2 }})\n\
+         {HYPR_END}"
+    )
+}
+
+/// Whether blur is already set up for the dock, however it got there.
+///
+/// Checked by asking Hyprland rather than reading the config: the user may
+/// have put it in another file, or written it differently, and offering to add
+/// a duplicate would be worse than saying nothing.
+fn blur_is_enabled() -> bool {
+    std::process::Command::new("hyprctl")
+        .args(["getoption", "decoration:blur:enabled", "-j"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        // `getoption` types its answer: a bool option reports "bool", an int
+        // option reports "int". Reading the wrong one silently yields false.
+        .and_then(|v| {
+            v.get("bool")
+                .and_then(|b| b.as_bool())
+                .or_else(|| v.get("int").and_then(|n| n.as_i64()).map(|n| n == 1))
+        })
+        .unwrap_or(false)
+}
+
+fn install_blur() -> Result<Report> {
+    let path = looknfeel_path();
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let next = if existing.contains(HYPR_BEGIN) {
+        // Replace in place, so an upgrade picks up a changed rule.
+        let (before, rest) = existing.split_once(HYPR_BEGIN).unwrap();
+        let after = rest.split_once(HYPR_END).map(|(_, a)| a).unwrap_or("");
+        format!("{before}{}{after}", hypr_block())
+    } else {
+        format!("{}\n\n{}\n", existing.trim_end(), hypr_block())
+    };
+    write_file(&path, &next)?;
+
+    // Hyprland reloads on save; ask it whether what we wrote actually parses,
+    // rather than leaving a broken config behind and saying nothing.
+    let errors = std::process::Command::new("hyprctl")
+        .arg("configerrors")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let note = if errors.is_empty() || errors == "no errors" {
+        "global blur on, dock layer opted in — needed only by `theme.style = \"glass\"`".into()
+    } else {
+        format!("Hyprland reports config errors after this: {errors}")
+    };
+
+    Ok(Report { label: "hyprland blur", path, installed: true, note: Some(note) })
+}
+
+fn remove_blur() -> Result<Report> {
+    let path = looknfeel_path();
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if let Some((before, rest)) = existing.split_once(HYPR_BEGIN) {
+            let after = rest.split_once(HYPR_END).map(|(_, a)| a).unwrap_or("");
+            let next = format!("{}\n{}", before.trim_end(), after.trim_start_matches('\n'));
+            write_file(&path, &next)?;
+        }
+    }
+    Ok(Report { label: "hyprland blur", path, installed: false, note: None })
+}
+
 // ── install / uninstall ─────────────────────────────────────────────────────
 
-pub fn install() -> Result<Vec<Report>> {
+pub fn install(blur: bool) -> Result<Vec<Report>> {
     let mut out = Vec::new();
 
     // Hook.
@@ -420,6 +516,23 @@ pub fn install() -> Result<Vec<Report>> {
         }),
     }
 
+    // Blur is opt-in: it turns the effect on for the *whole* desktop, which
+    // Omarchy deliberately ships off, and only the glass style needs it.
+    if blur {
+        out.push(install_blur()?);
+    } else if !blur_is_enabled() {
+        out.push(Report {
+            label: "hyprland blur",
+            path: looknfeel_path(),
+            installed: false,
+            note: Some(
+                "not set up. Only `theme.style = \"glass\"` needs it; add it with \
+                 `omarchy-dockctl install --blur`"
+                    .into(),
+            ),
+        });
+    }
+
     Ok(out)
 }
 
@@ -451,6 +564,7 @@ pub fn uninstall() -> Result<Vec<Report>> {
         }
     }
     out.push(Report { label: "menu extension", path, installed: false, note: None });
+    out.push(remove_blur()?);
 
     Ok(out)
 }
@@ -477,6 +591,12 @@ pub fn status() -> Vec<Report> {
                 .then(|| "installed but not enabled in shell.json".into()),
         },
         Report { label: "menu extension", installed: menu_installed, path: menu, note: None },
+        Report {
+            label: "hyprland blur",
+            installed: blur_is_enabled(),
+            path: looknfeel_path(),
+            note: Some("only `theme.style = \"glass\"` needs it".into()),
+        },
     ]
 }
 
