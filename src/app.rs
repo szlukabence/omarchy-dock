@@ -416,9 +416,9 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
                 let _ = w.snapshot.try_send(());
             }
         }
-        MenuAction::MovePin { index, delta } => {
+        MenuAction::ReorderPin { from, to } => {
             edit_pins(|pins| {
-                crate::state::move_in_list(pins, index, delta);
+                crate::state::reorder_in_list(pins, from, to);
             });
         }
         MenuAction::RemovePin { index } => {

@@ -275,6 +275,7 @@ impl DockSurface {
             spring: Spring::at(0.0),
             hidden: false,
             peeking: false,
+            menu_open: false,
             generation: 0,
             edge,
             // Zero: the edge offset lives inside the surface now, so the
@@ -299,9 +300,13 @@ impl DockSurface {
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
             // Separators get clicks too: not to launch anything, but so their
-            // right-click menu can move or remove them.
-            attach_clicks(slot, &sink, &state, i);
+            // right-click menu can remove them.
+            attach_clicks(slot, &sink, &state, i, &slide, &window, cfg);
+            if let Some(item) = items.get(i) {
+                attach_drag(slot, item, &state, i, cfg);
+            }
         }
+        attach_drop(&fixed, &state, &sink, cfg);
 
         // Test hook: pointer input cannot be synthesised against a layer
         // surface, so this forces a hover to verify magnification and the name
@@ -388,7 +393,7 @@ impl DockSurface {
     fn apply_slide(&self, cfg: &Config) {
         {
             let mut s = self.slide.borrow_mut();
-            let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
+            let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
             tracing::debug!(
                 target, hidden = s.hidden, peeking = s.peeking,
                 current = s.spring.target, travel = s.travel, "policy retarget"
@@ -481,11 +486,15 @@ impl DockSurface {
 }
 
 /// Wire left-click (focus / cycle / launch) and right-click (menu).
+#[allow(clippy::too_many_arguments)]
 fn attach_clicks(
     slot: &gtk::Overlay,
     sink: &ActionSink,
     state: &Rc<RefCell<State>>,
     index: usize,
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
 ) {
     // ── left button ─────────────────────────────────────────────────────────
     let left = gtk::GestureClick::new();
@@ -494,6 +503,10 @@ fn attach_clicks(
         let sink = sink.clone();
         let state = state.clone();
         let anchor_left = slot.clone();
+        let slide_l = slide.clone();
+        let window_l = window.clone();
+        let cfg_l = cfg.clone();
+        let menu_side = popover_side(cfg);
         left.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
 
@@ -526,8 +539,8 @@ fn attach_clicks(
                         crate::ui::stack::build_folder(&dir, &item.label, refresh)
                     };
                     pop.set_parent(&anchor_left);
-                    pop.set_position(gtk::PositionType::Top);
-                    pop.connect_closed(|p| p.unparent());
+                    pop.set_position(menu_side);
+                    hold_for_popover(&pop, &slide_l, &window_l, &cfg_l);
                     pop.popup();
                     return;
                 }
@@ -560,6 +573,10 @@ fn attach_clicks(
         let sink = sink.clone();
         let anchor = slot.clone();
         let state = state.clone();
+        let slide_r = slide.clone();
+        let window_r = window.clone();
+        let cfg_r = cfg.clone();
+        let menu_side_r = popover_side(cfg);
         right.connect_pressed(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
             let item = {
@@ -596,10 +613,10 @@ fn attach_clicks(
                 menu::build(&item, move |a| sink(a))
             };
             popover.set_parent(&anchor);
-            popover.set_position(gtk::PositionType::Top);
-            // Detach on close so repeated right-clicks do not stack popovers
-            // as children of the slot.
-            popover.connect_closed(|p| p.unparent());
+            popover.set_position(menu_side_r);
+            // hold_for_popover also unparents on close, so repeated
+            // right-clicks do not stack popovers as children of the slot.
+            hold_for_popover(&popover, &slide_r, &window_r, &cfg_r);
             popover.popup();
         });
     }
@@ -628,7 +645,7 @@ fn surface_set_peeking(
             return;
         }
         s.peeking = peeking;
-        let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
+        let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
         if (s.spring.target - target).abs() < f64::EPSILON {
             return;
         }
@@ -703,6 +720,11 @@ struct Slide {
     /// Whether the pointer is currently over the surface. Peeking wins over
     /// policy, which is what makes the trigger sliver work.
     peeking: bool,
+    /// Whether a popover spawned from the dock is open. An autohide popover
+    /// takes a pointer grab, which makes the dock's own motion controller
+    /// report `leave` — so without this the dock slides away the instant a
+    /// right-click menu opens, leaving the menu floating over nothing.
+    menu_open: bool,
     /// Bumped whenever a reveal/hide timer is scheduled, so a stale timer
     /// firing after the pointer moved on is ignored.
     generation: u64,
@@ -717,6 +739,167 @@ struct Slide {
 fn travel_for(cfg: &Config, geom: &Geometry) -> f64 {
     let extent = if cfg.dock.position.is_vertical() { geom.window_w } else { geom.window_h };
     (extent - cfg.autohide.trigger_px.max(1) as f64).max(0.0)
+}
+
+/// Make a pinned item draggable.
+///
+/// Only entries that live in the pinned list can move; running-but-unpinned
+/// apps, folders, Trash and the launcher have no position to rewrite.
+fn attach_drag(
+    slot: &gtk::Overlay,
+    item: &DockItem,
+    state: &Rc<RefCell<State>>,
+    index: usize,
+    cfg: &Config,
+) {
+    let Some(pin) = item.pin_index else { return };
+
+    let source = gtk::DragSource::new();
+    source.set_actions(gdk::DragAction::MOVE);
+
+    {
+        // The payload is the pinned index, which is what the drop rewrites.
+        source.connect_prepare(move |_, _, _| {
+            Some(gdk::ContentProvider::for_value(&(pin as u32).to_value()))
+        });
+    }
+
+    // Drag under the cursor: the icon for apps, a slim bar for separators.
+    {
+        let icon_name = item.icon.clone();
+        let is_sep = item.kind == ItemKind::Separator;
+        let size = cfg.dock.icon_size as i32;
+        source.connect_drag_begin(move |src, _| {
+            if is_sep {
+                return;
+            }
+            if let Some(display) = gdk::Display::default() {
+                let theme = gtk::IconTheme::for_display(&display);
+                if theme.has_icon(&icon_name) {
+                    let paintable = theme.lookup_icon(
+                        &icon_name,
+                        &[],
+                        size,
+                        1,
+                        gtk::TextDirection::None,
+                        gtk::IconLookupFlags::empty(),
+                    );
+                    src.set_icon(Some(&paintable), size / 2, size / 2);
+                }
+            }
+        });
+    }
+
+    // Dim the original while it is being dragged, so the dock shows where the
+    // item currently is rather than appearing to have two of it.
+    {
+        let state = state.clone();
+        source.connect_drag_begin(move |_, _| {
+            if let Some(w) = state.borrow().items.get(index) {
+                w.set_opacity(0.35);
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        source.connect_drag_end(move |_, _, _| {
+            if let Some(w) = state.borrow().items.get(index) {
+                w.set_opacity(1.0);
+            }
+        });
+    }
+
+    slot.add_controller(source);
+}
+
+/// Accept a dragged dock item and rewrite the pinned order.
+fn attach_drop(
+    fixed: &gtk::Fixed,
+    state: &Rc<RefCell<State>>,
+    sink: &ActionSink,
+    cfg: &Config,
+) {
+    let target = gtk::DropTarget::new(glib::Type::U32, gdk::DragAction::MOVE);
+    let state = state.clone();
+    let sink = sink.clone();
+    let icon = cfg.dock.icon_size;
+
+    target.connect_drop(move |_, value, x, y| {
+        let Ok(from) = value.get::<u32>() else { return false };
+        let from = from as usize;
+
+        let s = state.borrow();
+        // Find the drop position among pinned entries. Comparing against slot
+        // centres decides which side of an icon the drop landed on, so an item
+        // can be placed before the first entry as well as after the last.
+        let horizontal = s.geom.horizontal();
+        let pos = if horizontal { x } else { y };
+
+        let mut to = None;
+        for (i, item) in s.data.iter().enumerate() {
+            let Some(pin) = item.pin_index else { continue };
+            let Some((sx, sy)) = s.geom.slots.get(i).copied() else { continue };
+            let extent = s.geom.extents.get(i).copied().unwrap_or(icon);
+            let centre = if horizontal { sx + extent / 2.0 } else { sy + extent / 2.0 };
+            if pos < centre {
+                to = Some(pin);
+                break;
+            }
+            // Past this one: the drop belongs after it.
+            to = Some(pin + 1);
+        }
+
+        let Some(to) = to else { return false };
+        drop(s);
+        sink(MenuAction::ReorderPin { from, to });
+        true
+    });
+
+    fixed.add_controller(target);
+}
+
+/// Which side of an icon a popover should open on, given the dock's edge.
+fn popover_side(cfg: &Config) -> gtk::PositionType {
+    match cfg.dock.position {
+        Position::Bottom => gtk::PositionType::Top,
+        Position::Top => gtk::PositionType::Bottom,
+        Position::Left => gtk::PositionType::Right,
+        Position::Right => gtk::PositionType::Left,
+    }
+}
+
+/// Keep the dock out while a popover it spawned is open, and let it hide again
+/// once that popover closes.
+fn hold_for_popover(
+    popover: &gtk::Popover,
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+) {
+    {
+        let mut s = slide.borrow_mut();
+        s.menu_open = true;
+        let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
+        s.spring.target = target;
+    }
+    animate_slide_on(slide, window, cfg);
+
+    let slide = slide.clone();
+    let window = window.clone();
+    let cfg = cfg.clone();
+    popover.connect_closed(move |p| {
+        p.unparent();
+        {
+            let mut s = slide.borrow_mut();
+            s.menu_open = false;
+            let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
+            if (s.spring.target - target).abs() < f64::EPSILON {
+                return;
+            }
+            s.spring.target = target;
+        }
+        animate_slide_on(&slide, &window, &cfg);
+    });
 }
 
 /// Give an item an upward impulse and make sure the tick loop is running.

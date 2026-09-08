@@ -61,6 +61,10 @@ pub struct DockItem {
     pub actions: Vec<crate::desktop::Action>,
     /// Filesystem path, for folder stacks and Trash.
     pub path: Option<std::path::PathBuf>,
+    /// Index in `items.pinned`, for entries that live there. `None` for
+    /// derived items — running-but-unpinned apps, automatic dividers, the
+    /// launcher, folders and Trash — which have nothing to reorder.
+    pub pin_index: Option<usize>,
 }
 
 impl DockItem {
@@ -106,6 +110,7 @@ impl DockItem {
 fn user_separator(pin_index: usize) -> DockItem {
     let mut item = separator();
     item.key = format!("{SEPARATOR}:{pin_index}");
+    item.pin_index = Some(pin_index);
     item
 }
 
@@ -123,6 +128,21 @@ pub fn move_in_list<T>(list: &mut [T], index: usize, delta: i32) -> bool {
         return false;
     }
     list.swap(index, target);
+    true
+}
+
+/// Move `from` to `to` within `list`, shifting the rest.
+///
+/// Insert semantics, not a swap: dragging an icon between two others should
+/// land it there, not exchange it with whatever it was dropped on.
+pub fn reorder_in_list<T>(list: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= list.len() || to > list.len() || from == to {
+        return false;
+    }
+    let item = list.remove(from);
+    // Removing shifts everything after `from` down by one.
+    let to = if to > from { to - 1 } else { to };
+    list.insert(to.min(list.len()), item);
     true
 }
 
@@ -147,6 +167,7 @@ fn separator() -> DockItem {
         exec: String::new(),
         actions: Vec::new(),
         path: None,
+        pin_index: None,
     }
 }
 
@@ -259,6 +280,7 @@ impl DockState {
                 exec: cfg.launcher_command(),
                 actions: Vec::new(),
                 path: None,
+                pin_index: None,
             });
         }
 
@@ -290,7 +312,7 @@ impl DockState {
                 }
             }
 
-            items.push(self.make_item(
+            let mut pinned_item = self.make_item(
                 id.clone(),
                 entry.map(|e| e.name.clone()).unwrap_or_else(|| id.clone()),
                 entry.map(|e| e.icon.clone()).filter(|i| !i.is_empty()).unwrap_or_else(|| id.clone()),
@@ -298,7 +320,9 @@ impl DockState {
                 true,
                 entry.map(|e| e.command()).unwrap_or_default(),
                 entry.map(|e| e.actions.clone()).unwrap_or_default(),
-            ));
+            );
+            pinned_item.pin_index = Some(pin_index);
+            items.push(pinned_item);
         }
 
         // Everything appended from here is a distinct section.
@@ -364,6 +388,7 @@ impl DockState {
                 exec: String::new(),
                 actions: Vec::new(),
                 path: Some(path),
+                pin_index: None,
             });
         }
 
@@ -387,6 +412,7 @@ impl DockState {
                 exec: String::new(),
                 actions: Vec::new(),
                 path: Some(crate::stacks::trash_files_dir()),
+                pin_index: None,
             });
         }
 
@@ -443,6 +469,7 @@ impl DockState {
             exec,
             actions,
             path: None,
+            pin_index: None,
         }
     }
 }
@@ -466,6 +493,7 @@ mod tests {
             exec: String::new(),
             actions: vec![],
             path: None,
+            pin_index: None,
         }
     }
 
@@ -660,6 +688,29 @@ mod layout_tests {
 #[cfg(test)]
 mod separator_key_tests {
     use super::*;
+
+    #[test]
+    fn reordering_inserts_rather_than_swapping() {
+        let mut v = vec!["a", "b", "c", "d"];
+        // Drag "a" to sit before "d".
+        assert!(reorder_in_list(&mut v, 0, 3));
+        assert_eq!(v, vec!["b", "c", "a", "d"]);
+
+        // Drag "d" to the front.
+        let mut v = vec!["a", "b", "c", "d"];
+        assert!(reorder_in_list(&mut v, 3, 0));
+        assert_eq!(v, vec!["d", "a", "b", "c"]);
+
+        // Dropping onto itself changes nothing.
+        let mut v = vec!["a", "b"];
+        assert!(!reorder_in_list(&mut v, 1, 1));
+        assert_eq!(v, vec!["a", "b"]);
+
+        // Past the end clamps instead of panicking.
+        let mut v = vec!["a", "b"];
+        assert!(reorder_in_list(&mut v, 0, 2));
+        assert_eq!(v, vec!["b", "a"]);
+    }
 
     #[test]
     fn moving_clamps_at_the_ends_instead_of_wrapping() {

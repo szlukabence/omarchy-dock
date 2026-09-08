@@ -21,17 +21,16 @@ pub enum MenuAction {
     /// Something on disk changed (trash emptied, file deleted); re-read state
     /// so the Trash icon and stack contents catch up.
     Rescan,
-    /// Shift an entry within the pinned list by `delta` places.
-    MovePin { index: usize, delta: i32 },
+    /// Move a pinned entry to a new position, as a drag-and-drop does.
+    ReorderPin { from: usize, to: usize },
     /// Drop an entry from the pinned list.
     RemovePin { index: usize },
 }
 
 /// Context menu for a user-placed separator.
 ///
-/// Separators have no windows, no actions and nothing to launch, so their menu
-/// is purely about position. Reordering lives here rather than in drag-and-drop
-/// because a 13px-wide divider is an awkward drag target.
+/// Separators have no windows, no actions and nothing to launch, so removing
+/// them is all their menu needs to offer — position is handled by dragging.
 pub fn build_separator<F>(pin_index: usize, on_action: F) -> gtk::Popover
 where
     F: Fn(MenuAction) + Clone + 'static,
@@ -43,17 +42,6 @@ where
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list.add_css_class("dock-menu-list");
     list.append(&heading("Separator"));
-
-    for (label, delta) in [("Move left", -1), ("Move right", 1)] {
-        let cb = on_action.clone();
-        let pop = popover.clone();
-        list.append(&row(label, move || {
-            cb(MenuAction::MovePin { index: pin_index, delta });
-            pop.popdown();
-        }));
-    }
-
-    list.append(&separator());
     {
         let cb = on_action.clone();
         let pop = popover.clone();

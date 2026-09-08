@@ -141,7 +141,30 @@ where
         let cb = on_action.clone();
         let pop = popover.clone();
         list.append(&row("Add separator", move || {
-            edit(|c| c.items.pinned.push(crate::state::SEPARATOR.into()));
+            edit(|c| {
+                let sep = crate::state::SEPARATOR;
+                // Appending puts it exactly where the automatic divider
+                // already goes, so the two collapse and nothing appears to
+                // happen. Insert it mid-list instead, where it is visible and
+                // can be dragged into place.
+                let mut at = c.items.pinned.len() / 2;
+                // Never land next to an existing separator: adjacent dividers
+                // collapse when rendered, so the click would look like a
+                // no-op and invite the user to click again, piling up dead
+                // entries in the config.
+                let is_sep = |i: usize| {
+                    c.items.pinned.get(i).is_some_and(|p: &String| p.trim() == sep)
+                };
+                while at < c.items.pinned.len()
+                    && (is_sep(at) || (at > 0 && is_sep(at - 1)))
+                {
+                    at += 1;
+                }
+                if at > 0 && is_sep(at - 1) {
+                    return;
+                }
+                c.items.pinned.insert(at.min(c.items.pinned.len()), sep.into());
+            });
             let _ = &cb;
             pop.popdown();
         }));
