@@ -416,6 +416,84 @@ impl DockSurface {
         true
     }
 
+    /// Reorder existing widgets to match `items`, without rebuilding.
+    ///
+    /// Returns false when the item *set* differs, which genuinely needs new
+    /// widgets. Rebuilding destroys and recreates the layer surface, which
+    /// flickers and drops the dock for a frame — very visible when it happens
+    /// on every drag-and-drop.
+    pub fn reorder(&self, items: &[DockItem], cfg: &Config) -> bool {
+        let mut s = self.state.borrow_mut();
+
+        if s.data.len() != items.len() {
+            return false;
+        }
+
+        // Map each new position to the old one holding that key. Keys repeat
+        // for separators, so each old slot may only be claimed once.
+        let mut taken = vec![false; s.data.len()];
+        let mut from = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(old) = s
+                .data
+                .iter()
+                .enumerate()
+                .position(|(i, d)| !taken[i] && d.key == item.key)
+            else {
+                return false;
+            };
+            taken[old] = true;
+            from.push(old);
+        }
+
+        // Permute every per-slot vector together, so springs and widgets stay
+        // matched to their items.
+        let permute = |v: &mut Vec<gtk::Widget>| {
+            *v = from.iter().map(|&i| v[i].clone()).collect();
+        };
+        permute(&mut s.items);
+        permute(&mut s.indicators);
+        s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
+        s.springs = from.iter().map(|&i| s.springs[i]).collect();
+        s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
+        s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
+        s.data = items.to_vec();
+
+        // Kinds may have moved, so slot extents change with them.
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
+        s.geom = Geometry::compute(cfg, &kinds);
+
+        // Re-place everything. Position lives in the child transform, so this
+        // is the same call that drives magnification.
+        for i in 0..s.items.len() {
+            s.apply(i);
+        }
+        for (i, item) in items.iter().enumerate() {
+            if let Some((ix, iy)) = indicator_origin(&s.geom, i, cfg) {
+                if let Some(dot) = s.indicators.get(i) {
+                    s.fixed.move_(dot, ix, iy);
+                    dot.set_visible(item.running());
+                    set_class(dot, "urgent", item.urgent);
+                    set_class(dot, "active", item.active);
+                }
+            }
+        }
+
+        // Hover indices refer to the old order; drop them rather than leave a
+        // stale icon magnified.
+        s.hovered = None;
+        s.drop_at = None;
+        for sp in s.springs.iter_mut() {
+            sp.target = 1.0;
+        }
+        for sh in s.shifts.iter_mut() {
+            sh.target = 0.0;
+        }
+        drop(s);
+        ensure_ticking(&self.state);
+        true
+    }
+
     /// Slide the surface off-screen, or back on.
     ///
     /// A few pixels are deliberately left on screen: that sliver still
@@ -993,6 +1071,12 @@ fn attach_drop(
     }
 
     fixed.add_controller(target);
+}
+
+/// Where an item's running indicator goes, in surface coordinates.
+fn indicator_origin(geom: &Geometry, i: usize, cfg: &Config) -> Option<(f64, f64)> {
+    let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
+    geom.indicator_at(i, cfg.dock.icon_size, len, thick)
 }
 
 /// Which side of an icon a popover should open on, given the dock's edge.
