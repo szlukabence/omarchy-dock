@@ -11,7 +11,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::anim::Spring;
@@ -59,6 +59,15 @@ struct State {
     tip_generation: u64,
     tooltip_delay: u64,
     items: Vec<gtk::Widget>,
+    /// Where each slot's widget currently sits in these vectors.
+    ///
+    /// Every per-slot controller holds the cell belonging to its own widget
+    /// rather than a plain index, because a reorder permutes the widgets while
+    /// leaving their controllers attached. An index captured when the slot was
+    /// built would then name whichever item had moved into that position —
+    /// clicking one icon would launch another, and dragging one would move
+    /// another. The cell travels with the widget, so it stays true.
+    slot_index: Vec<Rc<Cell<usize>>>,
     springs: Vec<Spring>,
     /// Displacement away from the screen edge, in pixels, for launch bounce
     /// and urgency. Separate from the zoom spring so a bounce can play while
@@ -260,6 +269,9 @@ impl DockSurface {
         tip_label.set_visible(false);
         fixed.put(&tip_label, 0.0, 2.0);
 
+        let slot_index: Vec<Rc<Cell<usize>>> =
+            (0..widget_count).map(|i| Rc::new(Cell::new(i))).collect();
+
         let state = Rc::new(RefCell::new(State {
             fixed: fixed.clone(),
             springs: vec![Spring::at(1.0); widget_count],
@@ -273,6 +285,7 @@ impl DockSurface {
             tip_generation: 0,
             tooltip_delay: cfg.dock.tooltip_delay_ms,
             items: widgets,
+            slot_index: slot_index.clone(),
             geom,
             cfg: cfg.clone(),
             hovered: None,
@@ -322,11 +335,12 @@ impl DockSurface {
         // Clicks are wired after State exists so a launch can bounce its own
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
+            let at = &slot_index[i];
             // Separators get clicks too: not to launch anything, but so their
             // right-click menu can remove them.
-            attach_clicks(slot, &sink, &state, i, &slide, &window, cfg);
+            attach_clicks(slot, &sink, &state, at, &slide, &window, cfg);
             if let Some(item) = items.get(i) {
-                attach_drag(slot, item, &state, i, cfg, &slide, &window);
+                attach_drag(slot, item, &state, at, cfg, &slide, &window);
             }
         }
         attach_drop(&fixed, &state, &sink, cfg);
@@ -416,6 +430,81 @@ impl DockSurface {
         true
     }
 
+    /// Reorder existing widgets to match `items`, without rebuilding.
+    ///
+    /// Returns false when the item *set* differs, which genuinely needs new
+    /// widgets. Rebuilding destroys and recreates the layer surface, which
+    /// flickers and drops the dock for a frame — very visible when it happens
+    /// on every drag-and-drop.
+    pub fn reorder(&self, items: &[DockItem], cfg: &Config) -> bool {
+        let mut s = self.state.borrow_mut();
+
+        // Where each new position's widget currently sits.
+        let Some(from) = crate::state::match_permutation(&s.data, items) else {
+            return false;
+        };
+
+        // Permute every per-slot vector together, so springs, widgets and the
+        // index cells their controllers read stay matched to their items.
+        let permute = |v: &mut Vec<gtk::Widget>| {
+            *v = from.iter().map(|&i| v[i].clone()).collect();
+        };
+        permute(&mut s.items);
+        permute(&mut s.indicators);
+        s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
+        s.springs = from.iter().map(|&i| s.springs[i]).collect();
+        s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
+        s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
+        s.slot_index = from.iter().map(|&i| s.slot_index[i].clone()).collect();
+        s.data = items.to_vec();
+
+        // Each widget's controllers resolve their item through this cell, so
+        // it has to name where the widget landed. Miss this and clicking or
+        // dragging a moved icon acts on whatever took its old place.
+        for (i, cell) in s.slot_index.iter().enumerate() {
+            cell.set(i);
+        }
+        tracing::debug!(
+            ?from,
+            keys = ?s.data.iter().map(|d| d.key.as_str()).collect::<Vec<_>>(),
+            "reordered in place"
+        );
+
+        // Kinds may have moved, so slot extents change with them.
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
+        s.geom = Geometry::compute(cfg, &kinds);
+
+        // Re-place everything. Position lives in the child transform, so this
+        // is the same call that drives magnification.
+        for i in 0..s.items.len() {
+            s.apply(i);
+        }
+        for (i, item) in items.iter().enumerate() {
+            if let Some((ix, iy)) = indicator_origin(&s.geom, i, cfg) {
+                if let Some(dot) = s.indicators.get(i) {
+                    s.fixed.move_(dot, ix, iy);
+                    dot.set_visible(item.running());
+                    set_class(dot, "urgent", item.urgent);
+                    set_class(dot, "active", item.active);
+                }
+            }
+        }
+
+        // Hover indices refer to the old order; drop them rather than leave a
+        // stale icon magnified.
+        s.hovered = None;
+        s.drop_at = None;
+        for sp in s.springs.iter_mut() {
+            sp.target = 1.0;
+        }
+        for sh in s.shifts.iter_mut() {
+            sh.target = 0.0;
+        }
+        drop(s);
+        ensure_ticking(&self.state);
+        true
+    }
+
     /// Slide the surface off-screen, or back on.
     ///
     /// A few pixels are deliberately left on screen: that sliver still
@@ -458,16 +547,7 @@ impl DockSurface {
 
     /// Seed peek state from where the pointer actually is right now.
     fn sync_peek_to_pointer(&self, cfg: &Config) {
-        let Some(surface) = self.window.surface() else { return };
-        let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
-            return;
-        };
-        let Some(pointer) = seat.pointer() else { return };
-
-        // `device_position` yields None when the pointer is over some other
-        // surface, which is exactly the "do not hold the dock out" case.
-        let inside = surface.device_position(&pointer).is_some();
-        if inside {
+        if pointer_inside(&self.window) {
             surface_set_peeking(&self.slide, &self.window, cfg, true);
         }
     }
@@ -519,9 +599,17 @@ impl DockSurface {
                 glib::timeout_add_local_once(
                     std::time::Duration::from_millis(hide_ms),
                     move || {
-                        if slide.borrow().generation != gen {
+                        let s = slide.borrow();
+                        if s.generation != gen {
                             return;
                         }
+                        // A drag or open menu grabs the pointer and produces a
+                        // `leave` that did not happen. Releasing the hold
+                        // re-checks the real pointer position, so ignore this.
+                        if s.held > 0 {
+                            return;
+                        }
+                        drop(s);
                         surface_set_peeking(&slide, &window, &cfg, false);
                     },
                 );
@@ -550,7 +638,7 @@ fn attach_clicks(
     slot: &gtk::Overlay,
     sink: &ActionSink,
     state: &Rc<RefCell<State>>,
-    index: usize,
+    at: &Rc<Cell<usize>>,
     slide: &Rc<RefCell<Slide>>,
     window: &gtk::ApplicationWindow,
     cfg: &Config,
@@ -566,10 +654,14 @@ fn attach_clicks(
         let window_l = window.clone();
         let cfg_l = cfg.clone();
         let menu_side = popover_side(cfg);
+        let at = at.clone();
         left.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
 
-            // Read current data: focus may have moved since the dock was built.
+            // Read current data by the slot's live index: focus may have moved,
+            // and a reorder may have moved this widget, since the dock was
+            // built.
+            let index = at.get();
             let item = {
                 let s = state.borrow();
                 match s.data.get(index) {
@@ -636,11 +728,12 @@ fn attach_clicks(
         let window_r = window.clone();
         let cfg_r = cfg.clone();
         let menu_side_r = popover_side(cfg);
+        let at = at.clone();
         right.connect_pressed(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
             let item = {
                 let s = state.borrow();
-                match s.data.get(index) {
+                match s.data.get(at.get()) {
                     Some(i) => i.clone(),
                     None => return,
                 }
@@ -649,7 +742,7 @@ fn attach_clicks(
             let popover = if item.kind == ItemKind::Separator {
                 // Only user-placed separators are editable; automatic dividers
                 // are derived from the item list and have no pinned index.
-                match crate::state::separator_pin_index(&item.key) {
+                match item.pin_index {
                     Some(pin) => menu::build_separator(pin, move |a| sink(a)),
                     None => return,
                 }
@@ -810,19 +903,33 @@ fn attach_drag(
     slot: &gtk::Overlay,
     item: &DockItem,
     state: &Rc<RefCell<State>>,
-    index: usize,
+    at: &Rc<Cell<usize>>,
     cfg: &Config,
     slide: &Rc<RefCell<Slide>>,
     window: &gtk::ApplicationWindow,
 ) {
-    let Some(pin) = item.pin_index else { return };
+    // Whether a slot is pinned at all is fixed for the life of its widget: a
+    // reorder moves widgets around but never turns a pinned app into a folder.
+    // Where it is pinned is not, so that is read live below.
+    if item.pin_index.is_none() {
+        return;
+    }
 
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::MOVE);
 
     {
         // The payload is the pinned index, which is what the drop rewrites.
+        //
+        // It must be read at drag time, not captured when the slot was built.
+        // A reorder permutes the widgets and leaves this controller attached,
+        // so a captured index would name whatever item had since moved into
+        // this slot's old position — dragging one icon would silently move
+        // another.
+        let state = state.clone();
+        let at = at.clone();
         source.connect_prepare(move |_, _, _| {
+            let pin = state.borrow().data.get(at.get())?.pin_index?;
             Some(gdk::ContentProvider::for_value(&(pin as u32).to_value()))
         });
     }
@@ -869,9 +976,10 @@ fn attach_drag(
         // A separator's drag image is a live paintable of the slot itself, so
         // dimming the original would dim the thing under the cursor too.
         let dim = item.kind != ItemKind::Separator;
+        let at_begin = at.clone();
         source.connect_drag_begin(move |_, _| {
             if dim {
-                if let Some(w) = state.borrow().items.get(index) {
+                if let Some(w) = state.borrow().items.get(at_begin.get()) {
                     w.set_opacity(0.35);
                 }
             }
@@ -885,8 +993,9 @@ fn attach_drag(
         let slide = slide.clone();
         let window = window.clone();
         let cfg = cfg.clone();
+        let at_end = at.clone();
         source.connect_drag_end(move |_, _, _| {
-            if let Some(w) = state.borrow().items.get(index) {
+            if let Some(w) = state.borrow().items.get(at_end.get()) {
                 w.set_opacity(1.0);
             }
             hold(&slide, &window, &cfg, false);
@@ -995,6 +1104,12 @@ fn attach_drop(
     fixed.add_controller(target);
 }
 
+/// Where an item's running indicator goes, in surface coordinates.
+fn indicator_origin(geom: &Geometry, i: usize, cfg: &Config) -> Option<(f64, f64)> {
+    let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
+    geom.indicator_at(i, cfg.dock.icon_size, len, thick)
+}
+
 /// Which side of an icon a popover should open on, given the dock's edge.
 fn popover_side(cfg: &Config) -> gtk::PositionType {
     match cfg.dock.position {
@@ -1024,6 +1139,19 @@ fn hold_for_popover(
     });
 }
 
+/// Whether the pointer is currently over this surface.
+///
+/// `device_position` yields None when the pointer is over some other surface,
+/// which is exactly the "the dock may hide" case.
+fn pointer_inside(window: &gtk::ApplicationWindow) -> bool {
+    let Some(surface) = window.surface() else { return false };
+    let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
+        return false;
+    };
+    let Some(pointer) = seat.pointer() else { return false };
+    surface.device_position(&pointer).is_some()
+}
+
 /// Take or release a hold on the dock, keeping it out while one is active.
 ///
 /// Counted rather than boolean: a drag can begin from a slot while a popover
@@ -1035,12 +1163,24 @@ fn hold(
     cfg: &Config,
     take: bool,
 ) {
+    // A drag or popover grabs the pointer, which makes the dock's motion
+    // controller report a `leave` that never really happened. By the time the
+    // hold is released that stale `peeking = false` would hide the dock out
+    // from under a pointer still sitting on it — so re-derive it from where
+    // the pointer actually is.
+    let inside = if take { None } else { Some(pointer_inside(window)) };
+
     {
         let mut s = slide.borrow_mut();
         if take {
             s.held += 1;
         } else {
             s.held = s.held.saturating_sub(1);
+            if let Some(inside) = inside {
+                if s.held == 0 {
+                    s.peeking = inside;
+                }
+            }
         }
         let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
         if (s.spring.target - target).abs() < f64::EPSILON {

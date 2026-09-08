@@ -106,6 +106,54 @@ impl DockItem {
     }
 }
 
+/// Identity used to match this item against an updated item list.
+///
+/// Normally the key, but separators are deliberately interchangeable: they
+/// render identically and hold no state, so any user-placed divider may stand
+/// in for any other. Their key encodes their position — which changes the
+/// moment one is dragged — so matching them on it would make an in-place
+/// reorder impossible and force a full rebuild every time.
+///
+/// User separators and automatic dividers still form two distinct classes:
+/// only the former can be moved or removed.
+pub fn match_key(item: &DockItem) -> &str {
+    if item.kind != ItemKind::Separator {
+        return &item.key;
+    }
+    if item.pin_index.is_some() {
+        "\u{0}separator:user"
+    } else {
+        "\u{0}separator:auto"
+    }
+}
+
+/// For each position in `new`, which position in `old` holds that same item.
+///
+/// `None` when the two lists are not a permutation of each other, which means
+/// the item *set* changed and the caller needs new widgets rather than a
+/// rearrangement of the ones it has.
+///
+/// Each old entry may be claimed only once. That matters because separators
+/// deliberately share a match key: without it every divider would map to the
+/// first one and the rest of the mapping would be nonsense.
+pub fn match_permutation(old: &[DockItem], new: &[DockItem]) -> Option<Vec<usize>> {
+    if old.len() != new.len() {
+        return None;
+    }
+    let mut taken = vec![false; old.len()];
+    let mut from = Vec::with_capacity(new.len());
+    for item in new {
+        let want = match_key(item);
+        let at = old
+            .iter()
+            .enumerate()
+            .position(|(i, d)| !taken[i] && match_key(d) == want)?;
+        taken[at] = true;
+        from.push(at);
+    }
+    Some(from)
+}
+
 /// A separator the user placed at `pin_index` in the pinned list.
 fn user_separator(pin_index: usize) -> DockItem {
     let mut item = separator();
@@ -740,5 +788,102 @@ mod separator_key_tests {
         // Automatic dividers are derived, so they are not editable.
         assert_eq!(separator_pin_index("---"), None);
         assert_eq!(separator_pin_index("chromium"), None);
+    }
+
+    /// A pinned app, as `items()` would produce it.
+    fn app(key: &str, pin: usize) -> DockItem {
+        DockItem {
+            kind: ItemKind::App,
+            key: key.into(),
+            label: key.into(),
+            icon: key.into(),
+            windows: Vec::new(),
+            pinned: true,
+            active: false,
+            urgent: false,
+            scratchpad: false,
+            active_window: None,
+            exec: String::new(),
+            actions: Vec::new(),
+            path: None,
+            pin_index: Some(pin),
+        }
+    }
+
+    #[test]
+    fn a_moved_separator_is_still_matched_to_its_own_widget() {
+        // A separator's key encodes where it sits, so moving one changes its
+        // key. Matching on that would fail and force a rebuild; matching on
+        // the interchangeable class succeeds.
+        let old = vec![app("a", 0), user_separator(1), app("b", 2)];
+        let new = vec![user_separator(0), app("a", 1), app("b", 2)];
+        assert_eq!(match_permutation(&old, &new), Some(vec![1, 0, 2]));
+    }
+
+    #[test]
+    fn each_separator_claims_a_distinct_slot() {
+        // Two user dividers plus the automatic one. Every separator must map
+        // to a different old slot: mapping them all to the first would leave
+        // widgets bound to the wrong items, which is what made dragging one
+        // icon move another.
+        let old = vec![
+            app("a", 0),
+            user_separator(1),
+            user_separator(2),
+            separator(),
+            app("b", 3),
+        ];
+        let new = vec![
+            user_separator(0),
+            app("a", 1),
+            user_separator(2),
+            separator(),
+            app("b", 3),
+        ];
+        let from = match_permutation(&old, &new).expect("still a permutation");
+        assert_eq!(from, vec![1, 0, 2, 3, 4]);
+
+        let mut seen = from.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), from.len(), "no old slot may be claimed twice");
+    }
+
+    #[test]
+    fn a_user_separator_never_matches_an_automatic_divider() {
+        // The automatic divider is derived from where the pinned list ends, so
+        // it has no position to rewrite. Letting a draggable separator bind to
+        // it would make a drag rewrite an entry that does not exist.
+        let old = vec![app("a", 0), user_separator(1)];
+        let new = vec![app("a", 0), separator()];
+        assert_eq!(match_permutation(&old, &new), None);
+    }
+
+    #[test]
+    fn a_changed_item_set_falls_back_to_a_rebuild() {
+        // Different apps, not a reordering: the caller needs new widgets.
+        let old = vec![app("a", 0), app("b", 1)];
+        let new = vec![app("a", 0), app("c", 1)];
+        assert_eq!(match_permutation(&old, &new), None);
+
+        // A different length is never a permutation either.
+        let new = vec![app("a", 0)];
+        assert_eq!(match_permutation(&old, &new), None);
+    }
+
+    #[test]
+    fn the_permutation_maps_new_positions_back_to_old_ones() {
+        // Dragging the last pinned app to the front.
+        let old = vec![app("a", 0), app("b", 1), app("c", 2)];
+        let new = vec![app("c", 0), app("a", 1), app("b", 2)];
+        let from = match_permutation(&old, &new).expect("a permutation");
+        assert_eq!(from, vec![2, 0, 1]);
+
+        // Reading old through `from` must reproduce new, which is exactly the
+        // guarantee the widget permutation relies on.
+        let rebuilt: Vec<&str> =
+            from.iter().map(|&i| old[i].key.as_str()).collect();
+        let want: Vec<&str> = new.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(rebuilt, want);
     }
 }
