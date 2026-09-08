@@ -155,8 +155,6 @@ pub struct Items {
     /// Desktop-entry ids or Hyprland window classes, in dock order.
     pub pinned: Vec<String>,
     pub folders: Vec<Folder>,
-    /// Show the folder stacks listed in `folders`.
-    pub show_folders: bool,
     pub show_trash: bool,
     /// Show apps that are running but not pinned.
     pub show_running: bool,
@@ -168,6 +166,13 @@ pub struct Folder {
     pub name: String,
     #[serde(default)]
     pub icon: String,
+    /// Show this stack. Each folder toggles independently.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 // ── defaults ────────────────────────────────────────────────────────────────
@@ -237,7 +242,6 @@ impl Default for Items {
         Self {
             pinned: Vec::new(),
             folders: Vec::new(),
-            show_folders: true,
             show_trash: true,
             show_running: true,
         }
@@ -416,6 +420,7 @@ fn import_omadock() -> (Vec<String>, Vec<Folder>) {
                                 .and_then(|i| i.as_str())
                                 .unwrap_or_default()
                                 .to_owned(),
+                            enabled: true,
                         })
                     })
                     .collect(),

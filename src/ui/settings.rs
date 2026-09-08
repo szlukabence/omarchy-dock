@@ -115,9 +115,18 @@ where
     list.append(&toggle("Show running apps", cfg.items.show_running, |v| {
         edit(move |c| c.items.show_running = v)
     }));
-    list.append(&toggle("Show folders", cfg.items.show_folders, |v| {
-        edit(move |c| c.items.show_folders = v)
-    }));
+    // One switch per folder: they are independent shortcuts, so a single
+    // "show folders" toggle would be an all-or-nothing blunt instrument.
+    for (i, folder) in cfg.items.folders.iter().enumerate() {
+        let name = if folder.name.is_empty() { "Folder".to_string() } else { folder.name.clone() };
+        list.append(&toggle(&name, folder.enabled, move |v| {
+            edit(move |c| {
+                if let Some(f) = c.items.folders.get_mut(i) {
+                    f.enabled = v;
+                }
+            })
+        }));
+    }
     list.append(&toggle("Show Trash", cfg.items.show_trash, |v| {
         edit(move |c| c.items.show_trash = v)
     }));

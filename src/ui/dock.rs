@@ -102,7 +102,11 @@ impl State {
     fn retarget(&mut self) {
         let zoom = if self.cfg.magnify.enabled { self.cfg.magnify.zoom } else { 1.0 };
         for (i, s) in self.springs.iter_mut().enumerate() {
-            s.target = if Some(i) == self.hovered { zoom } else { 1.0 };
+            // A divider that swells on hover reads as a glitch, so only real
+            // items magnify — but hover still registers, so right-click works.
+            let magnifies =
+                self.data.get(i).is_some_and(|d| d.kind != ItemKind::Separator);
+            s.target = if Some(i) == self.hovered && magnifies { zoom } else { 1.0 };
         }
     }
 }
@@ -294,9 +298,9 @@ impl DockSurface {
         // Clicks are wired after State exists so a launch can bounce its own
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
-            if items.get(i).is_some_and(|it| it.interactive()) {
-                attach_clicks(slot, &sink, &state, i);
-            }
+            // Separators get clicks too: not to launch anything, but so their
+            // right-click menu can move or remove them.
+            attach_clicks(slot, &sink, &state, i);
         }
 
         // Test hook: pointer input cannot be synthesised against a layer
@@ -509,6 +513,8 @@ fn attach_clicks(
                     }
                     return;
                 }
+                // A separator has nothing to activate.
+                ItemKind::Separator => return,
                 // Stacks and Trash open a popover rather than launching.
                 ItemKind::Folder | ItemKind::Trash => {
                     let sink2 = sink.clone();
@@ -564,7 +570,14 @@ fn attach_clicks(
                 }
             };
             let sink = sink.clone();
-            let popover = if item.kind == ItemKind::Trash || item.kind == ItemKind::Folder {
+            let popover = if item.kind == ItemKind::Separator {
+                // Only user-placed separators are editable; automatic dividers
+                // are derived from the item list and have no pinned index.
+                match crate::state::separator_pin_index(&item.key) {
+                    Some(pin) => menu::build_separator(pin, move |a| sink(a)),
+                    None => return,
+                }
+            } else if item.kind == ItemKind::Trash || item.kind == ItemKind::Folder {
                 let sink2 = sink.clone();
                 let refresh = move || sink2(MenuAction::Rescan);
                 if item.kind == ItemKind::Trash {

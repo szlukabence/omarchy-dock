@@ -102,6 +102,36 @@ impl DockItem {
     }
 }
 
+/// A separator the user placed at `pin_index` in the pinned list.
+fn user_separator(pin_index: usize) -> DockItem {
+    let mut item = separator();
+    item.key = format!("{SEPARATOR}:{pin_index}");
+    item
+}
+
+/// Shift `index` by `delta` places within `list`.
+///
+/// Clamps at the ends rather than wrapping: an item that jumped from one end of
+/// the dock to the other would be surprising, and the menu gives no hint that
+/// it might.
+pub fn move_in_list<T>(list: &mut [T], index: usize, delta: i32) -> bool {
+    if index >= list.len() || list.is_empty() {
+        return false;
+    }
+    let target = (index as i32 + delta).clamp(0, list.len() as i32 - 1) as usize;
+    if target == index {
+        return false;
+    }
+    list.swap(index, target);
+    true
+}
+
+/// Index in the pinned list that a separator item refers to, if it is one the
+/// user placed rather than an automatic divider.
+pub fn separator_pin_index(key: &str) -> Option<usize> {
+    key.strip_prefix(SEPARATOR)?.strip_prefix(':')?.parse().ok()
+}
+
 fn separator() -> DockItem {
     DockItem {
         kind: ItemKind::Separator,
@@ -235,9 +265,13 @@ impl DockState {
         // Which clients have been claimed by a pinned slot.
         let mut claimed: Vec<bool> = vec![false; self.clients.len()];
 
-        for id in pinned {
+        for (pin_index, id) in pinned.iter().enumerate() {
             if id.trim() == SEPARATOR {
-                items.push(separator());
+                // Carry the pinned-list index so the context menu can move or
+                // remove this exact separator. Automatic dividers get no index
+                // and are therefore not editable, which is right: they are
+                // derived, not placed.
+                items.push(user_separator(pin_index));
                 continue;
             }
             let entry = self.matcher.by_id(id);
@@ -313,7 +347,7 @@ impl DockState {
         // Stacks and Trash form the dock's tail section, as on macOS.
         let tail_start = items.len();
 
-        for folder in cfg.items.folders.iter().filter(|_| cfg.items.show_folders) {
+        for folder in cfg.items.folders.iter().filter(|f| f.enabled) {
             let path = crate::config::expand_tilde(&folder.path);
             let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
             items.push(DockItem {
@@ -360,7 +394,12 @@ impl DockState {
             items.insert(tail_start, separator());
         }
 
-        // A separator at either end divides nothing.
+        // Two dividers in a row divide nothing between them. This happens
+        // whenever a user separator sits where an automatic one is also
+        // inserted, e.g. a trailing "---" meeting the folders divider.
+        items.dedup_by(|a, b| a.kind == ItemKind::Separator && b.kind == ItemKind::Separator);
+
+        // A separator at either end divides nothing either.
         while items.first().is_some_and(|i| i.kind == ItemKind::Separator) {
             items.remove(0);
         }
@@ -597,9 +636,58 @@ mod layout_tests {
     }
 
     #[test]
+    fn adjacent_dividers_collapse_into_one() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("stranger")]);
+        // A trailing user separator lands exactly where the automatic divider
+        // before the running section goes.
+        let items = s.items(&cfg(&["a", SEPARATOR]));
+        assert_eq!(
+            kinds(&items),
+            vec![ItemKind::App, ItemKind::Separator, ItemKind::App],
+            "expected one divider, not two"
+        );
+    }
+
+    #[test]
     fn a_dock_of_only_separators_collapses_rather_than_looping() {
         let s = DockState::new(vec![]);
         let items = s.items(&cfg(&[SEPARATOR, SEPARATOR]));
         assert!(items.len() <= 1, "got {:?}", kinds(&items));
+    }
+}
+
+#[cfg(test)]
+mod separator_key_tests {
+    use super::*;
+
+    #[test]
+    fn moving_clamps_at_the_ends_instead_of_wrapping() {
+        let mut v = vec!["a", "b", "c"];
+        assert!(move_in_list(&mut v, 0, 1));
+        assert_eq!(v, vec!["b", "a", "c"]);
+
+        // Already at the left end: no move, and no wrap to the far end.
+        let mut v = vec!["a", "b", "c"];
+        assert!(!move_in_list(&mut v, 0, -1));
+        assert_eq!(v, vec!["a", "b", "c"]);
+
+        // Same at the right end.
+        let mut v = vec!["a", "b", "c"];
+        assert!(!move_in_list(&mut v, 2, 1));
+        assert_eq!(v, vec!["a", "b", "c"]);
+
+        // Out of range is a no-op rather than a panic.
+        let mut v = vec!["a"];
+        assert!(!move_in_list(&mut v, 9, 1));
+    }
+
+    #[test]
+    fn only_user_placed_separators_carry_an_editable_index() {
+        assert_eq!(separator_pin_index("---:3"), Some(3));
+        assert_eq!(separator_pin_index("---:0"), Some(0));
+        // Automatic dividers are derived, so they are not editable.
+        assert_eq!(separator_pin_index("---"), None);
+        assert_eq!(separator_pin_index("chromium"), None);
     }
 }

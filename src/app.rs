@@ -374,13 +374,27 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
         || old.magnify.lift != new.magnify.lift
         || old.items.pinned != new.items.pinned
         || old.items.show_trash != new.items.show_trash
-        || old.items.show_folders != new.items.show_folders
         || old.items.folders.len() != new.items.folders.len()
+        || old
+            .items
+            .folders
+            .iter()
+            .zip(&new.items.folders)
+            .any(|(a, b)| a.enabled != b.enabled || a.path != b.path)
         || old.monitors.mode != new.monitors.mode
         || old.monitors.primary != new.monitors.primary
 }
 
 /// Create one surface per monitor the config asks for.
+/// Apply an edit to the pinned list and persist it.
+fn edit_pins<F: FnOnce(&mut Vec<String>)>(f: F) {
+    let mut cfg = Config::load();
+    f(&mut cfg.items.pinned);
+    if let Err(e) = cfg.save() {
+        tracing::error!(error = %e, "cannot save pinned list");
+    }
+}
+
 /// Turn UI intent into worker commands and config edits.
 ///
 /// Pin changes are written to `config.toml` rather than applied in memory: the
@@ -401,6 +415,18 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
             if let Some(w) = &worker {
                 let _ = w.snapshot.try_send(());
             }
+        }
+        MenuAction::MovePin { index, delta } => {
+            edit_pins(|pins| {
+                crate::state::move_in_list(pins, index, delta);
+            });
+        }
+        MenuAction::RemovePin { index } => {
+            edit_pins(|pins| {
+                if index < pins.len() {
+                    pins.remove(index);
+                }
+            });
         }
         MenuAction::SetPinned { key, pinned } => {
             let mut cfg = Config::load();
