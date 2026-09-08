@@ -416,84 +416,6 @@ impl DockSurface {
         true
     }
 
-    /// Reorder existing widgets to match `items`, without rebuilding.
-    ///
-    /// Returns false when the item *set* differs, which genuinely needs new
-    /// widgets. Rebuilding destroys and recreates the layer surface, which
-    /// flickers and drops the dock for a frame — very visible when it happens
-    /// on every drag-and-drop.
-    pub fn reorder(&self, items: &[DockItem], cfg: &Config) -> bool {
-        let mut s = self.state.borrow_mut();
-
-        if s.data.len() != items.len() {
-            return false;
-        }
-
-        // Map each new position to the old one holding that key. Keys repeat
-        // for separators, so each old slot may only be claimed once.
-        let mut taken = vec![false; s.data.len()];
-        let mut from = Vec::with_capacity(items.len());
-        for item in items {
-            let Some(old) = s
-                .data
-                .iter()
-                .enumerate()
-                .position(|(i, d)| !taken[i] && d.key == item.key)
-            else {
-                return false;
-            };
-            taken[old] = true;
-            from.push(old);
-        }
-
-        // Permute every per-slot vector together, so springs and widgets stay
-        // matched to their items.
-        let permute = |v: &mut Vec<gtk::Widget>| {
-            *v = from.iter().map(|&i| v[i].clone()).collect();
-        };
-        permute(&mut s.items);
-        permute(&mut s.indicators);
-        s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
-        s.springs = from.iter().map(|&i| s.springs[i]).collect();
-        s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
-        s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
-        s.data = items.to_vec();
-
-        // Kinds may have moved, so slot extents change with them.
-        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
-        s.geom = Geometry::compute(cfg, &kinds);
-
-        // Re-place everything. Position lives in the child transform, so this
-        // is the same call that drives magnification.
-        for i in 0..s.items.len() {
-            s.apply(i);
-        }
-        for (i, item) in items.iter().enumerate() {
-            if let Some((ix, iy)) = indicator_origin(&s.geom, i, cfg) {
-                if let Some(dot) = s.indicators.get(i) {
-                    s.fixed.move_(dot, ix, iy);
-                    dot.set_visible(item.running());
-                    set_class(dot, "urgent", item.urgent);
-                    set_class(dot, "active", item.active);
-                }
-            }
-        }
-
-        // Hover indices refer to the old order; drop them rather than leave a
-        // stale icon magnified.
-        s.hovered = None;
-        s.drop_at = None;
-        for sp in s.springs.iter_mut() {
-            sp.target = 1.0;
-        }
-        for sh in s.shifts.iter_mut() {
-            sh.target = 0.0;
-        }
-        drop(s);
-        ensure_ticking(&self.state);
-        true
-    }
-
     /// Slide the surface off-screen, or back on.
     ///
     /// A few pixels are deliberately left on screen: that sliver still
@@ -536,7 +458,16 @@ impl DockSurface {
 
     /// Seed peek state from where the pointer actually is right now.
     fn sync_peek_to_pointer(&self, cfg: &Config) {
-        if pointer_inside(&self.window) {
+        let Some(surface) = self.window.surface() else { return };
+        let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
+            return;
+        };
+        let Some(pointer) = seat.pointer() else { return };
+
+        // `device_position` yields None when the pointer is over some other
+        // surface, which is exactly the "do not hold the dock out" case.
+        let inside = surface.device_position(&pointer).is_some();
+        if inside {
             surface_set_peeking(&self.slide, &self.window, cfg, true);
         }
     }
@@ -588,17 +519,9 @@ impl DockSurface {
                 glib::timeout_add_local_once(
                     std::time::Duration::from_millis(hide_ms),
                     move || {
-                        let s = slide.borrow();
-                        if s.generation != gen {
+                        if slide.borrow().generation != gen {
                             return;
                         }
-                        // A drag or open menu grabs the pointer and produces a
-                        // `leave` that did not happen. Releasing the hold
-                        // re-checks the real pointer position, so ignore this.
-                        if s.held > 0 {
-                            return;
-                        }
-                        drop(s);
                         surface_set_peeking(&slide, &window, &cfg, false);
                     },
                 );
@@ -726,7 +649,7 @@ fn attach_clicks(
             let popover = if item.kind == ItemKind::Separator {
                 // Only user-placed separators are editable; automatic dividers
                 // are derived from the item list and have no pinned index.
-                match item.pin_index {
+                match crate::state::separator_pin_index(&item.key) {
                     Some(pin) => menu::build_separator(pin, move |a| sink(a)),
                     None => return,
                 }
@@ -1072,12 +995,6 @@ fn attach_drop(
     fixed.add_controller(target);
 }
 
-/// Where an item's running indicator goes, in surface coordinates.
-fn indicator_origin(geom: &Geometry, i: usize, cfg: &Config) -> Option<(f64, f64)> {
-    let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
-    geom.indicator_at(i, cfg.dock.icon_size, len, thick)
-}
-
 /// Which side of an icon a popover should open on, given the dock's edge.
 fn popover_side(cfg: &Config) -> gtk::PositionType {
     match cfg.dock.position {
@@ -1107,19 +1024,6 @@ fn hold_for_popover(
     });
 }
 
-/// Whether the pointer is currently over this surface.
-///
-/// `device_position` yields None when the pointer is over some other surface,
-/// which is exactly the "the dock may hide" case.
-fn pointer_inside(window: &gtk::ApplicationWindow) -> bool {
-    let Some(surface) = window.surface() else { return false };
-    let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
-        return false;
-    };
-    let Some(pointer) = seat.pointer() else { return false };
-    surface.device_position(&pointer).is_some()
-}
-
 /// Take or release a hold on the dock, keeping it out while one is active.
 ///
 /// Counted rather than boolean: a drag can begin from a slot while a popover
@@ -1131,24 +1035,12 @@ fn hold(
     cfg: &Config,
     take: bool,
 ) {
-    // A drag or popover grabs the pointer, which makes the dock's motion
-    // controller report a `leave` that never really happened. By the time the
-    // hold is released that stale `peeking = false` would hide the dock out
-    // from under a pointer still sitting on it — so re-derive it from where
-    // the pointer actually is.
-    let inside = if take { None } else { Some(pointer_inside(window)) };
-
     {
         let mut s = slide.borrow_mut();
         if take {
             s.held += 1;
         } else {
             s.held = s.held.saturating_sub(1);
-            if let Some(inside) = inside {
-                if s.held == 0 {
-                    s.peeking = inside;
-                }
-            }
         }
         let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
         if (s.spring.target - target).abs() < f64::EPSILON {

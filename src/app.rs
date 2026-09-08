@@ -230,19 +230,10 @@ impl App {
     /// alter the item set itself.
     fn sync(&mut self, gtk_app: &gtk::Application) {
         let items = self.current_items();
-        if self.docks.is_empty() {
-            self.rebuild(gtk_app);
-            return;
-        }
+        let refreshed =
+            !self.docks.is_empty() && self.docks.iter().all(|d| d.refresh(&items));
 
-        // Cheapest first: refresh state in place, else re-order the existing
-        // widgets, and only build new ones for a genuinely different item set.
-        // Recreating the layer surface flickers and drops the dock for a
-        // frame, which is very visible after a drag-and-drop.
-        let handled = self.docks.iter().all(|d| d.refresh(&items))
-            || self.docks.iter().all(|d| d.reorder(&items, &self.cfg));
-
-        if handled {
+        if refreshed {
             self.update_autohide();
         } else {
             self.rebuild(gtk_app);
@@ -356,10 +347,9 @@ pub fn run() -> glib::ExitCode {
                         if structural {
                             app.rebuild(&gtk_app);
                         } else {
-                            // Item changes (reordering, pinning) go through
-                            // sync, which reorders in place where it can
-                            // rather than recreating the surface.
-                            app.sync(&gtk_app);
+                            // Non-structural changes can still alter hide
+                            // policy (mode, delays, offsets).
+                            app.update_autohide();
                         }
                     }
                 }
@@ -382,9 +372,7 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
         || old.magnify.enabled != new.magnify.enabled
         || old.magnify.zoom != new.magnify.zoom
         || old.magnify.lift != new.magnify.lift
-        // A changed *set* of pins still needs new widgets, but a reordering
-        // does not — sync() reorders in place, so only length changes here.
-        || old.items.pinned.len() != new.items.pinned.len()
+        || old.items.pinned != new.items.pinned
         || old.items.show_trash != new.items.show_trash
         || old.items.folders.len() != new.items.folders.len()
         || old
