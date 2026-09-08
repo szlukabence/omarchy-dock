@@ -275,7 +275,7 @@ impl DockSurface {
             spring: Spring::at(0.0),
             hidden: false,
             peeking: false,
-            menu_open: false,
+            held: 0,
             generation: 0,
             edge,
             // Zero: the edge offset lives inside the surface now, so the
@@ -303,7 +303,7 @@ impl DockSurface {
             // right-click menu can remove them.
             attach_clicks(slot, &sink, &state, i, &slide, &window, cfg);
             if let Some(item) = items.get(i) {
-                attach_drag(slot, item, &state, i, cfg);
+                attach_drag(slot, item, &state, i, cfg, &slide, &window);
             }
         }
         attach_drop(&fixed, &state, &sink, cfg);
@@ -393,7 +393,7 @@ impl DockSurface {
     fn apply_slide(&self, cfg: &Config) {
         {
             let mut s = self.slide.borrow_mut();
-            let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
+            let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
             tracing::debug!(
                 target, hidden = s.hidden, peeking = s.peeking,
                 current = s.spring.target, travel = s.travel, "policy retarget"
@@ -645,7 +645,7 @@ fn surface_set_peeking(
             return;
         }
         s.peeking = peeking;
-        let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
+        let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
         if (s.spring.target - target).abs() < f64::EPSILON {
             return;
         }
@@ -720,11 +720,12 @@ struct Slide {
     /// Whether the pointer is currently over the surface. Peeking wins over
     /// policy, which is what makes the trigger sliver work.
     peeking: bool,
-    /// Whether a popover spawned from the dock is open. An autohide popover
-    /// takes a pointer grab, which makes the dock's own motion controller
-    /// report `leave` — so without this the dock slides away the instant a
-    /// right-click menu opens, leaving the menu floating over nothing.
-    menu_open: bool,
+    /// Whether something is holding the dock out: an open popover, or a drag
+    /// in progress. Both take a pointer grab, which makes the dock's own
+    /// motion controller report `leave` — so without this the dock slides
+    /// away the instant a menu opens or a drag starts, leaving the menu
+    /// floating over nothing and the drag with nowhere to drop.
+    held: u32,
     /// Bumped whenever a reveal/hide timer is scheduled, so a stale timer
     /// firing after the pointer moved on is ignored.
     generation: u64,
@@ -745,12 +746,15 @@ fn travel_for(cfg: &Config, geom: &Geometry) -> f64 {
 ///
 /// Only entries that live in the pinned list can move; running-but-unpinned
 /// apps, folders, Trash and the launcher have no position to rewrite.
+#[allow(clippy::too_many_arguments)]
 fn attach_drag(
     slot: &gtk::Overlay,
     item: &DockItem,
     state: &Rc<RefCell<State>>,
     index: usize,
     cfg: &Config,
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
 ) {
     let Some(pin) = item.pin_index else { return };
 
@@ -764,13 +768,19 @@ fn attach_drag(
         });
     }
 
-    // Drag under the cursor: the icon for apps, a slim bar for separators.
+    // Drag image under the cursor.
     {
         let icon_name = item.icon.clone();
         let is_sep = item.kind == ItemKind::Separator;
         let size = cfg.dock.icon_size as i32;
+        let sep_widget = slot.clone();
         source.connect_drag_begin(move |src, _| {
             if is_sep {
+                // A separator has no themed icon, and leaving it unset gives
+                // GTK's generic document fallback — a white page, which looks
+                // like the wrong thing entirely. Paint the divider itself.
+                let paintable = gtk::WidgetPaintable::new(Some(&sep_widget));
+                src.set_icon(Some(&paintable), 6, size / 2);
                 return;
             }
             if let Some(display) = gdk::Display::default() {
@@ -794,18 +804,33 @@ fn attach_drag(
     // item currently is rather than appearing to have two of it.
     {
         let state = state.clone();
+        let slide = slide.clone();
+        let window = window.clone();
+        let cfg = cfg.clone();
+        // A separator's drag image is a live paintable of the slot itself, so
+        // dimming the original would dim the thing under the cursor too.
+        let dim = item.kind != ItemKind::Separator;
         source.connect_drag_begin(move |_, _| {
-            if let Some(w) = state.borrow().items.get(index) {
-                w.set_opacity(0.35);
+            if dim {
+                if let Some(w) = state.borrow().items.get(index) {
+                    w.set_opacity(0.35);
+                }
             }
+            // A drag grabs the pointer, so the dock would otherwise decide the
+            // pointer had left and hide mid-drag.
+            hold(&slide, &window, &cfg, true);
         });
     }
     {
         let state = state.clone();
+        let slide = slide.clone();
+        let window = window.clone();
+        let cfg = cfg.clone();
         source.connect_drag_end(move |_, _, _| {
             if let Some(w) = state.borrow().items.get(index) {
                 w.set_opacity(1.0);
             }
+            hold(&slide, &window, &cfg, false);
         });
     }
 
@@ -876,30 +901,42 @@ fn hold_for_popover(
     window: &gtk::ApplicationWindow,
     cfg: &Config,
 ) {
-    {
-        let mut s = slide.borrow_mut();
-        s.menu_open = true;
-        let target = if s.hidden && !s.peeking && !s.menu_open { s.travel } else { 0.0 };
-        s.spring.target = target;
-    }
-    animate_slide_on(slide, window, cfg);
+    hold(slide, window, cfg, true);
 
     let slide = slide.clone();
     let window = window.clone();
     let cfg = cfg.clone();
     popover.connect_closed(move |p| {
         p.unparent();
-        {
-            let mut s = slide.borrow_mut();
-            s.menu_open = false;
-            let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
-            if (s.spring.target - target).abs() < f64::EPSILON {
-                return;
-            }
-            s.spring.target = target;
-        }
-        animate_slide_on(&slide, &window, &cfg);
+        hold(&slide, &window, &cfg, false);
     });
+}
+
+/// Take or release a hold on the dock, keeping it out while one is active.
+///
+/// Counted rather than boolean: a drag can begin from a slot while a popover
+/// is still closing, and a plain flag would let the first release drop the
+/// dock out from under the second holder.
+fn hold(
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+    take: bool,
+) {
+    {
+        let mut s = slide.borrow_mut();
+        if take {
+            s.held += 1;
+        } else {
+            s.held = s.held.saturating_sub(1);
+        }
+        let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
+        if (s.spring.target - target).abs() < f64::EPSILON {
+            return;
+        }
+        s.spring.target = target;
+    }
+    animate_slide_on(slide, window, cfg);
 }
 
 /// Give an item an upward impulse and make sure the tick loop is running.
