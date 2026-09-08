@@ -65,6 +65,10 @@ pub struct DockItem {
     /// derived items — running-but-unpinned apps, automatic dividers, the
     /// launcher, folders and Trash — which have nothing to reorder.
     pub pin_index: Option<usize>,
+    /// Monochrome glyph to draw instead of a themed icon, when the dock's
+    /// furniture is rendered the way the bar's widgets are. `None` for real
+    /// applications, which always keep their own icon.
+    pub glyph: Option<String>,
 }
 
 impl DockItem {
@@ -103,6 +107,47 @@ impl DockItem {
             .map(|at| (at + 1) % self.windows.len())
             .unwrap_or(0);
         self.windows.get(next)
+    }
+}
+
+/// The Omarchy logo, from the `omarchy` font at `/usr/share/fonts/omarchy/`.
+///
+/// The same codepoint the shell's own menu bar widget draws, so the dock's
+/// launcher button is literally the same mark as the one in the bar.
+pub const GLYPH_LAUNCHER: &str = "\u{e900}";
+
+/// Nerd Font glyphs for the dock's folder stacks and Trash. Chosen to match
+/// the vocabulary the Omarchy menu uses for the same concepts.
+const GLYPH_FOLDER: &str = "\u{f07b}";
+const GLYPH_HOME: &str = "\u{f015}";
+const GLYPH_DOWNLOADS: &str = "\u{f019}";
+const GLYPH_DOCUMENTS: &str = "\u{f0f6}";
+const GLYPH_PICTURES: &str = "\u{f03e}";
+const GLYPH_TRASH: &str = "\u{f1f8}";
+const GLYPH_TRASH_FULL: &str = "\u{f014}";
+
+/// The glyph that stands for a directory, by what the directory *is*.
+///
+/// Matched on the XDG user-directory basename rather than the label, so a
+/// renamed stack keeps the right mark.
+pub fn folder_glyph(path: &std::path::Path) -> &'static str {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    match name.as_str() {
+        "downloads" => GLYPH_DOWNLOADS,
+        "documents" => GLYPH_DOCUMENTS,
+        "pictures" | "photos" => GLYPH_PICTURES,
+        _ => {
+            // The home directory has no distinguishing basename, so compare
+            // the path itself.
+            if dirs::home_dir().is_some_and(|h| h == path) {
+                GLYPH_HOME
+            } else {
+                GLYPH_FOLDER
+            }
+        }
     }
 }
 
@@ -216,6 +261,7 @@ fn separator() -> DockItem {
         actions: Vec::new(),
         path: None,
         pin_index: None,
+        glyph: None,
     }
 }
 
@@ -329,6 +375,7 @@ impl DockState {
                 actions: Vec::new(),
                 path: None,
                 pin_index: None,
+                glyph: Some(GLYPH_LAUNCHER.into()),
             });
         }
 
@@ -435,22 +482,20 @@ impl DockState {
                 active_window: None,
                 exec: String::new(),
                 actions: Vec::new(),
-                path: Some(path),
                 pin_index: None,
+                glyph: Some(folder_glyph(&path).into()),
+                path: Some(path),
             });
         }
 
         if cfg.items.show_trash {
+            let empty = crate::stacks::trash_is_empty();
             items.push(DockItem {
                 kind: ItemKind::Trash,
                 key: "__trash".into(),
                 label: "Trash".into(),
                 // Icon switches to user-trash-full when it has contents.
-                icon: if crate::stacks::trash_is_empty() {
-                    "user-trash".into()
-                } else {
-                    "user-trash-full".into()
-                },
+                icon: if empty { "user-trash".into() } else { "user-trash-full".into() },
                 windows: Vec::new(),
                 pinned: true,
                 active: false,
@@ -461,6 +506,7 @@ impl DockState {
                 actions: Vec::new(),
                 path: Some(crate::stacks::trash_files_dir()),
                 pin_index: None,
+                glyph: Some(if empty { GLYPH_TRASH.into() } else { GLYPH_TRASH_FULL.into() }),
             });
         }
 
@@ -518,6 +564,7 @@ impl DockState {
             actions,
             path: None,
             pin_index: None,
+            glyph: None,
         }
     }
 }
@@ -542,6 +589,7 @@ mod tests {
             actions: vec![],
             path: None,
             pin_index: None,
+            glyph: None,
         }
     }
 
@@ -807,6 +855,7 @@ mod separator_key_tests {
             actions: Vec::new(),
             path: None,
             pin_index: Some(pin),
+            glyph: None,
         }
     }
 

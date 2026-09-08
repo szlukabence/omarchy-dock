@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::anim::Spring;
-use crate::config::{Config, Position};
+use crate::config::{Config, Hover, Position};
 use crate::runtime::DockCommand;
 use crate::state::{DockItem, ItemKind};
 use crate::ui::menu::{self, MenuAction};
@@ -36,6 +36,15 @@ const BOUNCE_STIFFNESS: f64 = 220.0;
 const BOUNCE_DAMPING: f64 = 8.3;
 /// Initial upward velocity, in px/s, of a launch or urgency bounce.
 const BOUNCE_IMPULSE: f64 = -320.0;
+
+/// How far the hover plate extends past the icon box on each side. Small: the
+/// shell's own hover fill hugs its content rather than framing it.
+const PLATE_MARGIN: f64 = 4.0;
+
+/// Spring for the hover fill. Critically damped (2*sqrt(1600) = 80) and stiff,
+/// because a highlight that lags the pointer feels broken rather than smooth.
+const HOVER_STIFFNESS: f64 = 1600.0;
+const HOVER_DAMPING: f64 = 80.0;
 
 /// Spring for the gap that opens at a drop position. Critically damped
 /// (2*sqrt(900) = 60), precomputed because `sqrt` is not const.
@@ -59,6 +68,14 @@ struct State {
     tip_generation: u64,
     tooltip_delay: u64,
     items: Vec<gtk::Widget>,
+    /// Per-slot plate drawn *behind* the icon, carrying the shell's hover
+    /// fill. Behind rather than around it so a magnified icon grows over its
+    /// own highlight instead of being clipped by it.
+    plates: Vec<gtk::Widget>,
+    /// Hover progress, 0..1, driving the plate's opacity. Separate from the
+    /// zoom spring because the fill and the magnification are alternatives:
+    /// in fill mode the zoom spring never leaves 1.0, so it carries no signal.
+    hovers: Vec<Spring>,
     /// Where each slot's widget currently sits in these vectors.
     ///
     /// Every per-slot controller holds the cell belonging to its own widget
@@ -127,16 +144,37 @@ impl State {
 
     fn apply(&self, i: usize) {
         self.fixed.set_child_transform(&self.items[i], Some(&self.transform_for(i)));
+
+        // The plate follows the slot along the dock's axis so it travels with
+        // a drop gap, but it deliberately does not zoom, lift or bounce: it is
+        // the seat the icon sits in, not part of the icon.
+        if let Some(plate) = self.plates.get(i) {
+            let (sx, sy) = self.geom.slots[i];
+            let shift = self.shifts[i].pos;
+            let (dx, dy) = if self.geom.horizontal() { (shift, 0.0) } else { (0.0, shift) };
+            self.fixed.set_child_transform(
+                plate,
+                Some(&gsk::Transform::new().translate(&graphene::Point::new(
+                    (sx + dx) as f32,
+                    (sy + dy) as f32,
+                ))),
+            );
+            plate.set_opacity(self.hovers[i].pos.clamp(0.0, 1.0));
+        }
     }
 
     fn retarget(&mut self) {
-        let zoom = if self.cfg.magnify.enabled { self.cfg.magnify.zoom } else { 1.0 };
-        for (i, s) in self.springs.iter_mut().enumerate() {
-            // A divider that swells on hover reads as a glitch, so only real
-            // items magnify — but hover still registers, so right-click works.
-            let magnifies =
-                self.data.get(i).is_some_and(|d| d.kind != ItemKind::Separator);
-            s.target = if Some(i) == self.hovered && magnifies { zoom } else { 1.0 };
+        let mode = if self.cfg.magnify.enabled { self.cfg.magnify.hover } else { Hover::None };
+        let zoom = if mode == Hover::Scale { self.cfg.magnify.zoom } else { 1.0 };
+
+        for i in 0..self.springs.len() {
+            // A divider that swells or lights up on hover reads as a glitch,
+            // so only real items react — but hover still registers, so
+            // right-click works everywhere.
+            let reacts = self.data.get(i).is_some_and(|d| d.kind != ItemKind::Separator);
+            let on = Some(i) == self.hovered && reacts;
+            self.springs[i].target = if on { zoom } else { 1.0 };
+            self.hovers[i].target = if on && mode == Hover::Fill { 1.0 } else { 0.0 };
         }
     }
 }
@@ -183,6 +221,7 @@ impl DockSurface {
         let mut slots = Vec::with_capacity(items.len());
         let mut indicators = Vec::with_capacity(items.len());
         let mut badges = Vec::with_capacity(items.len());
+        let mut plates = Vec::with_capacity(items.len());
 
         for (i, item) in items.iter().enumerate() {
             // Icon and badge share one widget so the badge tracks the icon as
@@ -213,7 +252,9 @@ impl DockSurface {
                 fixed.put(&slot, x, y);
                 slots.push(slot.clone());
                 widgets.push(slot.upcast::<gtk::Widget>());
-                // Keep the per-slot vectors aligned with the item list.
+                // Keep the per-slot vectors aligned with the item list. A
+                // divider has no hover state, so its plate is never shown.
+                plates.push(hover_plate(&fixed, x, y, 0.0, 0.0));
                 let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 dot.set_visible(false);
                 indicators.push(dot.upcast::<gtk::Widget>());
@@ -225,8 +266,20 @@ impl DockSurface {
 
             slot.set_size_request(size, size);
 
-            let img = make_icon(&item.icon, size);
-            slot.set_child(Some(&img));
+            // The plate goes in first so it draws beneath this slot. Sized a
+            // little tighter than the icon box, the way a bar widget's
+            // highlight sits inside its cell rather than filling it.
+            let (px, py) = geom.slots[i];
+            let plate_size = cfg.dock.icon_size + PLATE_MARGIN * 2.0;
+            plates.push(hover_plate(
+                &fixed,
+                px - PLATE_MARGIN,
+                py - PLATE_MARGIN,
+                plate_size,
+                plate_size,
+            ));
+
+            slot.set_child(Some(&item_visual(item, size, cfg)));
 
             let badge = gtk::Label::new(None);
             badge.add_css_class("dock-badge");
@@ -285,6 +338,8 @@ impl DockSurface {
             tip_generation: 0,
             tooltip_delay: cfg.dock.tooltip_delay_ms,
             items: widgets,
+            plates,
+            hovers: vec![Spring::at(0.0); widget_count],
             slot_index: slot_index.clone(),
             geom,
             cfg: cfg.clone(),
@@ -293,9 +348,9 @@ impl DockSurface {
             ticking: false,
         }));
 
-        if cfg.magnify.enabled {
-            attach_motion(&fixed, &state, cfg.dock.icon_size);
-        }
+        // Always: hover drives the name label and the shell's hover fill, not
+        // only magnification.
+        attach_motion(&fixed, &state, cfg.dock.icon_size);
 
         let window = gtk::ApplicationWindow::builder()
             .application(app)
@@ -451,10 +506,12 @@ impl DockSurface {
         };
         permute(&mut s.items);
         permute(&mut s.indicators);
+        permute(&mut s.plates);
         s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
         s.springs = from.iter().map(|&i| s.springs[i]).collect();
         s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
         s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
+        s.hovers = from.iter().map(|&i| s.hovers[i]).collect();
         s.slot_index = from.iter().map(|&i| s.slot_index[i].clone()).collect();
         s.data = items.to_vec();
 
@@ -499,6 +556,9 @@ impl DockSurface {
         }
         for sh in s.shifts.iter_mut() {
             sh.target = 0.0;
+        }
+        for h in s.hovers.iter_mut() {
+            h.target = 0.0;
         }
         drop(s);
         ensure_ticking(&self.state);
@@ -1241,6 +1301,55 @@ fn init_layer_shell(
 /// That value may be a themed icon name or an absolute path, and the state
 /// engine has already resolved it, so this only has to handle both forms and
 /// fall back when the theme lacks the name.
+/// The fill drawn behind a hovered slot, placed and hidden.
+///
+/// Created for every slot rather than on demand: the tick callback animates it
+/// by opacity, and a widget that has to be built mid-hover would cost a
+/// layout pass on the first frame of every hover.
+fn hover_plate(fixed: &gtk::Fixed, x: f64, y: f64, w: f64, h: f64) -> gtk::Widget {
+    let plate = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    plate.add_css_class("dock-hover-plate");
+    plate.set_size_request(w.round() as i32, h.round() as i32);
+    // Fully transparent rather than hidden: opacity is what the spring drives,
+    // and a hidden widget would pop into place on the first frame.
+    plate.set_opacity(0.0);
+    plate.set_can_target(false);
+    fixed.put(&plate, x, y);
+    plate.upcast::<gtk::Widget>()
+}
+
+/// What a slot draws: a themed application icon, or a monochrome glyph.
+///
+/// The dock's own furniture — launcher, folder stacks, Trash — is drawn the
+/// way the bar draws its widgets, so only real applications carry colour. An
+/// item without a glyph, or a config that turned glyphs off, falls back to the
+/// icon theme.
+fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
+    match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui) {
+        Some(glyph) => {
+            let label = gtk::Label::new(Some(glyph));
+            label.add_css_class("dock-glyph");
+            // Glyphs are drawn by the font, so the size has to come from the
+            // type scale rather than from a pixel-size request. The ratio
+            // leaves the same optical weight as a themed icon of `size`.
+            label.set_attributes(Some(&glyph_attrs(size)));
+            label.set_size_request(size, size);
+            label.upcast::<gtk::Widget>()
+        }
+        None => make_icon(&item.icon, size).upcast::<gtk::Widget>(),
+    }
+}
+
+/// Pango attributes sizing a glyph to fill an icon box.
+fn glyph_attrs(size: i32) -> gtk::pango::AttrList {
+    let attrs = gtk::pango::AttrList::new();
+    // 0.62 of the box: a Nerd Font glyph's ink sits well inside its em, so
+    // matching the point size to the box would draw it noticeably small.
+    let points = (size as f64 * 0.62).round() as i32;
+    attrs.insert(gtk::pango::AttrSize::new(points * gtk::pango::SCALE));
+    attrs
+}
+
 fn make_icon(icon: &str, size: i32) -> gtk::Image {
     let img = gtk::Image::new();
     img.set_pixel_size(size);
@@ -1361,8 +1470,18 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
             let zoom_busy = !s.springs[i].settled();
             let bounce_busy = !s.bounces[i].settled();
             let shift_busy = !s.shifts[i].settled();
-            if !zoom_busy && !bounce_busy && !shift_busy {
+            let hover_busy = !s.hovers[i].settled();
+            if !zoom_busy && !bounce_busy && !shift_busy && !hover_busy {
                 continue;
+            }
+
+            if hover_busy {
+                s.hovers[i].step(dt, HOVER_STIFFNESS, HOVER_DAMPING);
+                if s.hovers[i].settled() {
+                    s.hovers[i].settle();
+                } else {
+                    moving = true;
+                }
             }
 
             if zoom_busy {

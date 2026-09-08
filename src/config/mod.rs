@@ -44,6 +44,36 @@ pub enum MonitorMode {
     Focused,
 }
 
+/// How closely the dock's chrome follows Omarchy's own surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Style {
+    /// Draw the dock the way the Omarchy shell draws the bar, menus and
+    /// notifications: the theme's `shell.toml` tokens, opaque, square-ish,
+    /// with the Hyprland border gradient as a hairline. The dock reads as part
+    /// of the desktop rather than as a visitor from another one.
+    #[default]
+    Omarchy,
+    /// The translucent, heavily rounded, compositor-blurred slab. Not what
+    /// Omarchy looks like, but it is what a dock traditionally looks like.
+    Glass,
+}
+
+/// What hovering an icon does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hover {
+    /// Magnify the hovered icon. Distinctive, but nothing else in Omarchy
+    /// changes size on hover.
+    Scale,
+    /// Paint the shell's own hover fill behind the icon — the same treatment
+    /// every bar widget and menu row uses.
+    #[default]
+    Fill,
+    /// No hover treatment beyond the name label.
+    None,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HideMode {
@@ -92,6 +122,9 @@ pub struct Dock {
 #[serde(default)]
 pub struct Magnify {
     pub enabled: bool,
+    /// What hovering does. `Scale` is the classic dock magnification;
+    /// `Fill` matches the rest of Omarchy.
+    pub hover: Hover,
     /// Scale factor of the hovered icon. Only the hovered icon scales.
     pub zoom: f64,
     /// Extra upward travel at full zoom, on top of bottom-anchored scaling.
@@ -122,7 +155,16 @@ pub struct Autohide {
 pub struct Theme {
     /// Track the active Omarchy theme and restyle live when it changes.
     pub follow_omarchy: bool,
-    /// Alpha of the glass panel. The compositor blurs whatever shows through.
+    /// Whether the dock draws itself as an Omarchy surface or as glass.
+    pub style: Style,
+    /// Take sizes from the theme's `shell.toml` scale, so the dock grows and
+    /// shrinks with the bar when `omarchy display text size` changes.
+    pub follow_shell_scale: bool,
+    /// Corner radius. `None` mirrors Hyprland's `decoration:rounding`, which
+    /// is what the Omarchy shell does for every surface it draws.
+    pub radius: Option<f64>,
+    /// Alpha of the glass panel. Ignored by the Omarchy style, which takes its
+    /// opacity from the theme's `[popups] background-alpha`.
     pub opacity: f64,
     /// Extra CSS layered over the generated stylesheet, reloaded on save.
     pub user_css: PathBuf,
@@ -158,6 +200,10 @@ pub struct Items {
     pub show_trash: bool,
     /// Show apps that are running but not pinned.
     pub show_running: bool,
+    /// Draw the dock's own furniture — launcher, folders, Trash — as
+    /// monochrome glyphs in the theme foreground, the way every Omarchy bar
+    /// widget is drawn, so only real application icons carry colour.
+    pub glyph_ui: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +243,14 @@ impl Default for Magnify {
     fn default() -> Self {
         // Values validated in the Phase-0 spike: vsync-locked at 60Hz with a
         // single dropped frame in ~315, and no overshoot ringing.
-        Self { enabled: true, zoom: 1.45, lift: 6.0, stiffness: 460.0, damping_ratio: 0.82 }
+        Self {
+            enabled: true,
+            hover: Hover::Fill,
+            zoom: 1.45,
+            lift: 6.0,
+            stiffness: 460.0,
+            damping_ratio: 0.82,
+        }
     }
 }
 
@@ -217,6 +270,9 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             follow_omarchy: true,
+            style: Style::Omarchy,
+            follow_shell_scale: true,
+            radius: None,
             opacity: 0.55,
             user_css: config_dir().join("style.css"),
             icon_theme: String::new(),
@@ -244,6 +300,7 @@ impl Default for Items {
             folders: Vec::new(),
             show_trash: true,
             show_running: true,
+            glyph_ui: true,
         }
     }
 }

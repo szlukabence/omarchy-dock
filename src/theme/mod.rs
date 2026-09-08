@@ -8,6 +8,7 @@
 //! parsed as a map with fallbacks rather than a fixed struct.
 
 pub mod css;
+pub mod shell;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +51,27 @@ impl Rgb {
             g: u8::from_str_radix(&hex[2..4], 16).ok()?,
             b: u8::from_str_radix(&hex[4..6], 16).ok()?,
         })
+    }
+
+    /// Like `parse`, but keeps the alpha of a Hyprland `rgba(rrggbbaa)`.
+    ///
+    /// Border gradients carry their own per-stop alpha, which the shell then
+    /// multiplies by the surface's `border-alpha`. Dropping it here would make
+    /// every card's hairline read heavier than Omarchy draws it.
+    pub fn parse_rgba(s: &str) -> Option<(Self, f64)> {
+        let rgb = Self::parse(s)?;
+        let body = s
+            .trim()
+            .strip_prefix("rgba(")
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or(s.trim());
+        let hex = body.trim().trim_start_matches('#');
+        let alpha = if hex.len() >= 8 {
+            u8::from_str_radix(&hex[6..8], 16).map(|a| a as f64 / 255.0).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        Some((rgb, alpha))
     }
 
     pub fn to_css(self) -> String {
@@ -190,4 +212,33 @@ pub fn icon_theme() -> Option<String> {
     let name = std::fs::read_to_string(dir.join("icons.theme")).ok()?;
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Hyprland's `decoration:rounding`, which the Omarchy shell mirrors as its
+/// own corner radius.
+///
+/// Read straight off the request socket rather than by shelling out to
+/// `hyprctl`: this runs on the GTK thread during a restyle, and spawning a
+/// process there is both slower and one more thing to fail. Falls back to the
+/// Hyprland default when anything goes wrong, including not running under
+/// Hyprland at all.
+pub fn hyprland_rounding() -> Option<f64> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let path = crate::hypr::request_socket().ok()?;
+    let mut stream = UnixStream::connect(path).ok()?;
+    stream.write_all(b"j/getoption decoration:rounding").ok()?;
+    stream.shutdown(std::net::Shutdown::Write).ok();
+
+    let mut body = String::new();
+    stream.read_to_string(&mut body).ok()?;
+
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    // `getoption` reports an int option under "int"; a missing option comes
+    // back with `"set": false`, which is not a radius we should adopt.
+    if v.get("set").and_then(|s| s.as_bool()) == Some(false) {
+        return None;
+    }
+    v.get("int").and_then(|n| n.as_f64()).filter(|n| *n >= 0.0)
 }

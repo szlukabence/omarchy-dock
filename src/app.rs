@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::event::{self, AppEvent};
 use crate::hypr::events::HyprEvent;
 use crate::state::DockState;
+use crate::theme::shell::Shell;
 use crate::theme::{css, Palette};
 use crate::state::DockItem;
 use crate::ui::menu::MenuAction;
@@ -21,12 +22,20 @@ use crate::ui::DockSurface;
 pub const APP_ID: &str = "dev.omarchy.Dock";
 
 struct App {
+    /// Config exactly as it sits on disk. Compared against a reload to decide
+    /// whether a change is structural, and the basis `cfg` is derived from.
+    raw_cfg: Config,
+    /// `raw_cfg` with the active theme's shell scale folded into its pixel
+    /// sizes. Everything that draws uses this one.
     cfg: Config,
     /// Reconciles pins against live Hyprland windows.
     state: DockState,
     /// Channels to the async worker: resync requests and user commands.
     worker: Option<crate::runtime::Handles>,
     palette: Palette,
+    /// Design tokens from the active theme's `shell.toml`: the shapes, alphas
+    /// and scale every other Omarchy surface is drawn with.
+    shell: Shell,
     /// One provider, reloaded in place. Adding a new provider per reload would
     /// stack styles and leak the old ones.
     provider: gtk::CssProvider,
@@ -40,10 +49,21 @@ impl App {
         } else {
             Palette::default()
         };
+        self.shell = if self.cfg.theme.follow_omarchy {
+            Shell::current(&self.palette)
+        } else {
+            Shell::fallback(&self.palette)
+        };
+        self.cfg = scaled(self.raw_cfg.clone(), &self.shell);
         self.apply_icon_theme();
-        let sheet = css::generate(&self.cfg, &self.palette);
+        let sheet = css::generate(&self.cfg, &self.palette, &self.shell);
         self.provider.load_from_string(&sheet);
-        tracing::info!(theme = %self.palette.name, "styles reloaded");
+        tracing::info!(
+            theme = %self.palette.name,
+            style = ?self.cfg.theme.style,
+            scale = self.shell.metrics.spacing_factor(),
+            "styles reloaded"
+        );
     }
 
     /// Point GTK at the icon theme the user configured, or the one the active
@@ -308,10 +328,12 @@ pub fn run() -> glib::ExitCode {
         tracing::info!(count = entries.len(), "desktop entries scanned");
 
         let mut app = App {
+            raw_cfg: cfg.clone(),
             cfg,
             state: DockState::new(entries),
             worker: worker.clone(),
             palette: Palette::default(),
+            shell: Shell::fallback(&Palette::default()),
             provider,
             docks: Vec::new(),
         };
@@ -331,7 +353,16 @@ pub fn run() -> glib::ExitCode {
                 let Some(app) = guard.as_mut() else { continue };
 
                 match event {
-                    AppEvent::StyleChanged => app.restyle(),
+                    AppEvent::StyleChanged => {
+                        // A theme carries its own spacing and font scale, so
+                        // switching themes can change the dock's geometry, not
+                        // just its colours.
+                        let before = geometry_inputs(&app.cfg);
+                        app.restyle();
+                        if geometry_inputs(&app.cfg) != before {
+                            app.rebuild(&gtk_app);
+                        }
+                    }
                     AppEvent::HyprSnapshot { clients, monitors, focused } => {
                         tracing::info!(
                             windows = clients.len(),
@@ -350,8 +381,10 @@ pub fn run() -> glib::ExitCode {
                         // Geometry-affecting changes need new surfaces;
                         // anything else is just a restyle, which is far
                         // cheaper and preserves hover state.
-                        let structural = needs_rebuild(&app.cfg, &next);
-                        app.cfg = next;
+                        let structural = needs_rebuild(&app.raw_cfg, &next);
+                        app.raw_cfg = next;
+                        // restyle re-derives `cfg` from the new raw config and
+                        // the current shell scale.
                         app.restyle();
                         if structural {
                             app.rebuild(&gtk_app);
@@ -368,6 +401,53 @@ pub fn run() -> glib::ExitCode {
     });
 
     gtk_app.run()
+}
+
+/// Fold the active theme's shell scale into the config's pixel sizes.
+///
+/// The Omarchy shell multiplies every spacing and font token by
+/// `spacing.scale * fontScale`, so `omarchy display text size` resizes the bar,
+/// the menu and every panel at once. A dock that ignored it would be the one
+/// surface that stayed put — so the same factor is applied here, to the sizes
+/// the user configured rather than replacing them.
+fn scaled(mut cfg: Config, shell: &crate::theme::shell::Shell) -> Config {
+    if !cfg.theme.follow_shell_scale {
+        return cfg;
+    }
+    let f = shell.metrics.spacing_factor();
+    // Guard against a theme with a nonsensical scale making the dock unusable,
+    // and skip the work entirely at the overwhelmingly common 1.0.
+    if !f.is_finite() || !(0.25..=4.0).contains(&f) || (f - 1.0).abs() < 0.005 {
+        return cfg;
+    }
+
+    cfg.dock.icon_size *= f;
+    cfg.dock.padding_x *= f;
+    cfg.dock.padding_y *= f;
+    cfg.dock.spacing = cfg.dock.spacing.map(|s| s * f);
+    cfg.dock.radius *= f;
+    cfg.dock.edge_offset = (cfg.dock.edge_offset as f64 * f).round() as i32;
+    // Magnification lift is a pixel distance too, so it has to track the icon
+    // size or a big dock barely rises and a small one leaps.
+    cfg.magnify.lift *= f;
+    cfg
+}
+
+/// The parts of the config that decide surface geometry.
+///
+/// Used to tell whether re-deriving the config after a theme change actually
+/// moved anything, so a mere recolour does not rebuild the surfaces.
+fn geometry_inputs(cfg: &Config) -> [i64; 6] {
+    // Fixed-point rather than floats so this can be compared for equality.
+    let q = |v: f64| (v * 64.0).round() as i64;
+    [
+        q(cfg.dock.icon_size),
+        q(cfg.dock.padding_x),
+        q(cfg.dock.padding_y),
+        q(cfg.dock.spacing.unwrap_or(-1.0)),
+        q(cfg.dock.radius),
+        cfg.dock.edge_offset as i64,
+    ]
 }
 
 /// Whether a config change alters surface geometry or item set.
