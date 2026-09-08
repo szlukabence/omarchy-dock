@@ -221,24 +221,7 @@ impl App {
 
     /// The items currently rendered, in dock order.
     fn current_items(&self) -> Vec<DockItem> {
-        let mut items = self.state.items(&self.cfg.items.pinned, self.cfg.items.show_running);
-        if self.cfg.items.show_trash {
-            items.push(crate::state::DockItem {
-                key: "__trash".into(),
-                label: "Trash".into(),
-                icon: "user-trash".into(),
-                windows: Vec::new(),
-                pinned: true,
-                active: false,
-                urgent: false,
-                scratchpad: false,
-                active_window: None,
-                exec: String::new(),
-                actions: Vec::new(),
-            });
-        }
-
-        items
+        self.state.items(&self.cfg)
     }
 
     /// Apply current state to the dock, refreshing in place when possible.

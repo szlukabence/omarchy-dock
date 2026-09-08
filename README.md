@@ -5,7 +5,7 @@ Rust + GTK4 with `gtk4-layer-shell`.
 
 ## Status
 
-Working: layer-shell surface with Hyprland blur, single-icon hover
+Working: launcher button, separators, layer-shell surface with Hyprland blur, single-icon hover
 magnification, live theming from the active Omarchy palette, Hyprland IPC,
 window/app matching with running indicators and window-count badges,
 click-to-focus/cycle/launch, context menus, auto-hide, multi-monitor, and a
@@ -47,9 +47,19 @@ Notable keys:
 | `dock.position` | `bottom` \| `top` \| `left` \| `right` |
 | `dock.icon_size`, `dock.spacing` | Sizing; spacing defaults to whatever keeps magnified icons from overlapping |
 | `magnify.zoom`, `.lift`, `.stiffness`, `.damping_ratio` | Hover feel. Only the hovered icon scales |
-| `autohide.mode` | `never` \| `intelligent` \| `always` |
+| `autohide.mode` | `never` \| `intelligent` \| `always` (default: `intelligent`) |
+| `launcher.enabled`, `.icon`, `.command` | Omarchy menu button at the head of the dock; empty command runs `omarchy-menu toggle` |
 | `monitors.mode` | `all` \| `primary` \| `focused` |
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
+
+Put `"---"` anywhere in `items.pinned` to insert a divider. A divider is also
+added automatically between pinned apps and running-but-unpinned ones, and
+before Trash; dividers that would end up at either end are dropped.
+
+Right-click the launcher button for a settings panel covering position,
+auto-hide, icon size, hover zoom, and the section toggles. It writes
+`config.toml`, so the panel, a hand-edited file, and `omarchy-dockctl` all take
+the same path into the running dock.
 
 `theme.user_css` can reference the live palette, e.g. `@omarchy_accent`,
 `@dock_bg`, `@dock_fg`.

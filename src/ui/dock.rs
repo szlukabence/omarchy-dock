@@ -17,7 +17,7 @@ use std::rc::Rc;
 use crate::anim::Spring;
 use crate::config::{Config, Position};
 use crate::runtime::DockCommand;
-use crate::state::DockItem;
+use crate::state::{DockItem, ItemKind};
 use crate::ui::menu::{self, MenuAction};
 use crate::ui::Geometry;
 
@@ -121,7 +121,8 @@ impl DockSurface {
         monitor: Option<&gdk::Monitor>,
         sink: ActionSink,
     ) -> Self {
-        let geom = Geometry::compute(cfg, items.len());
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
+        let geom = Geometry::compute(cfg, &kinds);
         let travel = travel_for(cfg, &geom);
         let geom_size = (geom.window_w, geom.window_h);
 
@@ -144,6 +145,41 @@ impl DockSurface {
             // Icon and badge share one widget so the badge tracks the icon as
             // it magnifies.
             let slot = gtk::Overlay::new();
+
+            if item.kind == ItemKind::Separator {
+                // A divider is inert: no magnification, no input, no
+                // indicator. It only needs to occupy its slot.
+                let rule = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                rule.add_css_class("dock-separator");
+                rule.set_halign(gtk::Align::Center);
+                rule.set_valign(gtk::Align::Center);
+                if geom.horizontal() {
+                    rule.set_size_request(2, (cfg.dock.icon_size * 0.58) as i32);
+                } else {
+                    rule.set_size_request((cfg.dock.icon_size * 0.58) as i32, 2);
+                }
+                let (ex, ey) = if geom.horizontal() {
+                    (geom.extents[i], cfg.dock.icon_size)
+                } else {
+                    (cfg.dock.icon_size, geom.extents[i])
+                };
+                slot.set_size_request(ex as i32, ey as i32);
+                slot.set_child(Some(&rule));
+
+                let (x, y) = geom.slots[i];
+                fixed.put(&slot, x, y);
+                slots.push(slot.clone());
+                widgets.push(slot.upcast::<gtk::Widget>());
+                // Keep the per-slot vectors aligned with the item list.
+                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                dot.set_visible(false);
+                indicators.push(dot.upcast::<gtk::Widget>());
+                let badge = gtk::Label::new(None);
+                badge.set_visible(false);
+                badges.push(badge);
+                continue;
+            }
+
             slot.set_size_request(size, size);
 
             let img = make_icon(&item.icon, size);
@@ -226,7 +262,9 @@ impl DockSurface {
         // Clicks are wired after State exists so a launch can bounce its own
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
-            attach_clicks(slot, &sink, &state, i);
+            if items.get(i).is_some_and(|it| it.interactive()) {
+                attach_clicks(slot, &sink, &state, i);
+            }
         }
 
         // Anything already demanding attention should bounce on appear.
@@ -389,6 +427,13 @@ fn attach_clicks(
                 }
             };
 
+            if item.kind == ItemKind::Launcher {
+                if !item.exec.is_empty() {
+                    sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
+                }
+                return;
+            }
+
             let action = if item.windows.is_empty() {
                 // Nothing running: launch, unless this is a pure UI slot.
                 (!item.exec.is_empty()).then(|| {
@@ -425,7 +470,13 @@ fn attach_clicks(
                 }
             };
             let sink = sink.clone();
-            let popover = menu::build(&item, move |a| sink(a));
+            let popover = if item.kind == ItemKind::Launcher {
+                // The launcher has no windows or desktop actions, so its
+                // right-click is the natural home for the dock's own settings.
+                crate::ui::settings::build(move |a| sink(a))
+            } else {
+                menu::build(&item, move |a| sink(a))
+            };
             popover.set_parent(&anchor);
             popover.set_position(gtk::PositionType::Top);
             // Detach on close so repeated right-clicks do not stack popovers

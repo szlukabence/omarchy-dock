@@ -48,11 +48,12 @@ pub enum MonitorMode {
 #[serde(rename_all = "lowercase")]
 pub enum HideMode {
     /// Always visible.
-    #[default]
     Never,
     /// Always hidden until the pointer hits the trigger edge.
     Always,
-    /// Hidden only while a window would overlap the dock's rectangle.
+    /// Hidden only while a window would overlap the dock's rectangle. The
+    /// default: unobtrusive when the screen is busy, present when it is not.
+    #[default]
     Intelligent,
 }
 
@@ -134,7 +135,7 @@ pub struct Theme {
 pub struct Launcher {
     pub enabled: bool,
     pub icon: String,
-    /// Shell command to run. Empty uses the built-in GTK app grid.
+    /// Shell command to run. Empty uses Omarchy's own menu.
     pub command: String,
 }
 
@@ -193,7 +194,7 @@ impl Default for Magnify {
 impl Default for Autohide {
     fn default() -> Self {
         Self {
-            mode: HideMode::Never,
+            mode: HideMode::Intelligent,
             reveal_delay_ms: 160,
             hide_delay_ms: 500,
             trigger_px: 2,
@@ -329,6 +330,15 @@ impl Config {
     /// Absolute damping coefficient implied by `damping_ratio`.
     pub fn damping(&self) -> f64 {
         2.0 * self.magnify.stiffness.sqrt() * self.magnify.damping_ratio
+    }
+
+    /// What the launcher button runs. Defaults to Omarchy's own menu.
+    pub fn launcher_command(&self) -> String {
+        if self.launcher.command.trim().is_empty() {
+            "omarchy-menu toggle".to_string()
+        } else {
+            self.launcher.command.clone()
+        }
     }
 
     /// Headroom above the panel for a magnified icon to grow into.

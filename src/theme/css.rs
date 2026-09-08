@@ -34,6 +34,9 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
 
     // Hairline and shadow have to move in opposite directions depending on
     // whether the panel is dark or light, or one of them vanishes.
+    // Dividers need to read against the panel in both polarities.
+    let divider = fg.with_alpha(0.34);
+
     let (hairline, shadow_alpha) = if palette.is_dark() {
         (Rgb { r: 255, g: 255, b: 255 }.with_alpha(0.10), 0.45)
     } else {
@@ -91,6 +94,70 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
 ",
         // Badge text must contrast with the urgency colour, not the panel.
         badge_fg = if urgent.luminance() > 0.45 { "#000000" } else { "#ffffff" },
+    ));
+
+    // Section dividers, context menu, and the settings panel.
+    s.push_str(&format!(
+        "
+/* Focused app's indicator is brighter and wider than a merely running one, so
+   'which window will this click reach' is readable at a glance. */
+.dock-indicator.active {{
+  background-color: @dock_fg;
+  min-width: 10px;
+}}
+
+/* Divider between dock sections. Derived from the foreground, not the panel
+   hairline: at hairline alpha it is invisible on dark themes, which defeats
+   the point of a divider. */
+.dock-separator {{
+  background-color: {divider};
+  border-radius: 1px;
+  /* A childless widget takes its size from CSS, so min-* is what actually
+     gives the divider an allocation to paint into. */
+  min-width: 2px;
+  min-height: 26px;
+}}
+
+.dock-menu > contents {{
+  background-color: @dock_bg;
+  border: 1px solid {hairline};
+  border-radius: 12px;
+  padding: 4px;
+}}
+
+.dock-menu-list {{ min-width: 190px; }}
+
+.dock-menu-item {{
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: @dock_fg;
+  background: transparent;
+}}
+
+.dock-menu-item:hover {{ background-color: {accent_soft}; }}
+
+.dock-menu-heading {{
+  padding: 6px 10px 2px 10px;
+  font-size: 11px;
+  opacity: 0.6;
+  color: @dock_fg;
+}}
+
+.dock-menu-sep {{
+  margin: 4px 6px;
+  background-color: {hairline};
+}}
+
+.dock-settings {{ min-width: 270px; }}
+
+.dock-settings-row {{ padding: 2px 10px; }}
+
+.dock-settings-row label {{
+  color: @dock_fg;
+  font-size: 12px;
+}}
+",
+        accent_soft = accent.with_alpha(0.28),
     ));
 
     // ── user overrides ──────────────────────────────────────────────────────

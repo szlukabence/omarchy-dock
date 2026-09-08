@@ -18,9 +18,26 @@ use crate::hypr::model::{Client, Monitor};
 use crate::hypr::Address;
 use matcher::Matcher;
 
+/// Token in the pinned list that renders as a divider.
+pub const SEPARATOR: &str = "---";
+
+/// What a dock slot is. Slots are not interchangeable: a separator is narrow
+/// and inert, the launcher never represents a window, and only apps can run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    /// Omarchy menu button, pinned to the head of the dock.
+    Launcher,
+    App,
+    /// A divider — either user-placed or the automatic one that fences pinned
+    /// apps off from running-but-unpinned ones.
+    Separator,
+    Trash,
+}
+
 /// One rendered dock item.
 #[derive(Debug, Clone)]
 pub struct DockItem {
+    pub kind: ItemKind,
     /// Stable identity: desktop id for known apps, else the window class.
     pub key: String,
     pub label: String,
@@ -45,6 +62,11 @@ pub struct DockItem {
 impl DockItem {
     pub fn running(&self) -> bool {
         !self.windows.is_empty()
+    }
+
+    /// Separators take no input and show no indicator.
+    pub fn interactive(&self) -> bool {
+        self.kind != ItemKind::Separator
     }
 
     /// Count shown as a badge; `None` below two windows.
@@ -73,6 +95,23 @@ impl DockItem {
             .map(|at| (at + 1) % self.windows.len())
             .unwrap_or(0);
         self.windows.get(next)
+    }
+}
+
+fn separator() -> DockItem {
+    DockItem {
+        kind: ItemKind::Separator,
+        key: SEPARATOR.into(),
+        label: String::new(),
+        icon: String::new(),
+        windows: Vec::new(),
+        pinned: false,
+        active: false,
+        urgent: false,
+        scratchpad: false,
+        active_window: None,
+        exec: String::new(),
+        actions: Vec::new(),
     }
 }
 
@@ -162,14 +201,39 @@ impl DockState {
         }
     }
 
-    /// Build the ordered item list: pinned entries first in their configured
-    /// order, then running-but-unpinned apps.
-    pub fn items(&self, pinned: &[String], show_running: bool) -> Vec<DockItem> {
+    /// Build the full ordered dock: launcher, pinned apps (with any
+    /// user-placed separators), an automatic divider, running-but-unpinned
+    /// apps, then Trash.
+    pub fn items(&self, cfg: &crate::config::Config) -> Vec<DockItem> {
+        let pinned = &cfg.items.pinned;
+        let show_running = cfg.items.show_running;
         let mut items: Vec<DockItem> = Vec::new();
+
+        if cfg.launcher.enabled {
+            items.push(DockItem {
+                kind: ItemKind::Launcher,
+                key: "__launcher".into(),
+                label: "Omarchy".into(),
+                icon: cfg.launcher.icon.clone(),
+                windows: Vec::new(),
+                pinned: true,
+                active: false,
+                urgent: false,
+                scratchpad: false,
+                active_window: None,
+                exec: cfg.launcher_command(),
+                actions: Vec::new(),
+            });
+        }
+
         // Which clients have been claimed by a pinned slot.
         let mut claimed: Vec<bool> = vec![false; self.clients.len()];
 
         for id in pinned {
+            if id.trim() == SEPARATOR {
+                items.push(separator());
+                continue;
+            }
             let entry = self.matcher.by_id(id);
             let expected = self.matcher.expected_classes(id);
 
@@ -196,6 +260,9 @@ impl DockState {
                 entry.map(|e| e.actions.clone()).unwrap_or_default(),
             ));
         }
+
+        // Everything appended from here is a distinct section.
+        let pinned_end = items.len();
 
         if show_running {
             // Group leftovers by matched entry so multiple windows of one app
@@ -227,9 +294,42 @@ impl DockState {
                     )),
                 }
             }
+            // Fence running-but-unpinned apps off from the pinned ones, but
+            // only when there is something on both sides to divide.
+            if !groups.is_empty() && pinned_end > 0 {
+                items.insert(pinned_end, separator());
+            }
             for (key, label, icon, windows, exec, actions) in groups {
                 items.push(self.make_item(key, label, icon, windows, false, exec, actions));
             }
+        }
+
+        if cfg.items.show_trash {
+            if items.last().is_some_and(|i| i.kind != ItemKind::Separator) {
+                items.push(separator());
+            }
+            items.push(DockItem {
+                kind: ItemKind::Trash,
+                key: "__trash".into(),
+                label: "Trash".into(),
+                icon: "user-trash".into(),
+                windows: Vec::new(),
+                pinned: true,
+                active: false,
+                urgent: false,
+                scratchpad: false,
+                active_window: None,
+                exec: String::new(),
+                actions: Vec::new(),
+            });
+        }
+
+        // A separator at either end divides nothing.
+        while items.first().is_some_and(|i| i.kind == ItemKind::Separator) {
+            items.remove(0);
+        }
+        while items.len() > 1 && items.last().is_some_and(|i| i.kind == ItemKind::Separator) {
+            items.pop();
         }
 
         items
@@ -255,6 +355,7 @@ impl DockState {
                 self.clients.iter().any(|c| &c.address == w && c.is_special())
             });
         DockItem {
+            kind: ItemKind::App,
             key,
             label,
             icon,
@@ -276,6 +377,7 @@ mod tests {
 
     fn item(windows: &[&str], active: Option<&str>) -> DockItem {
         DockItem {
+            kind: ItemKind::App,
             key: "k".into(),
             label: "k".into(),
             icon: "k".into(),
@@ -366,5 +468,100 @@ mod focus_tests {
         s.set_clients(vec![client("a")]);
         s.set_focused(None);
         assert!(s.focused_client().is_none());
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::hypr::model::WorkspaceRef;
+    use crate::hypr::Address;
+
+    fn cfg(pinned: &[&str]) -> Config {
+        let mut c = Config::default();
+        c.items.pinned = pinned.iter().map(|s| s.to_string()).collect();
+        c.items.show_trash = false;
+        c.launcher.enabled = false;
+        c
+    }
+
+    fn client(class: &str) -> Client {
+        Client {
+            address: Address::parse(class),
+            class: class.into(),
+            title: class.into(),
+            initial_class: class.into(),
+            workspace: WorkspaceRef { id: 1, name: "1".into() },
+            monitor: 0,
+            pid: 1,
+            floating: false,
+            hidden: false,
+            mapped: true,
+            fullscreen: 0,
+            at: (0, 0),
+            size: (10, 10),
+            focus_history_id: 1,
+        }
+    }
+
+    fn kinds(items: &[DockItem]) -> Vec<ItemKind> {
+        items.iter().map(|i| i.kind).collect()
+    }
+
+    #[test]
+    fn running_apps_are_fenced_off_from_pinned_ones() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("stranger")]);
+        let items = s.items(&cfg(&["pinned-app"]));
+        assert_eq!(
+            kinds(&items),
+            vec![ItemKind::App, ItemKind::Separator, ItemKind::App]
+        );
+    }
+
+    #[test]
+    fn no_divider_when_there_is_nothing_to_divide() {
+        let s = DockState::new(vec![]);
+        // Pinned only: nothing running, so no trailing divider.
+        assert_eq!(kinds(&s.items(&cfg(&["a", "b"]))), vec![ItemKind::App; 2]);
+
+        // Running only: no pinned section, so no leading divider.
+        let mut s2 = DockState::new(vec![]);
+        s2.set_clients(vec![client("x")]);
+        assert_eq!(kinds(&s2.items(&cfg(&[]))), vec![ItemKind::App]);
+    }
+
+    #[test]
+    fn user_separators_are_placed_but_never_left_dangling() {
+        let s = DockState::new(vec![]);
+        let items = s.items(&cfg(&["a", SEPARATOR, "b"]));
+        assert_eq!(
+            kinds(&items),
+            vec![ItemKind::App, ItemKind::Separator, ItemKind::App]
+        );
+
+        // A separator at either end divides nothing and is dropped.
+        let items = s.items(&cfg(&[SEPARATOR, "a", SEPARATOR]));
+        assert_eq!(kinds(&items), vec![ItemKind::App]);
+    }
+
+    #[test]
+    fn launcher_leads_and_trash_trails_behind_a_divider() {
+        let mut c = cfg(&["a"]);
+        c.launcher.enabled = true;
+        c.items.show_trash = true;
+        let s = DockState::new(vec![]);
+        assert_eq!(
+            kinds(&s.items(&c)),
+            vec![ItemKind::Launcher, ItemKind::App, ItemKind::Separator, ItemKind::Trash]
+        );
+    }
+
+    #[test]
+    fn a_dock_of_only_separators_collapses_rather_than_looping() {
+        let s = DockState::new(vec![]);
+        let items = s.items(&cfg(&[SEPARATOR, SEPARATOR]));
+        assert!(items.len() <= 1, "got {:?}", kinds(&items));
     }
 }

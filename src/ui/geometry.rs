@@ -8,6 +8,10 @@
 //!     grow into, which stays transparent and is not part of the glass panel.
 
 use crate::config::{Config, Position};
+use crate::state::ItemKind;
+
+/// Thickness of a divider slot along the dock's long axis.
+const SEPARATOR_EXTENT: f64 = 13.0;
 
 #[derive(Debug, Clone)]
 pub struct Geometry {
@@ -20,6 +24,10 @@ pub struct Geometry {
     pub panel_h: f64,
     /// Top-left of each item slot, in surface coordinates.
     pub slots: Vec<(f64, f64)>,
+    /// Extent of each slot along the dock's long axis. Separators are narrow,
+    /// so slots are no longer uniform and every hit-test and indicator
+    /// position has to consult this rather than assume `icon_size`.
+    pub extents: Vec<f64>,
     /// Scale origin within an item box, i.e. the point that stays put.
     pub anchor: (f64, f64),
     /// Unit vector pointing away from the screen edge.
@@ -27,15 +35,22 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub fn compute(cfg: &Config, count: usize) -> Self {
-        let n = count.max(1) as f64;
+    pub fn compute(cfg: &Config, kinds: &[ItemKind]) -> Self {
         let icon = cfg.dock.icon_size;
         let spacing = cfg.spacing();
         let (px, py) = (cfg.dock.padding_x, cfg.dock.padding_y);
         let head = cfg.headroom();
 
-        // Extent along the dock's long axis, and across it.
-        let run = n * icon + (n - 1.0) * spacing;
+        let extents: Vec<f64> = kinds
+            .iter()
+            .map(|k| if *k == ItemKind::Separator { SEPARATOR_EXTENT } else { icon })
+            .collect();
+
+        // Total extent along the long axis, plus the gaps between slots.
+        let count = extents.len().max(1);
+        let run: f64 = extents.iter().sum::<f64>()
+            + (count.saturating_sub(1)) as f64 * spacing;
+        let run = if extents.is_empty() { icon } else { run };
 
         if cfg.dock.position.is_vertical() {
             let panel_w = icon + px * 2.0;
@@ -43,9 +58,13 @@ impl Geometry {
             // A left-edge dock grows rightwards, so its headroom is on the
             // right and the panel sits flush at x = 0. Mirrored for the right.
             let panel_x = if cfg.dock.position == Position::Left { 0.0 } else { head };
-            let slots = (0..count)
-                .map(|i| (panel_x + px, py + i as f64 * (icon + spacing)))
-                .collect();
+            let mut slots = Vec::with_capacity(extents.len());
+            let mut cursor = py;
+            for e in &extents {
+                // Centre narrow slots on the icon column.
+                slots.push((panel_x + px, cursor));
+                cursor += e + spacing;
+            }
 
             Self {
                 window_w: panel_w + head,
@@ -55,6 +74,7 @@ impl Geometry {
                 panel_w,
                 panel_h,
                 slots,
+                extents: extents.clone(),
                 anchor: if cfg.dock.position == Position::Left {
                     (0.0, icon / 2.0)
                 } else {
@@ -67,9 +87,12 @@ impl Geometry {
             let panel_h = icon + py * 2.0;
             // A bottom dock grows upwards: headroom above, panel flush below.
             let panel_y = if cfg.dock.position == Position::Bottom { head } else { 0.0 };
-            let slots = (0..count)
-                .map(|i| (px + i as f64 * (icon + spacing), panel_y + py))
-                .collect();
+            let mut slots = Vec::with_capacity(extents.len());
+            let mut cursor = px;
+            for e in &extents {
+                slots.push((cursor, panel_y + py));
+                cursor += e + spacing;
+            }
 
             Self {
                 window_w: panel_w,
@@ -79,6 +102,7 @@ impl Geometry {
                 panel_w,
                 panel_h,
                 slots,
+                extents: extents.clone(),
                 anchor: if cfg.dock.position == Position::Bottom {
                     (icon / 2.0, icon)
                 } else {
@@ -92,8 +116,9 @@ impl Geometry {
     /// Where an item's running-indicator sits: centred on the slot's cross
     /// axis and tucked against the screen-edge side of the panel, so it stays
     /// put while the icon above it scales.
-    pub fn indicator_at(&self, i: usize, icon: f64, len: f64, thick: f64) -> Option<(f64, f64)> {
+    pub fn indicator_at(&self, i: usize, _icon: f64, len: f64, thick: f64) -> Option<(f64, f64)> {
         let (sx, sy) = *self.slots.get(i)?;
+        let icon = *self.extents.get(i)?;
         // `lift_dir` points away from the screen edge, so negating it walks
         // back towards the edge the dock is anchored to.
         Some(match self.lift_dir {
@@ -124,8 +149,13 @@ impl Geometry {
         {
             return None;
         }
-        self.slots
-            .iter()
-            .position(|(sx, sy)| x >= *sx && x <= sx + icon && y >= *sy && y <= sy + icon)
+        let cross = icon;
+        self.slots.iter().enumerate().position(|(i, (sx, sy))| {
+            let e = self.extents.get(i).copied().unwrap_or(icon);
+            // Long axis uses the slot's own extent; the cross axis is always
+            // one icon deep.
+            let (w, h) = if self.horizontal() { (e, cross) } else { (cross, e) };
+            x >= *sx && x <= sx + w && y >= *sy && y <= sy + h
+        })
     }
 }
