@@ -246,13 +246,21 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Expand a leading `~` against the user's home directory.
+///
+/// Handles a bare `~` as well as `~/…`. Omarchy's own `omadock.json` pins Home
+/// as exactly `"~"`, which a `~/`-only check leaves as a literal relative path.
 pub fn expand_tilde(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
+    let home = || dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    if s == "~" {
+        return home();
+    }
     match s.strip_prefix("~/") {
-        Some(rest) => dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join(rest),
+        Some(rest) => home().join(rest),
         None => p.to_path_buf(),
     }
 }
+
 
 // ── loading ─────────────────────────────────────────────────────────────────
 
@@ -395,4 +403,18 @@ fn import_omadock() -> (Vec<String>, Vec<Folder>) {
         .unwrap_or_default();
 
     (pinned, folders)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expands_bare_tilde_as_well_as_tilde_slash() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(expand_tilde(Path::new("~")), home);
+        assert_eq!(expand_tilde(Path::new("~/Downloads")), home.join("Downloads"));
+        // Only a leading ~ is special; a path containing one is left alone.
+        assert_eq!(expand_tilde(Path::new("/tmp/~x")), PathBuf::from("/tmp/~x"));
+    }
 }

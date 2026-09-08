@@ -9,6 +9,7 @@ mod desktop;
 mod hypr;
 mod ipc_ctl;
 mod runtime;
+mod stacks;
 mod state;
 mod theme;
 mod ui;

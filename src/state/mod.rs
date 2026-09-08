@@ -31,6 +31,8 @@ pub enum ItemKind {
     /// A divider — either user-placed or the automatic one that fences pinned
     /// apps off from running-but-unpinned ones.
     Separator,
+    /// A macOS-style stack: a directory whose recent contents fan out.
+    Folder,
     Trash,
 }
 
@@ -57,6 +59,8 @@ pub struct DockItem {
     pub exec: String,
     /// `Desktop Action` entries, offered in the context menu.
     pub actions: Vec<crate::desktop::Action>,
+    /// Filesystem path, for folder stacks and Trash.
+    pub path: Option<std::path::PathBuf>,
 }
 
 impl DockItem {
@@ -112,6 +116,7 @@ fn separator() -> DockItem {
         active_window: None,
         exec: String::new(),
         actions: Vec::new(),
+        path: None,
     }
 }
 
@@ -223,6 +228,7 @@ impl DockState {
                 active_window: None,
                 exec: cfg.launcher_command(),
                 actions: Vec::new(),
+                path: None,
             });
         }
 
@@ -304,15 +310,17 @@ impl DockState {
             }
         }
 
-        if cfg.items.show_trash {
-            if items.last().is_some_and(|i| i.kind != ItemKind::Separator) {
-                items.push(separator());
-            }
+        // Stacks and Trash form the dock's tail section, as on macOS.
+        let tail_start = items.len();
+
+        for folder in &cfg.items.folders {
+            let path = crate::config::expand_tilde(&folder.path);
+            let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
             items.push(DockItem {
-                kind: ItemKind::Trash,
-                key: "__trash".into(),
-                label: "Trash".into(),
-                icon: "user-trash".into(),
+                kind: ItemKind::Folder,
+                key: format!("__folder:{}", path.display()),
+                label: folder.name.clone(),
+                icon,
                 windows: Vec::new(),
                 pinned: true,
                 active: false,
@@ -321,7 +329,35 @@ impl DockState {
                 active_window: None,
                 exec: String::new(),
                 actions: Vec::new(),
+                path: Some(path),
             });
+        }
+
+        if cfg.items.show_trash {
+            items.push(DockItem {
+                kind: ItemKind::Trash,
+                key: "__trash".into(),
+                label: "Trash".into(),
+                // Icon switches to user-trash-full when it has contents.
+                icon: if crate::stacks::trash_is_empty() {
+                    "user-trash".into()
+                } else {
+                    "user-trash-full".into()
+                },
+                windows: Vec::new(),
+                pinned: true,
+                active: false,
+                urgent: false,
+                scratchpad: false,
+                active_window: None,
+                exec: String::new(),
+                actions: Vec::new(),
+                path: Some(crate::stacks::trash_files_dir()),
+            });
+        }
+
+        if items.len() > tail_start && tail_start > 0 {
+            items.insert(tail_start, separator());
         }
 
         // A separator at either end divides nothing.
@@ -367,6 +403,7 @@ impl DockState {
             active_window,
             exec,
             actions,
+            path: None,
         }
     }
 }
@@ -389,6 +426,7 @@ mod tests {
             active_window: active.map(Address::parse),
             exec: String::new(),
             actions: vec![],
+            path: None,
         }
     }
 

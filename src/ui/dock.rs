@@ -104,8 +104,10 @@ pub struct DockSurface {
     pub window: gtk::ApplicationWindow,
     /// Connector name (e.g. "eDP-1"), matching Hyprland's monitor name.
     pub monitor_name: Option<String>,
-    /// Logical size of the layer surface, including magnification headroom.
-    pub surface_size: (f64, f64),
+    /// Logical size of the visible glass panel — not the surface, which also
+    /// carries magnification headroom and the edge offset as transparent
+    /// padding. Auto-hide overlap must be tested against the panel.
+    pub panel_size: (f64, f64),
     /// Slide offset animation, in pixels away from the screen edge.
     slide: Rc<RefCell<Slide>>,
     /// Kept so later phases can update items in place instead of rebuilding.
@@ -124,7 +126,7 @@ impl DockSurface {
         let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
         let geom = Geometry::compute(cfg, &kinds);
         let travel = travel_for(cfg, &geom);
-        let geom_size = (geom.window_w, geom.window_h);
+        let geom_size = (geom.panel_w, geom.panel_h);
 
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(geom.window_w as i32, geom.window_h as i32);
@@ -189,6 +191,14 @@ impl DockSurface {
             badge.add_css_class("dock-badge");
             badge.set_halign(gtk::Align::End);
             badge.set_valign(gtk::Align::Start);
+            // Must be set here, not left to the first refresh: the badge has a
+            // coloured background and rounded corners, so an empty *visible*
+            // one renders as a stray dot on every icon until something else
+            // triggers a refresh.
+            match item.badge() {
+                Some(n) => badge.set_text(&n.to_string()),
+                None => badge.set_visible(false),
+            }
             slot.add_overlay(&badge);
             badges.push(badge);
 
@@ -242,8 +252,12 @@ impl DockSurface {
         let slide = Rc::new(RefCell::new(Slide {
             spring: Spring::at(0.0),
             hidden: false,
+            peeking: false,
+            generation: 0,
             edge,
-            base_margin: cfg.dock.edge_offset,
+            // Zero: the edge offset lives inside the surface now, so the
+            // surface itself is flush with the screen edge.
+            base_margin: 0,
             // How far the surface must travel to be off-screen, minus the
             // sliver left behind as a pointer trigger.
             travel,
@@ -254,7 +268,7 @@ impl DockSurface {
         let surface = Self {
             window: window.clone(),
             monitor_name: monitor.and_then(|m| m.connector()).map(|c| c.to_string()),
-            surface_size: (geom_size.0, geom_size.1),
+            panel_size: geom_size,
             slide: slide.clone(),
             state: state.clone(),
         };
@@ -266,6 +280,8 @@ impl DockSurface {
                 attach_clicks(slot, &sink, &state, i);
             }
         }
+
+        surface.attach_peek(cfg);
 
         // Anything already demanding attention should bounce on appear.
         for (i, item) in items.iter().enumerate() {
@@ -336,7 +352,23 @@ impl DockSurface {
                 return;
             }
             s.hidden = hidden;
-            s.spring.target = if hidden { s.travel } else { 0.0 };
+        }
+        self.apply_slide(cfg);
+    }
+
+    /// Drive the spring toward wherever policy and peek state agree it goes.
+    fn apply_slide(&self, cfg: &Config) {
+        {
+            let mut s = self.slide.borrow_mut();
+            let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
+            tracing::debug!(
+                target, hidden = s.hidden, peeking = s.peeking,
+                current = s.spring.target, travel = s.travel, "policy retarget"
+            );
+            if (s.spring.target - target).abs() < f64::EPSILON {
+                return;
+            }
+            s.spring.target = target;
         }
         self.animate_slide(cfg);
     }
@@ -348,52 +380,70 @@ impl DockSurface {
         self.slide.borrow().hidden
     }
 
+    /// Reveal on hover and re-hide after the pointer leaves.
+    ///
+    /// When hidden, the surface keeps a sliver on screen; that sliver still
+    /// receives pointer events, which is what makes this work without a
+    /// separate trigger surface.
+    fn attach_peek(&self, cfg: &Config) {
+        let motion = gtk::EventControllerMotion::new();
+        let reveal_ms = cfg.autohide.reveal_delay_ms;
+        let hide_ms = cfg.autohide.hide_delay_ms;
+
+        {
+            let slide = self.slide.clone();
+            let window = self.window.clone();
+            let cfg = cfg.clone();
+            motion.connect_enter(move |_, _, _| {
+                let gen = {
+                    let mut s = slide.borrow_mut();
+                    s.generation += 1;
+                    s.generation
+                };
+                let (slide, window, cfg) = (slide.clone(), window.clone(), cfg.clone());
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(reveal_ms),
+                    move || {
+                        // Ignore a timer whose pointer has since moved on.
+                        if slide.borrow().generation != gen {
+                            return;
+                        }
+                        surface_set_peeking(&slide, &window, &cfg, true);
+                    },
+                );
+            });
+        }
+        {
+            let slide = self.slide.clone();
+            let window = self.window.clone();
+            let cfg = cfg.clone();
+            motion.connect_leave(move |_| {
+                let gen = {
+                    let mut s = slide.borrow_mut();
+                    s.generation += 1;
+                    s.generation
+                };
+                let (slide, window, cfg) = (slide.clone(), window.clone(), cfg.clone());
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(hide_ms),
+                    move || {
+                        if slide.borrow().generation != gen {
+                            return;
+                        }
+                        surface_set_peeking(&slide, &window, &cfg, false);
+                    },
+                );
+            });
+        }
+        self.window.add_controller(motion);
+    }
+
     /// Drive the slide with the frame clock, applying it as a layer-shell
     /// margin. Unlike icon magnification this cannot be a GPU transform: the
     /// surface itself has to move, or it keeps eating input where it is no
     /// longer drawn.
     fn animate_slide(&self, cfg: &Config) {
-        {
-            let mut s = self.slide.borrow_mut();
-            if s.ticking {
-                return;
-            }
-            s.ticking = true;
-            s.last_us = 0;
-        }
-
-        let slide = self.slide.clone();
-        let window = self.window.clone();
-        let stiffness = 1000.0 / (cfg.autohide.slide_ms.max(40) as f64 / 100.0);
-        let damping = 2.0 * stiffness.sqrt();
-
-        window.clone().add_tick_callback(move |_, clock| {
-            let now = clock.frame_time();
-            let mut s = slide.borrow_mut();
-
-            if s.last_us == 0 {
-                s.last_us = now;
-                return glib::ControlFlow::Continue;
-            }
-            let dt = (now - s.last_us) as f64 / 1_000_000.0;
-            s.last_us = now;
-
-            s.spring.step(dt, stiffness, damping);
-            let settled = s.spring.settled();
-            if settled {
-                s.spring.settle();
-            }
-
-            let margin = s.base_margin - s.spring.pos.round() as i32;
-            window.set_margin(s.edge, margin);
-
-            if settled {
-                s.ticking = false;
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
+        animate_slide_on(&self.slide, &self.window, cfg);
     }
 
     /// Kick an item upwards; used for launches and urgency.
@@ -415,6 +465,7 @@ fn attach_clicks(
     {
         let sink = sink.clone();
         let state = state.clone();
+        let anchor_left = slot.clone();
         left.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
 
@@ -427,11 +478,30 @@ fn attach_clicks(
                 }
             };
 
-            if item.kind == ItemKind::Launcher {
-                if !item.exec.is_empty() {
-                    sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
+            match item.kind {
+                ItemKind::Launcher => {
+                    if !item.exec.is_empty() {
+                        sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
+                    }
+                    return;
                 }
-                return;
+                // Stacks and Trash open a popover rather than launching.
+                ItemKind::Folder | ItemKind::Trash => {
+                    let sink2 = sink.clone();
+                    let refresh = move || sink2(MenuAction::Rescan);
+                    let pop = if item.kind == ItemKind::Trash {
+                        crate::ui::stack::build_trash(refresh)
+                    } else {
+                        let Some(dir) = item.path.clone() else { return };
+                        crate::ui::stack::build_folder(&dir, &item.label, refresh)
+                    };
+                    pop.set_parent(&anchor_left);
+                    pop.set_position(gtk::PositionType::Top);
+                    pop.connect_closed(|p| p.unparent());
+                    pop.popup();
+                    return;
+                }
+                _ => {}
             }
 
             let action = if item.windows.is_empty() {
@@ -470,7 +540,18 @@ fn attach_clicks(
                 }
             };
             let sink = sink.clone();
-            let popover = if item.kind == ItemKind::Launcher {
+            let popover = if item.kind == ItemKind::Trash || item.kind == ItemKind::Folder {
+                let sink2 = sink.clone();
+                let refresh = move || sink2(MenuAction::Rescan);
+                if item.kind == ItemKind::Trash {
+                    crate::ui::stack::build_trash(refresh)
+                } else {
+                    match item.path.clone() {
+                        Some(dir) => crate::ui::stack::build_folder(&dir, &item.label, refresh),
+                        None => return,
+                    }
+                }
+            } else if item.kind == ItemKind::Launcher {
                 // The launcher has no windows or desktop actions, so its
                 // right-click is the natural home for the dock's own settings.
                 crate::ui::settings::build(move |a| sink(a))
@@ -496,10 +577,98 @@ fn set_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {
     }
 }
 
+/// Set peek state and re-drive the slide. Free-standing so the hover timers
+/// can act without holding a `DockSurface`.
+fn surface_set_peeking(
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+    peeking: bool,
+) {
+    {
+        let mut s = slide.borrow_mut();
+        if s.peeking == peeking {
+            return;
+        }
+        s.peeking = peeking;
+        let target = if s.hidden && !s.peeking { s.travel } else { 0.0 };
+        if (s.spring.target - target).abs() < f64::EPSILON {
+            return;
+        }
+        tracing::debug!(target, peeking, hidden = s.hidden, "peek retarget");
+        s.spring.target = target;
+    }
+    animate_slide_on(slide, window, cfg);
+}
+
+/// Drive the slide with the frame clock, applying it as a layer-shell margin.
+///
+/// Unlike icon magnification this cannot be a GPU transform: the surface
+/// itself has to move, or it keeps eating input where it is no longer drawn.
+fn animate_slide_on(
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+) {
+    {
+        let mut s = slide.borrow_mut();
+        if s.ticking {
+            return;
+        }
+        s.ticking = true;
+        s.last_us = 0;
+    }
+
+    let slide = slide.clone();
+    let win = window.clone();
+    // Critically damped: a dock sliding back should settle, not wobble.
+    let stiffness = 1000.0 / (cfg.autohide.slide_ms.max(40) as f64 / 100.0);
+    let damping = 2.0 * stiffness.sqrt();
+
+    window.add_tick_callback(move |_, clock| {
+        let now = clock.frame_time();
+        let mut s = slide.borrow_mut();
+
+        if s.last_us == 0 {
+            s.last_us = now;
+            return glib::ControlFlow::Continue;
+        }
+        let dt = (now - s.last_us) as f64 / 1_000_000.0;
+        s.last_us = now;
+
+        s.spring.step(dt, stiffness, damping);
+        let settled = s.spring.settled();
+        if settled {
+            s.spring.settle();
+        }
+
+        let margin = s.base_margin - s.spring.pos.round() as i32;
+        win.set_margin(s.edge, margin);
+
+        if settled {
+            tracing::debug!(
+                pos = s.spring.pos, target = s.spring.target, margin,
+                hidden = s.hidden, peeking = s.peeking, "slide settled"
+            );
+            s.ticking = false;
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
 /// Slide state for one surface.
 struct Slide {
     spring: Spring,
+    /// What the auto-hide policy wants.
     hidden: bool,
+    /// Whether the pointer is currently over the surface. Peeking wins over
+    /// policy, which is what makes the trigger sliver work.
+    peeking: bool,
+    /// Bumped whenever a reveal/hide timer is scheduled, so a stale timer
+    /// firing after the pointer moved on is ignored.
+    generation: u64,
     edge: Edge,
     base_margin: i32,
     travel: f64,
@@ -547,7 +716,7 @@ fn init_layer_shell(
         Position::Right => Edge::Right,
     };
     window.set_anchor(edge, true);
-    window.set_margin(edge, cfg.dock.edge_offset);
+    window.set_margin(edge, 0);
 
     if cfg.dock.reserve_space {
         window.auto_exclusive_zone_enable();

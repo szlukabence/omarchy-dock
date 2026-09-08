@@ -52,12 +52,21 @@ impl Geometry {
             + (count.saturating_sub(1)) as f64 * spacing;
         let run = if extents.is_empty() { icon } else { run };
 
+        // The edge offset is transparent padding *inside* the surface rather
+        // than a layer-shell margin, so the surface always reaches the screen
+        // edge. Otherwise the gap under a revealed dock is outside it, the
+        // pointer at the very edge counts as "left", and hover-reveal
+        // oscillates: revealing moves the surface away from the cursor that
+        // triggered it.
+        let edge = cfg.dock.edge_offset.max(0) as f64;
+
         if cfg.dock.position.is_vertical() {
             let panel_w = icon + px * 2.0;
             let panel_h = run + py * 2.0;
             // A left-edge dock grows rightwards, so its headroom is on the
             // right and the panel sits flush at x = 0. Mirrored for the right.
-            let panel_x = if cfg.dock.position == Position::Left { 0.0 } else { head };
+            let panel_x =
+                if cfg.dock.position == Position::Left { edge } else { head };
             let mut slots = Vec::with_capacity(extents.len());
             let mut cursor = py;
             for e in &extents {
@@ -67,7 +76,7 @@ impl Geometry {
             }
 
             Self {
-                window_w: panel_w + head,
+                window_w: panel_w + head + edge,
                 window_h: panel_h,
                 panel_x,
                 panel_y: 0.0,
@@ -86,7 +95,8 @@ impl Geometry {
             let panel_w = run + px * 2.0;
             let panel_h = icon + py * 2.0;
             // A bottom dock grows upwards: headroom above, panel flush below.
-            let panel_y = if cfg.dock.position == Position::Bottom { head } else { 0.0 };
+            let panel_y =
+                if cfg.dock.position == Position::Bottom { head } else { edge };
             let mut slots = Vec::with_capacity(extents.len());
             let mut cursor = px;
             for e in &extents {
@@ -96,7 +106,7 @@ impl Geometry {
 
             Self {
                 window_w: panel_w,
-                window_h: panel_h + head,
+                window_h: panel_h + head + edge,
                 panel_x: 0.0,
                 panel_y,
                 panel_w,

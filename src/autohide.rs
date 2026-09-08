@@ -33,18 +33,13 @@ impl Rect {
     }
 }
 
-/// Where the dock sits on a given monitor, in layout coordinates.
+/// Where the dock's visible panel sits on a given monitor, in layout
+/// coordinates.
 ///
-/// `surface_w`/`surface_h` are the layer surface's logical size, which includes
-/// the transparent magnification headroom; only the panel occupies the visible
-/// strip, so the headroom is excluded from the rectangle used for overlap.
-pub fn dock_rect(
-    cfg: &Config,
-    monitor: &Monitor,
-    surface_w: f64,
-    surface_h: f64,
-    headroom: f64,
-) -> Rect {
+/// Takes the *panel* size, not the surface size: the surface also carries
+/// transparent magnification headroom and the edge offset, none of which a
+/// window can meaningfully overlap.
+pub fn dock_rect(cfg: &Config, monitor: &Monitor, panel_w: f64, panel_h: f64) -> Rect {
     let (mx, my) = (monitor.x as f64, monitor.y as f64);
     // Hyprland reports pixel dimensions; layout coordinates are logical.
     let mw = monitor.width as f64 / monitor.scale as f64;
@@ -52,22 +47,24 @@ pub fn dock_rect(
     let off = cfg.dock.edge_offset as f64;
 
     match cfg.dock.position {
-        Position::Bottom => {
-            let h = surface_h - headroom;
-            Rect { x: mx + (mw - surface_w) / 2.0, y: my + mh - off - h, w: surface_w, h }
-        }
+        Position::Bottom => Rect {
+            x: mx + (mw - panel_w) / 2.0,
+            y: my + mh - off - panel_h,
+            w: panel_w,
+            h: panel_h,
+        },
         Position::Top => {
-            let h = surface_h - headroom;
-            Rect { x: mx + (mw - surface_w) / 2.0, y: my + off, w: surface_w, h }
+            Rect { x: mx + (mw - panel_w) / 2.0, y: my + off, w: panel_w, h: panel_h }
         }
         Position::Left => {
-            let w = surface_w - headroom;
-            Rect { x: mx + off, y: my + (mh - surface_h) / 2.0, w, h: surface_h }
+            Rect { x: mx + off, y: my + (mh - panel_h) / 2.0, w: panel_w, h: panel_h }
         }
-        Position::Right => {
-            let w = surface_w - headroom;
-            Rect { x: mx + mw - off - w, y: my + (mh - surface_h) / 2.0, w, h: surface_h }
-        }
+        Position::Right => Rect {
+            x: mx + mw - off - panel_w,
+            y: my + (mh - panel_h) / 2.0,
+            w: panel_w,
+            h: panel_h,
+        },
     }
 }
 

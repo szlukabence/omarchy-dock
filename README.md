@@ -5,14 +5,15 @@ Rust + GTK4 with `gtk4-layer-shell`.
 
 ## Status
 
-Working: launcher button, separators, layer-shell surface with Hyprland blur, single-icon hover
+Working: launcher button, separators, folder stacks and Trash, layer-shell
+surface with Hyprland blur, single-icon hover
 magnification, live theming from the active Omarchy palette, Hyprland IPC,
 window/app matching with running indicators and window-count badges,
 click-to-focus/cycle/launch, context menus, auto-hide, multi-monitor, and a
 control socket for hotkeys.
 
-Not yet: stacks and Trash actions, drag-and-drop, and the status widgets
-(clock, battery, network, MPRIS).
+Not yet: drag-and-drop, and the status widgets (clock, battery, network,
+MPRIS).
 
 ## Build
 
@@ -50,6 +51,7 @@ Notable keys:
 | `autohide.mode` | `never` \| `intelligent` \| `always` (default: `intelligent`) |
 | `launcher.enabled`, `.icon`, `.command` | Omarchy menu button at the head of the dock; empty command runs `omarchy-menu toggle` |
 | `monitors.mode` | `all` \| `primary` \| `focused` |
+| `items.folders` | Folder stacks; seeded from omadock's `pinnedFolders` |
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 
 Put `"---"` anywhere in `items.pinned` to insert a divider. A divider is also

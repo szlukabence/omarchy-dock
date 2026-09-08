@@ -4,6 +4,7 @@ pub mod dock;
 pub mod geometry;
 pub mod menu;
 pub mod settings;
+pub mod stack;
 
 pub use dock::DockSurface;
 pub use geometry::Geometry;

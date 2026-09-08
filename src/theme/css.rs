@@ -148,6 +148,23 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
   background-color: {hairline};
 }}
 
+.dock-stack {{ min-width: 260px; }}
+
+.dock-stack-row {{ padding: 0 4px; }}
+
+.dock-stack-action {{
+  padding: 4px;
+  border-radius: 6px;
+  color: @dock_fg;
+  opacity: 0.65;
+  background: transparent;
+}}
+
+.dock-stack-action:hover {{
+  opacity: 1;
+  background-color: {accent_soft};
+}}
+
 .dock-settings {{ min-width: 270px; }}
 
 .dock-settings-row {{ padding: 2px 10px; }}

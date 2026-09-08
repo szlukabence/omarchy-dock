@@ -186,7 +186,6 @@ impl App {
         }
 
         let focused = self.state.focused_client();
-        let headroom = self.cfg.headroom();
 
         for dock in &self.docks {
             // Fall back to the focused output when a surface has no name,
@@ -198,8 +197,8 @@ impl App {
                 .or_else(|| self.state.focused_monitor());
 
             let Some(monitor) = monitor else { continue };
-            let (w, h) = dock.surface_size;
-            let rect = crate::autohide::dock_rect(&self.cfg, monitor, w, h, headroom);
+            let (w, h) = dock.panel_size;
+            let rect = crate::autohide::dock_rect(&self.cfg, monitor, w, h);
             let hide = crate::autohide::should_hide(
                 &self.cfg,
                 &rect,
@@ -392,6 +391,13 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
                 if let Err(e) = w.commands.try_send(cmd) {
                     tracing::warn!(error = %e, "dropping command; worker busy");
                 }
+            }
+        }
+        MenuAction::Rescan => {
+            // Cheapest correct refresh: ask for a snapshot, which rebuilds and
+            // re-evaluates the Trash icon's empty/full state.
+            if let Some(w) = &worker {
+                let _ = w.snapshot.try_send(());
             }
         }
         MenuAction::SetPinned { key, pinned } => {

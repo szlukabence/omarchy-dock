@@ -18,6 +18,9 @@ pub enum MenuAction {
     Command(DockCommand),
     /// Add or remove this item from the pinned list, and persist it.
     SetPinned { key: String, pinned: bool },
+    /// Something on disk changed (trash emptied, file deleted); re-read state
+    /// so the Trash icon and stack contents catch up.
+    Rescan,
 }
 
 /// Build (but do not show) the context menu for `item`.
