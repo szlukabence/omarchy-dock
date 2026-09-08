@@ -536,16 +536,7 @@ impl DockSurface {
 
     /// Seed peek state from where the pointer actually is right now.
     fn sync_peek_to_pointer(&self, cfg: &Config) {
-        let Some(surface) = self.window.surface() else { return };
-        let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
-            return;
-        };
-        let Some(pointer) = seat.pointer() else { return };
-
-        // `device_position` yields None when the pointer is over some other
-        // surface, which is exactly the "do not hold the dock out" case.
-        let inside = surface.device_position(&pointer).is_some();
-        if inside {
+        if pointer_inside(&self.window) {
             surface_set_peeking(&self.slide, &self.window, cfg, true);
         }
     }
@@ -597,9 +588,17 @@ impl DockSurface {
                 glib::timeout_add_local_once(
                     std::time::Duration::from_millis(hide_ms),
                     move || {
-                        if slide.borrow().generation != gen {
+                        let s = slide.borrow();
+                        if s.generation != gen {
                             return;
                         }
+                        // A drag or open menu grabs the pointer and produces a
+                        // `leave` that did not happen. Releasing the hold
+                        // re-checks the real pointer position, so ignore this.
+                        if s.held > 0 {
+                            return;
+                        }
+                        drop(s);
                         surface_set_peeking(&slide, &window, &cfg, false);
                     },
                 );
@@ -727,7 +726,7 @@ fn attach_clicks(
             let popover = if item.kind == ItemKind::Separator {
                 // Only user-placed separators are editable; automatic dividers
                 // are derived from the item list and have no pinned index.
-                match crate::state::separator_pin_index(&item.key) {
+                match item.pin_index {
                     Some(pin) => menu::build_separator(pin, move |a| sink(a)),
                     None => return,
                 }
@@ -1108,6 +1107,19 @@ fn hold_for_popover(
     });
 }
 
+/// Whether the pointer is currently over this surface.
+///
+/// `device_position` yields None when the pointer is over some other surface,
+/// which is exactly the "the dock may hide" case.
+fn pointer_inside(window: &gtk::ApplicationWindow) -> bool {
+    let Some(surface) = window.surface() else { return false };
+    let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
+        return false;
+    };
+    let Some(pointer) = seat.pointer() else { return false };
+    surface.device_position(&pointer).is_some()
+}
+
 /// Take or release a hold on the dock, keeping it out while one is active.
 ///
 /// Counted rather than boolean: a drag can begin from a slot while a popover
@@ -1119,12 +1131,24 @@ fn hold(
     cfg: &Config,
     take: bool,
 ) {
+    // A drag or popover grabs the pointer, which makes the dock's motion
+    // controller report a `leave` that never really happened. By the time the
+    // hold is released that stale `peeking = false` would hide the dock out
+    // from under a pointer still sitting on it — so re-derive it from where
+    // the pointer actually is.
+    let inside = if take { None } else { Some(pointer_inside(window)) };
+
     {
         let mut s = slide.borrow_mut();
         if take {
             s.held += 1;
         } else {
             s.held = s.held.saturating_sub(1);
+            if let Some(inside) = inside {
+                if s.held == 0 {
+                    s.peeking = inside;
+                }
+            }
         }
         let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
         if (s.spring.target - target).abs() < f64::EPSILON {

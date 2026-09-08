@@ -108,8 +108,12 @@ impl DockItem {
 
 /// A separator the user placed at `pin_index` in the pinned list.
 fn user_separator(pin_index: usize) -> DockItem {
+    // The key deliberately does *not* encode the index. Keys identify an item
+    // across updates, so an index-bearing key changes whenever the separator
+    // moves, which defeats the in-place reorder and forces a full rebuild —
+    // visible as a flicker every time a divider is dragged. The position lives
+    // in `pin_index` instead.
     let mut item = separator();
-    item.key = format!("{SEPARATOR}:{pin_index}");
     item.pin_index = Some(pin_index);
     item
 }
@@ -144,12 +148,6 @@ pub fn reorder_in_list<T>(list: &mut Vec<T>, from: usize, to: usize) -> bool {
     let to = if to > from { to - 1 } else { to };
     list.insert(to.min(list.len()), item);
     true
-}
-
-/// Index in the pinned list that a separator item refers to, if it is one the
-/// user placed rather than an automatic divider.
-pub fn separator_pin_index(key: &str) -> Option<usize> {
-    key.strip_prefix(SEPARATOR)?.strip_prefix(':')?.parse().ok()
 }
 
 fn separator() -> DockItem {
@@ -734,11 +732,12 @@ mod separator_key_tests {
     }
 
     #[test]
-    fn only_user_placed_separators_carry_an_editable_index() {
-        assert_eq!(separator_pin_index("---:3"), Some(3));
-        assert_eq!(separator_pin_index("---:0"), Some(0));
-        // Automatic dividers are derived, so they are not editable.
-        assert_eq!(separator_pin_index("---"), None);
-        assert_eq!(separator_pin_index("chromium"), None);
+    fn separator_keys_stay_stable_so_reordering_can_match_them() {
+        // Keys identify items across updates. If a separator's key encoded its
+        // position, moving one would change its identity and force a rebuild.
+        assert_eq!(user_separator(3).key, user_separator(7).key);
+        assert_eq!(user_separator(3).pin_index, Some(3));
+        // Automatic dividers are derived and have no position to edit.
+        assert_eq!(separator().pin_index, None);
     }
 }
