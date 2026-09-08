@@ -57,8 +57,8 @@ Notable keys:
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 
 Put `"---"` anywhere in `items.pinned` to insert a divider, or add one from the
-settings panel. Drag pinned icons and dividers to reorder them; right-click a
-divider to remove it. A divider is also
+settings panel. Drag pinned icons and dividers to reorder them — the dock parts to show where
+the drop will land; right-click a divider to remove it. A divider is also
 added automatically between pinned apps and running-but-unpinned ones, and
 before Trash; dividers that would end up at either end are dropped.
 

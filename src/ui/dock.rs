@@ -37,6 +37,11 @@ const BOUNCE_DAMPING: f64 = 8.3;
 /// Initial upward velocity, in px/s, of a launch or urgency bounce.
 const BOUNCE_IMPULSE: f64 = -320.0;
 
+/// Spring for the gap that opens at a drop position. Critically damped
+/// (2*sqrt(900) = 60), precomputed because `sqrt` is not const.
+const SHIFT_STIFFNESS: f64 = 900.0;
+const SHIFT_DAMPING: f64 = 60.0;
+
 struct State {
     fixed: gtk::Fixed,
     /// Current item data. Click handlers read this by index rather than
@@ -59,6 +64,13 @@ struct State {
     /// and urgency. Separate from the zoom spring so a bounce can play while
     /// the icon is magnified.
     bounces: Vec<Spring>,
+    /// Sideways displacement along the dock's long axis, used to open a gap at
+    /// the drop position while dragging. Its own spring so it composes with
+    /// magnification and bounce rather than fighting them.
+    shifts: Vec<Spring>,
+    /// Rendered index the drop would insert before, while a drag is over the
+    /// dock.
+    drop_at: Option<usize>,
     geom: Geometry,
     cfg: Config,
     hovered: Option<usize>,
@@ -80,6 +92,7 @@ impl State {
         let (lx, ly) = self.geom.lift_dir;
 
         let bounce = self.bounces[i].pos;
+        let shift = self.shifts[i].pos;
         let zoom = self.cfg.magnify.zoom;
         // 0..1 as the spring travels from rest to full zoom.
         let p = if zoom > 1.0 { ((s.pos - 1.0) / (zoom - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
@@ -87,8 +100,16 @@ impl State {
         let lift = self.cfg.magnify.lift * p + bounce;
         let k = s.pos as f32;
 
+        // The gap opens along the dock's long axis, which is the axis the
+        // edge normal is *not* on.
+        let (shift_x, shift_y) =
+            if self.geom.horizontal() { (shift, 0.0) } else { (0.0, shift) };
+
         gsk::Transform::new()
-            .translate(&graphene::Point::new(sx as f32, sy as f32))
+            .translate(&graphene::Point::new(
+                (sx + shift_x) as f32,
+                (sy + shift_y) as f32,
+            ))
             .translate(&graphene::Point::new((lx * lift) as f32, (ly * lift) as f32))
             .translate(&graphene::Point::new(ax as f32, ay as f32))
             .scale(k, k)
@@ -243,6 +264,8 @@ impl DockSurface {
             fixed: fixed.clone(),
             springs: vec![Spring::at(1.0); widget_count],
             bounces: vec![Spring::at(0.0); widget_count],
+            shifts: vec![Spring::at(0.0); widget_count],
+            drop_at: None,
             data: items.to_vec(),
             indicators,
             badges,
@@ -308,6 +331,19 @@ impl DockSurface {
         }
         attach_drop(&fixed, &state, &sink, cfg);
 
+        // Test hook: drags cannot be synthesised against a layer surface, so
+        // this forces the drop gap open to verify it parts correctly.
+        if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_GAP") {
+            if let Ok(i) = n.parse::<usize>() {
+                let st = state.clone();
+                let icon = cfg.dock.icon_size;
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || set_drop_gap(&st, Some(i), icon),
+                );
+            }
+        }
+
         // Test hook: pointer input cannot be synthesised against a layer
         // surface, so this forces a hover to verify magnification and the name
         // label without a real pointer.
@@ -322,6 +358,13 @@ impl DockSurface {
         }
 
         surface.attach_peek(cfg);
+
+        // A rebuild replaces the surface, and the new one never receives an
+        // `enter` for a pointer that was already inside it — so after a drop
+        // or a config change the dock would decide the pointer had left and
+        // hide out from under the cursor. Ask the compositor where the pointer
+        // actually is instead of waiting to be told.
+        surface.sync_peek_to_pointer(cfg);
 
         // Anything already demanding attention should bounce on appear.
         for (i, item) in items.iter().enumerate() {
@@ -411,6 +454,22 @@ impl DockSurface {
     #[allow(dead_code)]
     pub fn hidden(&self) -> bool {
         self.slide.borrow().hidden
+    }
+
+    /// Seed peek state from where the pointer actually is right now.
+    fn sync_peek_to_pointer(&self, cfg: &Config) {
+        let Some(surface) = self.window.surface() else { return };
+        let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
+            return;
+        };
+        let Some(pointer) = seat.pointer() else { return };
+
+        // `device_position` yields None when the pointer is over some other
+        // surface, which is exactly the "do not hold the dock out" case.
+        let inside = surface.device_position(&pointer).is_some();
+        if inside {
+            surface_set_peeking(&self.slide, &self.window, cfg, true);
+        }
     }
 
     /// Reveal on hover and re-hide after the pointer leaves.
@@ -837,6 +896,50 @@ fn attach_drag(
     slot.add_controller(source);
 }
 
+/// Which rendered slot a drop at `pos` would insert before, and the pinned
+/// index that corresponds to.
+///
+/// Compares against slot centres so an item can be placed before the first
+/// entry as well as after the last.
+fn drop_position(s: &State, pos: f64, icon: f64) -> Option<(usize, usize)> {
+    let horizontal = s.geom.horizontal();
+    let mut result = None;
+    for (i, item) in s.data.iter().enumerate() {
+        let Some(pin) = item.pin_index else { continue };
+        let Some((sx, sy)) = s.geom.slots.get(i).copied() else { continue };
+        let extent = s.geom.extents.get(i).copied().unwrap_or(icon);
+        let centre = if horizontal { sx + extent / 2.0 } else { sy + extent / 2.0 };
+        if pos < centre {
+            return Some((i, pin));
+        }
+        result = Some((i + 1, pin + 1));
+    }
+    result
+}
+
+/// Open or close the gap that previews where a drop will land.
+fn set_drop_gap(state: &Rc<RefCell<State>>, at: Option<usize>, icon: f64) {
+    {
+        let mut s = state.borrow_mut();
+        if s.drop_at == at {
+            return;
+        }
+        s.drop_at = at;
+
+        // Split the gap either side of the insertion point, so the parting is
+        // symmetric and the dock does not visibly grow past its own panel.
+        let gap = icon * 0.45;
+        for i in 0..s.shifts.len() {
+            s.shifts[i].target = match at {
+                Some(at) if i >= at => gap / 2.0,
+                Some(_) => -gap / 2.0,
+                None => 0.0,
+            };
+        }
+    }
+    ensure_ticking(state);
+}
+
 /// Accept a dragged dock item and rewrite the pinned order.
 fn attach_drop(
     fixed: &gtk::Fixed,
@@ -849,36 +952,45 @@ fn attach_drop(
     let sink = sink.clone();
     let icon = cfg.dock.icon_size;
 
-    target.connect_drop(move |_, value, x, y| {
-        let Ok(from) = value.get::<u32>() else { return false };
-        let from = from as usize;
+    // Preview: part the icons at the prospective insertion point.
+    {
+        let state = state.clone();
+        target.connect_motion(move |_, x, y| {
+            let at = {
+                let s = state.borrow();
+                let pos = if s.geom.horizontal() { x } else { y };
+                drop_position(&s, pos, icon).map(|(i, _)| i)
+            };
+            set_drop_gap(&state, at, icon);
+            gdk::DragAction::MOVE
+        });
+    }
+    {
+        let state = state.clone();
+        target.connect_leave(move |_| set_drop_gap(&state, None, icon));
+    }
 
-        let s = state.borrow();
-        // Find the drop position among pinned entries. Comparing against slot
-        // centres decides which side of an icon the drop landed on, so an item
-        // can be placed before the first entry as well as after the last.
-        let horizontal = s.geom.horizontal();
-        let pos = if horizontal { x } else { y };
+    {
+        let state = state.clone();
+        target.connect_drop(move |_, value, x, y| {
+            let Ok(from) = value.get::<u32>() else { return false };
+            let from = from as usize;
 
-        let mut to = None;
-        for (i, item) in s.data.iter().enumerate() {
-            let Some(pin) = item.pin_index else { continue };
-            let Some((sx, sy)) = s.geom.slots.get(i).copied() else { continue };
-            let extent = s.geom.extents.get(i).copied().unwrap_or(icon);
-            let centre = if horizontal { sx + extent / 2.0 } else { sy + extent / 2.0 };
-            if pos < centre {
-                to = Some(pin);
-                break;
-            }
-            // Past this one: the drop belongs after it.
-            to = Some(pin + 1);
-        }
+            let to = {
+                let s = state.borrow();
+                let pos = if s.geom.horizontal() { x } else { y };
+                drop_position(&s, pos, icon).map(|(_, pin)| pin)
+            };
+            // Close the gap immediately: the rebuild that follows will place
+            // everything properly, and leaving it open flashes a gap in the
+            // wrong spot.
+            set_drop_gap(&state, None, icon);
 
-        let Some(to) = to else { return false };
-        drop(s);
-        sink(MenuAction::ReorderPin { from, to });
-        true
-    });
+            let Some(to) = to else { return false };
+            sink(MenuAction::ReorderPin { from, to });
+            true
+        });
+    }
 
     fixed.add_controller(target);
 }
@@ -1108,7 +1220,8 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
         for i in 0..s.springs.len() {
             let zoom_busy = !s.springs[i].settled();
             let bounce_busy = !s.bounces[i].settled();
-            if !zoom_busy && !bounce_busy {
+            let shift_busy = !s.shifts[i].settled();
+            if !zoom_busy && !bounce_busy && !shift_busy {
                 continue;
             }
 
@@ -1126,6 +1239,16 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                 s.bounces[i].step(dt, BOUNCE_STIFFNESS, BOUNCE_DAMPING);
                 if s.bounces[i].settled() {
                     s.bounces[i].settle();
+                } else {
+                    moving = true;
+                }
+            }
+            if shift_busy {
+                // Critically damped: the gap should part cleanly and hold,
+                // not wobble while the user is aiming a drop.
+                s.shifts[i].step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+                if s.shifts[i].settled() {
+                    s.shifts[i].settle();
                 } else {
                     moving = true;
                 }

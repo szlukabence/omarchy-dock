@@ -109,6 +109,16 @@ pub fn generate(cfg: &Config, palette: &Palette) -> String {
   min-width: 10px;
 }}
 
+/* GTK draws its own highlight on a widget that is an active drop target — an
+   accent-coloured outline. The dock shows the drop position by opening a gap
+   between icons instead, so suppress it. */
+*:drop(active) {{
+  outline: none;
+  box-shadow: none;
+  border-color: transparent;
+  background-image: none;
+}}
+
 /* Divider between dock sections. Derived from the foreground, not the panel
    hairline: at hairline alpha it is invisible on dark themes, which defeats
    the point of a divider. */
