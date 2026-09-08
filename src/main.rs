@@ -8,6 +8,7 @@ mod event;
 mod desktop;
 mod hypr;
 mod ipc_ctl;
+mod omarchy;
 mod runtime;
 mod stacks;
 mod state;

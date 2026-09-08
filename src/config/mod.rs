@@ -114,6 +114,9 @@ pub struct Dock {
     pub radius: f64,
     /// Reserve screen space so windows never sit under the dock.
     pub reserve_space: bool,
+    /// Offset the dock past the Omarchy bar when both are on the same screen
+    /// edge, instead of sitting underneath it.
+    pub avoid_bar: bool,
     /// How long the pointer must rest on an icon before its name appears.
     pub tooltip_delay_ms: u64,
 }
@@ -234,6 +237,7 @@ impl Default for Dock {
             spacing: None,
             radius: 22.0,
             reserve_space: false,
+            avoid_bar: true,
             tooltip_delay_ms: 400,
         }
     }
@@ -352,6 +356,15 @@ impl Config {
                 }
                 Err(e) => {
                     tracing::error!(path = %path.display(), error = %e, "invalid config; using defaults");
+                    // Worth a notification rather than only a log line: the
+                    // dock silently reverting to defaults looks like a bug,
+                    // and the dock may be the user's only way to reach an
+                    // editor to fix the file.
+                    crate::omarchy::notify(
+                        "Dock config is invalid",
+                        Some(&format!("Using defaults. {e}")),
+                        Some("\u{f071}"),
+                    );
                     Config::default()
                 }
             },

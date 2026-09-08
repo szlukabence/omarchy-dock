@@ -54,7 +54,7 @@ impl App {
         } else {
             Shell::fallback(&self.palette)
         };
-        self.cfg = scaled(self.raw_cfg.clone(), &self.shell);
+        self.cfg = effective(self.raw_cfg.clone(), &self.shell);
         self.apply_icon_theme();
         let sheet = css::generate(&self.cfg, &self.palette, &self.shell);
         self.provider.load_from_string(&sheet);
@@ -163,9 +163,19 @@ impl App {
                 tracing::info!(?mode, "autohide toggled");
             }
             Control::Reload => {
-                self.cfg = Config::load();
+                self.raw_cfg = Config::load();
                 self.restyle();
                 self.rebuild(gtk_app);
+            }
+            // Theme only: what Omarchy's theme-set hook fires. Restyling keeps
+            // hover and slide state, and only rebuilds if the new theme's
+            // scale actually moved the geometry.
+            Control::Restyle => {
+                let before = geometry_inputs(&self.cfg);
+                self.restyle();
+                if geometry_inputs(&self.cfg) != before {
+                    self.rebuild(gtk_app);
+                }
             }
         }
     }
@@ -410,26 +420,48 @@ pub fn run() -> glib::ExitCode {
 /// the menu and every panel at once. A dock that ignored it would be the one
 /// surface that stayed put — so the same factor is applied here, to the sizes
 /// the user configured rather than replacing them.
-fn scaled(mut cfg: Config, shell: &crate::theme::shell::Shell) -> Config {
-    if !cfg.theme.follow_shell_scale {
-        return cfg;
-    }
-    let f = shell.metrics.spacing_factor();
-    // Guard against a theme with a nonsensical scale making the dock unusable,
-    // and skip the work entirely at the overwhelmingly common 1.0.
-    if !f.is_finite() || !(0.25..=4.0).contains(&f) || (f - 1.0).abs() < 0.005 {
-        return cfg;
+fn effective(mut cfg: Config, shell: &crate::theme::shell::Shell) -> Config {
+    // ── the shell's scale ───────────────────────────────────────────────────
+    // The Omarchy shell multiplies every spacing and font token by
+    // `spacing.scale * fontScale`, so `omarchy display text size` resizes the
+    // bar, the menu and every panel at once. A dock that ignored it would be
+    // the one surface that stayed put — so the same factor is applied here, to
+    // the sizes the user configured rather than replacing them.
+    if cfg.theme.follow_shell_scale {
+        let f = shell.metrics.spacing_factor();
+        // Guard against a theme with a nonsensical scale making the dock
+        // unusable, and skip the work entirely at the overwhelmingly common 1.
+        if f.is_finite() && (0.25..=4.0).contains(&f) && (f - 1.0).abs() >= 0.005 {
+            cfg.dock.icon_size *= f;
+            cfg.dock.padding_x *= f;
+            cfg.dock.padding_y *= f;
+            cfg.dock.spacing = cfg.dock.spacing.map(|s| s * f);
+            cfg.dock.radius *= f;
+            cfg.dock.edge_offset = (cfg.dock.edge_offset as f64 * f).round() as i32;
+            // Magnification lift is a pixel distance too, so it has to track
+            // the icon size or a big dock barely rises and a small one leaps.
+            cfg.magnify.lift *= f;
+        }
     }
 
-    cfg.dock.icon_size *= f;
-    cfg.dock.padding_x *= f;
-    cfg.dock.padding_y *= f;
-    cfg.dock.spacing = cfg.dock.spacing.map(|s| s * f);
-    cfg.dock.radius *= f;
-    cfg.dock.edge_offset = (cfg.dock.edge_offset as f64 * f).round() as i32;
-    // Magnification lift is a pixel distance too, so it has to track the icon
-    // size or a big dock barely rises and a small one leaps.
-    cfg.magnify.lift *= f;
+    // ── clearing the bar ────────────────────────────────────────────────────
+    // The Omarchy bar is a layer surface too, and nothing stops the two from
+    // being anchored to the same screen edge. Clear it rather than moving the
+    // dock elsewhere: the user picked the dock's edge, and sitting invisibly
+    // underneath the bar is the one outcome nobody wants.
+    //
+    // Added after scaling, because the bar's thickness is measured in final
+    // pixels — it already carries the shell's font scale — and must not be
+    // scaled a second time.
+    if cfg.dock.avoid_bar {
+        let clearance =
+            crate::omarchy::bar_clearance(cfg.dock.position, crate::omarchy::bar(shell));
+        if clearance > 0.0 {
+            tracing::info!(clearance, position = ?cfg.dock.position, "clearing the Omarchy bar");
+            cfg.dock.edge_offset += clearance.round() as i32;
+        }
+    }
+
     cfg
 }
 
@@ -494,6 +526,9 @@ fn edit_pins<F: FnOnce(&mut Vec<String>)>(f: F) {
 /// one typed into the config take exactly the same path.
 fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::ActionSink {
     std::rc::Rc::new(move |action: MenuAction| match action {
+        // Straight to the shell: no worker round-trip, because this neither
+        // touches dock state nor needs Hyprland.
+        MenuAction::OpenSurface(s) => crate::omarchy::open(s),
         MenuAction::Command(cmd) => {
             if let Some(w) = &worker {
                 if let Err(e) = w.commands.try_send(cmd) {

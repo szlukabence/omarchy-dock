@@ -372,7 +372,7 @@ impl Shell {
                 .map_or(1.0, |t| num(t, "scale", 1.0)),
             spacing_scale_with_font: spacing
                 .as_ref()
-                .map_or(true, |t| flag(t, "scale-with-font", true)),
+                .is_none_or(|t| flag(t, "scale-with-font", true)),
             font_base_size: font.as_ref().map_or(12.0, |t| num(t, "base-size", 12.0)),
             // Every remaining numeric key is a per-token pixel override. They
             // are commented out in the generated file, so this is usually

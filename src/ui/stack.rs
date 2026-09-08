@@ -85,6 +85,18 @@ pub fn build_trash<R: Fn() + Clone + 'static>(on_change: R) -> gtk::Popover {
         list.append(&action_row("Empty Trash", move || {
             let n = stacks::empty_trash();
             tracing::info!(removed = n, "trash emptied");
+            // Emptying the Trash destroys files and the popover closes right
+            // after, so the only confirmation would otherwise be the icon
+            // changing. Omarchy's own notification service carries it, so it
+            // is styled and kept like every other notification.
+            crate::omarchy::notify(
+                "Trash emptied",
+                Some(&match n {
+                    1 => "1 item deleted".to_string(),
+                    n => format!("{n} items deleted"),
+                }),
+                Some("\u{f1f8}"),
+            );
             cb();
             pop.popdown();
         }));

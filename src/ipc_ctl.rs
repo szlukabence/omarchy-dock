@@ -25,6 +25,9 @@ pub enum Control {
     ToggleAutohide,
     /// Re-read config and rebuild.
     Reload,
+    /// Re-read the active Omarchy theme and restyle, without rebuilding.
+    /// What Omarchy's `theme-set` hook fires.
+    Restyle,
 }
 
 pub fn socket_path() -> PathBuf {
@@ -48,6 +51,7 @@ pub fn parse(line: &str) -> Option<Control> {
         "hide" => Some(Control::Hide),
         "toggle-autohide" => Some(Control::ToggleAutohide),
         "reload" => Some(Control::Reload),
+        "restyle" => Some(Control::Restyle),
         _ => None,
     }
 }

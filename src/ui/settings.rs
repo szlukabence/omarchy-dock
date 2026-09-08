@@ -28,6 +28,22 @@ where
     list.add_css_class("dock-menu-list");
     list.add_css_class("dock-settings");
 
+    // ── Omarchy surfaces ────────────────────────────────────────────────────
+    // The launcher already opens the Omarchy menu on a left click; a right
+    // click is the natural place to reach the shell's other surfaces directly.
+    // These raise the real thing over IPC rather than the dock drawing a
+    // lookalike, so they stay correct as Omarchy changes.
+    list.append(&heading("Omarchy"));
+    for surface in crate::omarchy::Surface::all() {
+        let act = on_action.clone();
+        let pop = popover.clone();
+        list.append(&row(surface.label(), move || {
+            act(MenuAction::OpenSurface(surface));
+            pop.popdown();
+        }));
+    }
+
+    list.append(&separator());
     list.append(&heading("Dock"));
 
     // ── position ────────────────────────────────────────────────────────────

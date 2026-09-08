@@ -15,6 +15,8 @@ use crate::state::DockItem;
 /// What the menu asks the app to do after it closes.
 #[derive(Debug, Clone)]
 pub enum MenuAction {
+    /// Raise one of the Omarchy shell's own surfaces.
+    OpenSurface(crate::omarchy::Surface),
     Command(DockCommand),
     /// Add or remove this item from the pinned list, and persist it.
     SetPinned { key: String, pinned: bool },

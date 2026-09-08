@@ -413,6 +413,27 @@ impl DockSurface {
             }
         }
 
+        // Test hook: right-click cannot be synthesised against a layer surface
+        // either, so this opens the launcher's settings popover on the given
+        // slot to verify it renders.
+        if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_MENU") {
+            if let Ok(i) = n.parse::<usize>() {
+                let sink = sink.clone();
+                let anchor = slots.get(i).cloned();
+                let side = popover_side(cfg);
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(600),
+                    move || {
+                        let Some(anchor) = anchor else { return };
+                        let pop = crate::ui::settings::build(move |a| sink(a));
+                        pop.set_parent(&anchor);
+                        pop.set_position(side);
+                        pop.popup();
+                    },
+                );
+            }
+        }
+
         // Test hook: pointer input cannot be synthesised against a layer
         // surface, so this forces a hover to verify magnification and the name
         // label without a real pointer.

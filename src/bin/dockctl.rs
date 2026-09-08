@@ -14,6 +14,11 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+// Shared with the dock binary by path: a two-binary crate has no library to
+// put it in, and it is not worth becoming one for a single module.
+#[path = "../integrate.rs"]
+mod integrate;
+
 fn socket_path() -> PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(base).join("omarchy-dock.sock")
@@ -29,9 +34,30 @@ fn main() -> std::process::ExitCode {
              reveal             show the dock now\n  \
              hide               hide the dock now\n  \
              toggle-autohide    switch auto-hide on or off\n  \
-             reload             re-read config and rebuild"
+             reload             re-read config and rebuild\n  \
+             restyle            re-read the Omarchy theme only\n\n\
+             omarchy integration:\n  \
+             install            theme-set hook, shell plugin, and menu entries\n  \
+             uninstall          remove all three\n  \
+             status             show what is installed"
         );
         return std::process::ExitCode::from(2);
+    }
+
+    // These act on the filesystem rather than on a running dock, so they are
+    // handled before we try to reach the socket — installing is exactly what
+    // someone does *before* the dock is running.
+    match args[0].as_str() {
+        "install" => return report(integrate::install(), "installed"),
+        "uninstall" => return report(integrate::uninstall(), "removed"),
+        "status" => {
+            for r in integrate::status() {
+                let mark = if r.installed { "✓" } else { "·" };
+                println!("{mark} {:<16} {}", r.label, r.path.display());
+            }
+            return std::process::ExitCode::SUCCESS;
+        }
+        _ => {}
     }
 
     let path = socket_path();
@@ -52,4 +78,33 @@ fn main() -> std::process::ExitCode {
     }
 
     std::process::ExitCode::SUCCESS
+}
+
+/// Print what an install or uninstall did, and turn a failure into an exit
+/// code rather than a panic.
+fn report(
+    result: anyhow::Result<Vec<integrate::Report>>,
+    verb: &str,
+) -> std::process::ExitCode {
+    match result {
+        Ok(items) => {
+            for r in &items {
+                println!("{verb}: {} — {}", r.label, r.path.display());
+                if let Some(note) = &r.note {
+                    println!("          {note}");
+                }
+            }
+            if verb == "installed" {
+                println!(
+                    "\nThe shell picks up new plugins on its own; if it does not, run\n  \
+                     omarchy restart shell"
+                );
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("omarchy-dockctl: {e:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
