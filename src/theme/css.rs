@@ -155,6 +155,25 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   color: @dock_fg;
   font-size: {body}px;
 }}
+
+/* Workspace tiles, drawn the way the bar's workspace widget draws them: a
+   number that is dim when the workspace is empty, bright when it holds
+   windows, and filled when it is the one you are on. The three states are the
+   [controls] fills, so they match every other Omarchy control exactly. */
+.dock-workspace {{
+  color: @dock_fg;
+  opacity: 0.35;
+  border-radius: {ws_radius}px;
+  background-color: {ws_idle};
+  font-family: \"JetBrainsMono Nerd Font\", monospace;
+}}
+
+.dock-workspace.occupied {{ opacity: 0.75; }}
+
+.dock-workspace.current {{
+  opacity: 1;
+  background-color: @dock_selected;
+}}
 ",
         // Badge text must contrast with the urgency colour, not the panel.
         badge_fg = if urgent.luminance() > 0.45 { "#000000" } else { "#ffffff" },
@@ -163,6 +182,8 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
         caption = m.font("caption", 0.833),
         body = m.font("body", 1.0),
         plate_radius = if omarchy { (radius * 0.6).max(2.0) } else { 10.0 },
+        ws_radius = if omarchy { (radius * 0.6).max(2.0) } else { 8.0 },
+        ws_idle = ctl.color.with_alpha(ctl.normal_fill_alpha),
         plate_border = border_rules(
             &Border::solid(ctl.color),
             ctl.hover_border_alpha,

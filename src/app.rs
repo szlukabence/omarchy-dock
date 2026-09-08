@@ -124,12 +124,24 @@ impl App {
                 self.state.set_urgent(addr);
                 true
             }
+            // The snapshot carries each client's fullscreen state, and the
+            // event only says that *something* changed.
+            Fullscreen(_) => {
+                self.request_snapshot();
+                false
+            }
             WindowTitle { addr, title } => {
                 // Titles only show in tooltips, so no relayout is needed.
                 self.state.set_title(&addr, title);
                 false
             }
             MoveWindow { .. } | ActiveSpecial { .. } => {
+                self.request_snapshot();
+                false
+            }
+            // The strip shows which workspace is current and how full each one
+            // is, so any of these changes it.
+            Workspace { .. } | CreateWorkspace { .. } | DestroyWorkspace { .. } => {
                 self.request_snapshot();
                 false
             }
@@ -210,6 +222,21 @@ impl App {
     /// says nothing about the dock on another.
     fn update_autohide(&self) {
         use crate::config::HideMode;
+
+        // Two things override the hide mode outright, because in both cases
+        // the dock is in the way of something the user is deliberately
+        // pointing at the screen — and `never` would otherwise pin it there.
+        if self.cfg.autohide.hide_while_recording && crate::omarchy::is_recording() {
+            tracing::debug!("hiding: screen recording in progress");
+            self.set_hidden(true);
+            return;
+        }
+        if self.cfg.autohide.hide_on_fullscreen && self.state.has_fullscreen() {
+            tracing::debug!("hiding: a window is fullscreen");
+            self.set_hidden(true);
+            return;
+        }
+
         if self.cfg.autohide.mode == HideMode::Never {
             self.set_hidden(false);
             return;
@@ -363,6 +390,8 @@ pub fn run() -> glib::ExitCode {
                 let Some(app) = guard.as_mut() else { continue };
 
                 match event {
+                    // A recording started or stopped; nothing else changed.
+                    AppEvent::HidePolicyChanged => app.update_autohide(),
                     AppEvent::StyleChanged => {
                         // A theme carries its own spacing and font scale, so
                         // switching themes can change the dock's geometry, not
@@ -373,7 +402,7 @@ pub fn run() -> glib::ExitCode {
                             app.rebuild(&gtk_app);
                         }
                     }
-                    AppEvent::HyprSnapshot { clients, monitors, focused } => {
+                    AppEvent::HyprSnapshot { clients, monitors, workspaces, focused } => {
                         tracing::info!(
                             windows = clients.len(),
                             monitors = monitors.len(),
@@ -381,6 +410,7 @@ pub fn run() -> glib::ExitCode {
                         );
                         app.state.set_clients(clients);
                         app.state.set_monitors(monitors);
+                        app.state.set_workspaces(workspaces);
                         app.state.set_focused(focused);
                         app.sync(&gtk_app);
                     }
@@ -498,6 +528,11 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
         // does not — sync() reorders in place, so only length changes here.
         || old.items.pinned.len() != new.items.pinned.len()
         || old.items.show_trash != new.items.show_trash
+        || old.items.glyph_ui != new.items.glyph_ui
+        || old.items.commands.len() != new.items.commands.len()
+        || old.workspaces.enabled != new.workspaces.enabled
+        || old.workspaces.scratchpad != new.workspaces.scratchpad
+        || old.workspaces.show_empty != new.workspaces.show_empty
         || old.items.folders.len() != new.items.folders.len()
         || old
             .items

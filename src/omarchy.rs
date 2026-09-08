@@ -120,6 +120,21 @@ pub fn notify(headline: &str, body: Option<&str>, glyph: Option<&str>) {
     spawn("omarchy", &args);
 }
 
+// ── screen recording ────────────────────────────────────────────────────────
+
+/// Marker Omarchy's screen recorder writes while a recording is running.
+///
+/// `omarchy capture screenrecording` creates it on start and deletes it on
+/// stop, so its existence is the cheapest correct answer to "is the screen
+/// being recorded" — no polling, and a plain file the dock can watch.
+pub static RECORDING_MARKER: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| PathBuf::from("/tmp/omarchy-screenrecord-filename"));
+
+/// Whether a screen recording is in progress.
+pub fn is_recording() -> bool {
+    RECORDING_MARKER.exists()
+}
+
 // ── the bar ─────────────────────────────────────────────────────────────────
 
 /// Where the Omarchy bar is and how thick it is, in logical pixels.

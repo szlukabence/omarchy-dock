@@ -25,10 +25,13 @@ pub enum DockCommand {
     /// Run a command line, via Hyprland so it inherits the compositor's
     /// environment rather than the dock's.
     Exec(String),
-    /// Show or hide a special (scratchpad) workspace. Used by the workspace
-    /// pills in Phase 6.
-    #[allow(dead_code)]
+    /// Show or hide a special (scratchpad) workspace.
     ToggleSpecial(String),
+    /// Switch to a workspace by name.
+    FocusWorkspace(String),
+    /// Send one window to a workspace without following it — what dropping a
+    /// dock icon onto a workspace tile means.
+    SendToWorkspace { window: hypr::Address, workspace: String },
 }
 
 pub type CommandSender = tokio::sync::mpsc::Sender<DockCommand>;
@@ -113,15 +116,22 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
         DockCommand::Close(addr) => dispatch::close_window(addr).await,
         DockCommand::Exec(cmd) => dispatch::exec(cmd).await,
         DockCommand::ToggleSpecial(name) => dispatch::toggle_special(name).await,
+        DockCommand::FocusWorkspace(name) => dispatch::focus_workspace(name).await,
+        DockCommand::SendToWorkspace { window, workspace } => {
+            // `follow = false`: the user dropped an icon onto a workspace to
+            // put it away, not to go there.
+            dispatch::move_window_to_workspace(window, workspace, false).await
+        }
     }
 }
 
 async fn snapshot(tx: &Sender) {
     // Both queries in flight together: they are independent and the dock
     // needs them consistently, so serialising them only adds latency.
-    let (clients, monitors, active) = tokio::join!(
+    let (clients, monitors, workspaces, active) = tokio::join!(
         hypr::request::clients(),
         hypr::request::monitors(),
+        hypr::request::workspaces(),
         hypr::request::active_window(),
     );
 
@@ -134,8 +144,14 @@ async fn snapshot(tx: &Sender) {
             // `j/activewindow` is authoritative and distinguishes "nothing is
             // focused" from "focus unknown"; focusHistoryID cannot, because it
             // is global and still names a window on another workspace.
+            let workspaces = workspaces.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "workspace query failed");
+                Vec::new()
+            });
             let focused = active.ok().flatten().map(|c| c.address);
-            let _ = tx.send(AppEvent::HyprSnapshot { clients, monitors, focused }).await;
+            let _ = tx
+                .send(AppEvent::HyprSnapshot { clients, monitors, workspaces, focused })
+                .await;
         }
         Err(e) => tracing::warn!(error = %e, "client snapshot failed"),
     }

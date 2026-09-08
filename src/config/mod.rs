@@ -97,6 +97,7 @@ pub struct Config {
     pub launcher: Launcher,
     pub monitors: Monitors,
     pub items: Items,
+    pub workspaces: Workspaces,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +152,12 @@ pub struct Autohide {
     pub trigger_px: i32,
     /// Duration of the slide in/out animation.
     pub slide_ms: u64,
+    /// Get out of the way of a fullscreen window, whatever `mode` says. A dock
+    /// floating over a fullscreen video is never what was wanted.
+    pub hide_on_fullscreen: bool,
+    /// Get out of the way of `omarchy capture screenrecording`, so the dock
+    /// does not end up in the recording.
+    pub hide_while_recording: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +201,28 @@ pub struct Monitors {
     pub primary: String,
 }
 
+/// The workspace strip, which mirrors what the bar's workspace widget shows.
+///
+/// Off by default: Omarchy's bar already has one, and adding a second
+/// unasked would be duplication rather than integration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Workspaces {
+    pub enabled: bool,
+    /// Show workspaces with no windows on them. With this off, only occupied
+    /// workspaces and the current one get a tile.
+    pub show_empty: bool,
+    /// A tile for Omarchy's `special:scratchpad`, showing how many windows are
+    /// stashed in it.
+    pub scratchpad: bool,
+}
+
+impl Default for Workspaces {
+    fn default() -> Self {
+        Self { enabled: false, show_empty: true, scratchpad: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Items {
@@ -201,12 +230,33 @@ pub struct Items {
     pub pinned: Vec<String>,
     pub folders: Vec<Folder>,
     pub show_trash: bool,
+    /// Shell commands that can be pinned as tiles, referenced from `pinned`
+    /// as `cmd:<id>`.
+    pub commands: Vec<CommandItem>,
     /// Show apps that are running but not pinned.
     pub show_running: bool,
     /// Draw the dock's own furniture — launcher, folders, Trash — as
     /// monochrome glyphs in the theme foreground, the way every Omarchy bar
     /// widget is drawn, so only real application icons carry colour.
     pub glyph_ui: bool,
+}
+
+/// A pinned shell command, drawn as a glyph rather than an application icon.
+///
+/// This is how the Omarchy menu defines its own rows — a Nerd Font glyph, a
+/// label and a command — so anything reachable from the menu or the `omarchy`
+/// CLI can become a dock tile without a `.desktop` file existing for it.
+///
+/// Referenced from `items.pinned` as `cmd:<id>`, which keeps commands in the
+/// same ordered list as apps so they drag and reorder like everything else.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandItem {
+    pub id: String,
+    pub label: String,
+    /// A glyph, e.g. "\uf07c". Falls back to a generic mark when empty.
+    #[serde(default)]
+    pub glyph: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +316,8 @@ impl Default for Autohide {
             hide_delay_ms: 500,
             trigger_px: 2,
             slide_ms: 220,
+            hide_on_fullscreen: true,
+            hide_while_recording: true,
         }
     }
 }
@@ -303,6 +355,7 @@ impl Default for Items {
             pinned: Vec::new(),
             folders: Vec::new(),
             show_trash: true,
+            commands: Vec::new(),
             show_running: true,
             glyph_ui: true,
         }

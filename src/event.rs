@@ -6,12 +6,15 @@
 //! drains inside `glib::spawn_future_local`. Nothing else touches widgets.
 
 use crate::hypr::events::HyprEvent;
-use crate::hypr::model::{Client, Monitor};
+use crate::hypr::model::{Client, Monitor, Workspace};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// `config.toml` changed. Geometry may differ, so the dock is rebuilt.
     ConfigChanged,
+    /// Something outside the config changed what the dock's hide policy should
+    /// decide — a screen recording starting or stopping, say.
+    HidePolicyChanged,
     /// Active Omarchy theme or the user's `style.css` changed. Restyle only,
     /// which is far cheaper than a rebuild and keeps hover state intact.
     StyleChanged,
@@ -20,6 +23,7 @@ pub enum AppEvent {
     HyprSnapshot {
         clients: Vec<Client>,
         monitors: Vec<Monitor>,
+        workspaces: Vec<Workspace>,
         focused: Option<crate::hypr::Address>,
     },
     /// An incremental Hyprland event.

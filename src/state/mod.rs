@@ -14,7 +14,7 @@
 pub mod matcher;
 
 use crate::desktop::Entry;
-use crate::hypr::model::{Client, Monitor};
+use crate::hypr::model::{Client, Monitor, Workspace};
 use crate::hypr::Address;
 use matcher::Matcher;
 
@@ -34,6 +34,14 @@ pub enum ItemKind {
     /// A macOS-style stack: a directory whose recent contents fan out.
     Folder,
     Trash,
+    /// One Hyprland workspace, rendered as a numbered tile the way the bar's
+    /// workspace widget does. Clicking switches to it; dropping an app icon on
+    /// it sends that window there.
+    Workspace,
+    /// Omarchy's scratchpad, the `special:scratchpad` workspace.
+    Scratchpad,
+    /// A pinned shell command with a glyph, rather than an application.
+    Command,
 }
 
 /// One rendered dock item.
@@ -72,6 +80,15 @@ pub struct DockItem {
 }
 
 impl DockItem {
+    /// Whether this item gets a running-indicator dot beneath it.
+    ///
+    /// A workspace tile already says how full it is through its own brightness
+    /// and fill, so a dot underneath repeats it. Command tiles never run
+    /// anything.
+    pub fn shows_indicator(&self) -> bool {
+        !matches!(self.kind, ItemKind::Workspace | ItemKind::Command) && self.running()
+    }
+
     pub fn running(&self) -> bool {
         !self.windows.is_empty()
     }
@@ -110,6 +127,49 @@ impl DockItem {
     }
 }
 
+/// Prefix marking a pinned entry as a command tile rather than an app id.
+pub const COMMAND_KEY: &str = "cmd:";
+
+/// Generic mark for a command tile whose config gives no glyph.
+const GLYPH_COMMAND: &str = "\u{f120}";
+
+/// A pinned shell command, as a dock item.
+fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem {
+    DockItem {
+        kind: ItemKind::Command,
+        key: format!("{COMMAND_KEY}{}", cmd.id),
+        label: cmd.label.clone(),
+        icon: String::new(),
+        windows: Vec::new(),
+        pinned: true,
+        active: false,
+        urgent: false,
+        scratchpad: false,
+        active_window: None,
+        exec: cmd.command.clone(),
+        actions: Vec::new(),
+        path: None,
+        pin_index: Some(pin_index),
+        glyph: Some(if cmd.glyph.is_empty() {
+            GLYPH_COMMAND.to_string()
+        } else {
+            cmd.glyph.clone()
+        }),
+    }
+}
+
+/// Key prefix for a workspace tile./// Key prefix for a workspace tile. The workspace's own name follows, so the
+/// key is stable across updates — workspace 3 is always workspace 3.
+const WORKSPACE_KEY: &str = "__ws:";
+
+/// Omarchy names its scratchpad `special:scratchpad`, and binds SUPER+S to it.
+pub const SCRATCHPAD: &str = "scratchpad";
+
+/// Workspace name a workspace tile refers to, if it is one.
+pub fn workspace_of(key: &str) -> Option<&str> {
+    key.strip_prefix(WORKSPACE_KEY)
+}
+
 /// The Omarchy logo, from the `omarchy` font at `/usr/share/fonts/omarchy/`.
 ///
 /// The same codepoint the shell's own menu bar widget draws, so the dock's
@@ -125,6 +185,8 @@ const GLYPH_DOCUMENTS: &str = "\u{f0f6}";
 const GLYPH_PICTURES: &str = "\u{f03e}";
 const GLYPH_TRASH: &str = "\u{f1f8}";
 const GLYPH_TRASH_FULL: &str = "\u{f014}";
+/// Scratchpad: a drawer to put windows in.
+const GLYPH_SCRATCHPAD: &str = "\u{f01c}";
 
 /// The glyph that stands for a directory, by what the directory *is*.
 ///
@@ -269,6 +331,7 @@ pub struct DockState {
     matcher: Matcher,
     clients: Vec<Client>,
     monitors: Vec<Monitor>,
+    workspaces: Vec<Workspace>,
     focused: Option<Address>,
     urgent: Vec<Address>,
 }
@@ -279,6 +342,7 @@ impl DockState {
             matcher: Matcher::build(entries),
             clients: Vec::new(),
             monitors: Vec::new(),
+            workspaces: Vec::new(),
             focused: None,
             urgent: Vec::new(),
         }
@@ -297,6 +361,39 @@ impl DockState {
 
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
         self.monitors = monitors;
+    }
+
+    pub fn set_workspaces(&mut self, mut workspaces: Vec<Workspace>) {
+        // Hyprland reports them in creation order, which would make tiles jump
+        // around as workspaces come and go.
+        workspaces.sort_by_key(|w| w.id);
+        self.workspaces = workspaces;
+    }
+
+    /// Whether any window on a currently visible workspace is fullscreen.
+    ///
+    /// Restricted to visible workspaces: a fullscreen window parked on another
+    /// workspace is not covering anything here, and hiding for it would leave
+    /// the dock gone with nothing on screen to explain why.
+    pub fn has_fullscreen(&self) -> bool {
+        let visible: Vec<i32> =
+            self.monitors.iter().map(|m| m.active_workspace.id).collect();
+        self.clients
+            .iter()
+            .any(|c| c.fullscreen > 0 && visible.contains(&c.workspace.id))
+    }
+
+    /// The workspace currently shown on the focused monitor, or the first.
+    fn active_workspace_id(&self) -> Option<i32> {
+        let monitor = self.monitors.iter().find(|m| m.focused).or(self.monitors.first())?;
+        Some(monitor.active_workspace.id)
+    }
+
+    /// Whether a special workspace is open on any monitor.
+    fn special_is_open(&self) -> bool {
+        self.monitors.iter().any(|m| {
+            m.special_workspace.as_ref().is_some_and(|w| !w.name.is_empty())
+        })
     }
 
     pub fn monitor_by_name(&self, name: &str) -> Option<&Monitor> {
@@ -379,6 +476,15 @@ impl DockState {
             });
         }
 
+        // Workspaces sit at the head, next to the launcher — the same place
+        // the bar puts its workspace widget.
+        let head_end = items.len();
+        items.extend(self.workspace_items(cfg));
+        if items.len() > head_end && head_end > 0 {
+            items.insert(head_end, separator());
+        }
+        let strip_end = items.len();
+
         // Which clients have been claimed by a pinned slot.
         let mut claimed: Vec<bool> = vec![false; self.clients.len()];
 
@@ -389,6 +495,17 @@ impl DockState {
                 // and are therefore not editable, which is right: they are
                 // derived, not placed.
                 items.push(user_separator(pin_index));
+                continue;
+            }
+            // A command tile: a glyph and a shell command rather than an app.
+            // Looked up rather than inlined so the pinned list stays a flat
+            // ordered list of ids, and dragging works the same for both.
+            if let Some(id) = id.trim().strip_prefix(COMMAND_KEY) {
+                if let Some(c) = cfg.items.commands.iter().find(|c| c.id == id) {
+                    items.push(command_item(c, pin_index));
+                } else {
+                    tracing::warn!(id, "pinned command has no [[items.commands]] entry");
+                }
                 continue;
             }
             let entry = self.matcher.by_id(id);
@@ -463,6 +580,12 @@ impl DockState {
             }
         }
 
+        // Fence the strip off from the pinned apps, but only if any were
+        // actually added and something follows them.
+        if strip_end > head_end && items.len() > strip_end {
+            items.insert(strip_end, separator());
+        }
+
         // Stacks and Trash form the dock's tail section, as on macOS.
         let tail_start = items.len();
 
@@ -525,6 +648,83 @@ impl DockState {
         }
         while items.len() > 1 && items.last().is_some_and(|i| i.kind == ItemKind::Separator) {
             items.pop();
+        }
+
+        items
+    }
+
+    /// The workspace strip and scratchpad tile, when enabled.
+    ///
+    /// Windows on a workspace go into the item's `windows`, which is what the
+    /// rest of the dock already keys the running indicator and the count badge
+    /// off — so an occupied workspace lights up without any new plumbing.
+    fn workspace_items(&self, cfg: &crate::config::Config) -> Vec<DockItem> {
+        let mut items = Vec::new();
+        let active = self.active_workspace_id();
+
+        if cfg.workspaces.enabled {
+            for ws in self.workspaces.iter().filter(|w| !w.is_special()) {
+                let windows: Vec<Address> = self
+                    .clients
+                    .iter()
+                    .filter(|c| c.workspace.id == ws.id)
+                    .map(|c| c.address.clone())
+                    .collect();
+
+                // An empty workspace is still worth a tile when the user wants
+                // a fixed row to aim at; otherwise only occupied ones and the
+                // current one are shown.
+                if windows.is_empty() && !cfg.workspaces.show_empty && Some(ws.id) != active {
+                    continue;
+                }
+
+                items.push(DockItem {
+                    kind: ItemKind::Workspace,
+                    key: format!("{WORKSPACE_KEY}{}", ws.name),
+                    label: ws.name.clone(),
+                    icon: String::new(),
+                    windows,
+                    pinned: false,
+                    active: Some(ws.id) == active,
+                    urgent: false,
+                    scratchpad: false,
+                    active_window: None,
+                    exec: String::new(),
+                    actions: Vec::new(),
+                    path: None,
+                    pin_index: None,
+                    // The tile draws its own number, not a glyph.
+                    glyph: None,
+                });
+            }
+        }
+
+        if cfg.workspaces.scratchpad {
+            let windows: Vec<Address> = self
+                .clients
+                .iter()
+                .filter(|c| c.is_special())
+                .map(|c| c.address.clone())
+                .collect();
+            items.push(DockItem {
+                kind: ItemKind::Scratchpad,
+                key: "__scratchpad".into(),
+                label: "Scratchpad".into(),
+                icon: String::new(),
+                windows,
+                pinned: false,
+                // "Active" here means the drawer is open, which is exactly
+                // what the indicator should say.
+                active: self.special_is_open(),
+                urgent: false,
+                scratchpad: true,
+                active_window: None,
+                exec: String::new(),
+                actions: Vec::new(),
+                path: None,
+                pin_index: None,
+                glyph: Some(GLYPH_SCRATCHPAD.into()),
+            });
         }
 
         items
@@ -778,6 +978,161 @@ mod layout_tests {
         let s = DockState::new(vec![]);
         let items = s.items(&cfg(&[SEPARATOR, SEPARATOR]));
         assert!(items.len() <= 1, "got {:?}", kinds(&items));
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::hypr::model::{Monitor, WorkspaceRef};
+
+    fn ws(id: i32, name: &str) -> Workspace {
+        Workspace { id, name: name.into(), monitor: "eDP-1".into(), monitor_id: 0, windows: 0 }
+    }
+
+    fn client(addr: &str, ws_id: i32, ws_name: &str) -> Client {
+        Client {
+            address: Address::parse(addr),
+            class: "app".into(),
+            initial_class: "app".into(),
+            title: "t".into(),
+            workspace: WorkspaceRef { id: ws_id, name: ws_name.into() },
+            monitor: 0,
+            pid: 1,
+            floating: false,
+            hidden: false,
+            mapped: true,
+            fullscreen: 0,
+            at: (0, 0),
+            size: (100, 100),
+            focus_history_id: 0,
+        }
+    }
+
+    fn monitor(active: i32) -> Monitor {
+        Monitor {
+            id: 0,
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            focused: true,
+            active_workspace: WorkspaceRef { id: active, name: active.to_string() },
+            special_workspace: None,
+        }
+    }
+
+    fn state(clients: Vec<Client>, workspaces: Vec<Workspace>, active: i32) -> DockState {
+        let mut s = DockState::new(Vec::new());
+        s.set_clients(clients);
+        s.set_workspaces(workspaces);
+        s.set_monitors(vec![monitor(active)]);
+        s
+    }
+
+    fn cfg(enabled: bool, show_empty: bool) -> crate::config::Config {
+        let mut c = crate::config::Config::default();
+        c.workspaces.enabled = enabled;
+        c.workspaces.show_empty = show_empty;
+        c
+    }
+
+    #[test]
+    fn workspace_tiles_carry_the_windows_on_them() {
+        // Windows go into the item's own `windows`, which is what drives the
+        // occupied styling and the count badge — no separate plumbing.
+        let s = state(
+            vec![client("0x1", 1, "1"), client("0x2", 2, "2"), client("0x3", 2, "2")],
+            vec![ws(1, "1"), ws(2, "2")],
+            1,
+        );
+        let items = s.workspace_items(&cfg(true, true));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].windows.len(), 1);
+        assert_eq!(items[1].windows.len(), 2);
+        // The one you are on is the active one.
+        assert!(items[0].active);
+        assert!(!items[1].active);
+    }
+
+    #[test]
+    fn tiles_are_ordered_by_id_not_by_creation() {
+        // Hyprland reports workspaces in creation order, which would make the
+        // strip reshuffle itself as workspaces come and go.
+        let s = state(vec![], vec![ws(3, "3"), ws(1, "1"), ws(2, "2")], 1);
+        let items = s.workspace_items(&cfg(true, true));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn empty_workspaces_can_be_hidden_but_the_current_one_never_is() {
+        let s = state(vec![client("0x1", 2, "2")], vec![ws(1, "1"), ws(2, "2"), ws(3, "3")], 1);
+        let items = s.workspace_items(&cfg(true, false));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // 2 has a window; 1 is empty but current; 3 is empty and elsewhere.
+        assert_eq!(labels, ["1", "2"]);
+    }
+
+    #[test]
+    fn special_workspaces_never_get_a_tile_of_their_own() {
+        // The scratchpad has its own tile; listing it twice would be wrong.
+        let s = state(vec![], vec![ws(1, "1"), ws(-99, "special:scratchpad")], 1);
+        let items = s.workspace_items(&cfg(true, true));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "1");
+    }
+
+    #[test]
+    fn the_scratchpad_tile_counts_what_is_stashed_in_it() {
+        let mut c = cfg(false, true);
+        c.workspaces.scratchpad = true;
+        let s = state(
+            vec![client("0x1", 1, "1"), client("0x2", -99, "special:scratchpad")],
+            vec![ws(1, "1")],
+            1,
+        );
+        let items = s.workspace_items(&c);
+        assert_eq!(items.len(), 1, "no workspace strip, just the scratchpad");
+        assert_eq!(items[0].kind, ItemKind::Scratchpad);
+        assert_eq!(items[0].windows.len(), 1);
+    }
+
+    #[test]
+    fn a_workspace_tile_has_no_running_dot() {
+        // Its brightness already says whether it holds windows; a dot repeats
+        // that and reads as clutter.
+        let s = state(vec![client("0x1", 1, "1")], vec![ws(1, "1")], 1);
+        let items = s.workspace_items(&cfg(true, true));
+        assert!(items[0].running());
+        assert!(!items[0].shows_indicator());
+    }
+
+    #[test]
+    fn a_tile_key_round_trips_to_its_workspace_name() {
+        let s = state(vec![], vec![ws(1, "1"), ws(9, "code")], 1);
+        let items = s.workspace_items(&cfg(true, true));
+        assert_eq!(workspace_of(&items[0].key), Some("1"));
+        // Named workspaces work too — Hyprland's focus dispatcher takes names.
+        assert_eq!(workspace_of(&items[1].key), Some("code"));
+        assert_eq!(workspace_of("chromium"), None);
+    }
+
+    #[test]
+    fn fullscreen_counts_only_on_a_visible_workspace() {
+        let mut full = client("0x1", 2, "2");
+        full.fullscreen = 2;
+
+        // Fullscreen on workspace 2 while looking at workspace 1: nothing is
+        // covering the dock, so it must not hide.
+        let s = state(vec![full.clone()], vec![ws(1, "1"), ws(2, "2")], 1);
+        assert!(!s.has_fullscreen());
+
+        // Same window, now the workspace you are on.
+        let s = state(vec![full], vec![ws(1, "1"), ws(2, "2")], 2);
+        assert!(s.has_fullscreen());
     }
 }
 

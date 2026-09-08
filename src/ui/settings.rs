@@ -131,6 +131,12 @@ where
     list.append(&toggle("Show running apps", cfg.items.show_running, |v| {
         edit(move |c| c.items.show_running = v)
     }));
+    list.append(&toggle("Workspaces", cfg.workspaces.enabled, |v| {
+        edit(move |c| c.workspaces.enabled = v)
+    }));
+    list.append(&toggle("Scratchpad", cfg.workspaces.scratchpad, |v| {
+        edit(move |c| c.workspaces.scratchpad = v)
+    }));
     // One switch per folder: they are independent shortcuts, so a single
     // "show folders" toggle would be an all-or-nothing blunt instrument.
     for (i, folder) in cfg.items.folders.iter().enumerate() {

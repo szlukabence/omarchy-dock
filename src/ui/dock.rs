@@ -265,14 +265,27 @@ impl DockSurface {
                 continue;
             }
 
-            slot.set_size_request(size, size);
+            // A workspace tile is narrower than an icon, so the slot takes its
+            // own extent rather than assuming a square.
+            let extent = geom.extents.get(i).copied().unwrap_or(cfg.dock.icon_size);
+            let (slot_w, slot_h) = if geom.horizontal() {
+                (extent.round() as i32, size)
+            } else {
+                (size, extent.round() as i32)
+            };
+            slot.set_size_request(slot_w, slot_h);
 
             // The plate goes in first so it draws beneath this slot. Sized a
             // little tighter than the icon box, the way a bar widget's
             // highlight sits inside its cell rather than filling it.
             let (px, py) = plate_origin(&geom, i);
-            let plate_size = cfg.dock.icon_size + PLATE_MARGIN * 2.0;
-            plates.push(hover_plate(&fixed, px, py, plate_size, plate_size));
+            plates.push(hover_plate(
+                &fixed,
+                px,
+                py,
+                slot_w as f64 + PLATE_MARGIN * 2.0,
+                slot_h as f64 + PLATE_MARGIN * 2.0,
+            ));
 
             slot.set_child(Some(&item_visual(item, size, cfg)));
 
@@ -301,6 +314,12 @@ impl DockSurface {
             let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
             let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             dot.add_css_class("dock-indicator");
+            // Set here rather than left to the first refresh: a dot created
+            // visible shows under every item until something else triggers an
+            // update, which is how stray dots appeared on every icon once.
+            dot.set_visible(item.shows_indicator());
+            set_class(&dot, "urgent", item.urgent);
+            set_class(&dot, "active", item.active);
             dot.set_size_request(len as i32, thick as i32);
             if let Some((ix, iy)) = geom.indicator_at(i, cfg.dock.icon_size, len, thick) {
                 fixed.put(&dot, ix, iy);
@@ -479,8 +498,11 @@ impl DockSurface {
         }
 
         for (i, item) in items.iter().enumerate() {
+            if let Some(slot) = s.items.get(i) {
+                sync_workspace_tile(slot, item);
+            }
             if let Some(dot) = s.indicators.get(i) {
-                dot.set_visible(item.running());
+                dot.set_visible(item.shows_indicator());
                 // Toggle rather than add: classes persist across refreshes.
                 set_class(dot, "urgent", item.urgent);
                 set_class(dot, "active", item.active);
@@ -553,10 +575,13 @@ impl DockSurface {
             s.apply(i);
         }
         for (i, item) in items.iter().enumerate() {
+            if let Some(slot) = s.items.get(i) {
+                sync_workspace_tile(slot, item);
+            }
             if let Some((ix, iy)) = indicator_origin(&s.geom, i, cfg) {
                 if let Some(dot) = s.indicators.get(i) {
                     s.fixed.move_(dot, ix, iy);
-                    dot.set_visible(item.running());
+                    dot.set_visible(item.shows_indicator());
                     set_class(dot, "urgent", item.urgent);
                     set_class(dot, "active", item.active);
                 }
@@ -755,6 +780,27 @@ fn attach_clicks(
                 }
                 // A separator has nothing to activate.
                 ItemKind::Separator => return,
+                ItemKind::Workspace => {
+                    if let Some(name) = crate::state::workspace_of(&item.key) {
+                        sink(MenuAction::Command(DockCommand::FocusWorkspace(
+                            name.to_string(),
+                        )));
+                    }
+                    return;
+                }
+                ItemKind::Scratchpad => {
+                    sink(MenuAction::Command(DockCommand::ToggleSpecial(
+                        crate::state::SCRATCHPAD.to_string(),
+                    )));
+                    return;
+                }
+                ItemKind::Command => {
+                    if !item.exec.is_empty() {
+                        kick(&state, index);
+                        sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
+                    }
+                    return;
+                }
                 // Stacks and Trash open a popover rather than launching.
                 ItemKind::Folder | ItemKind::Trash => {
                     let sink2 = sink.clone();
@@ -849,6 +895,27 @@ fn attach_clicks(
         });
     }
     slot.add_controller(right);
+}
+
+/// Re-apply a workspace tile's occupancy and current-workspace styling.
+///
+/// The tile's state lives on the label inside the slot, which a refresh would
+/// otherwise leave untouched: the key sequence does not change when you switch
+/// workspace, so no rebuild happens and the strip would keep showing whichever
+/// workspace was current when the dock was built.
+fn sync_workspace_tile(slot: &gtk::Widget, item: &DockItem) {
+    if item.kind != ItemKind::Workspace {
+        return;
+    }
+    let Some(label) = slot
+        .downcast_ref::<gtk::Overlay>()
+        .and_then(|o| o.child())
+        .and_downcast::<gtk::Label>()
+    else {
+        return;
+    };
+    set_class(&label, "occupied", !item.windows.is_empty());
+    set_class(&label, "current", item.active);
 }
 
 fn set_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {
@@ -1102,7 +1169,37 @@ fn drop_position(s: &State, pos: f64, icon: f64) -> Option<(usize, usize)> {
     result
 }
 
-/// Open or close the gap that previews where a drop will land.
+/// The workspace tile under a surface point, if the point is on one.
+fn workspace_under(s: &State, x: f64, y: f64) -> Option<String> {
+    let i = s.geom.slot_at(x, y, s.cfg.dock.icon_size)?;
+    let item = s.data.get(i)?;
+    match item.kind {
+        ItemKind::Workspace => {
+            crate::state::workspace_of(&item.key).map(|n| n.to_string())
+        }
+        // The scratchpad is a workspace too, and stashing a window in it by
+        // dropping is the obvious gesture.
+        ItemKind::Scratchpad => Some(format!("special:{}", crate::state::SCRATCHPAD)),
+        _ => None,
+    }
+}
+
+/// The command for dropping the item dragged from pinned index `from` onto
+/// whatever workspace tile sits at `(x, y)`.
+///
+/// `None` when the drop is not over a workspace, or when the dragged item has
+/// no window to send — dropping a pinned-but-closed app somewhere cannot mean
+/// anything, and silently doing nothing is better than launching it.
+fn send_to_workspace(s: &State, from: usize, x: f64, y: f64) -> Option<DockCommand> {
+    let workspace = workspace_under(s, x, y)?;
+    let item = s.data.iter().find(|d| d.pin_index == Some(from))?;
+    // The focused window of that app if it has one, else its first: the same
+    // choice a click makes.
+    let window = item.active_window.clone().or_else(|| item.windows.first().cloned())?;
+    Some(DockCommand::SendToWorkspace { window, workspace })
+}
+
+/// Open or close the gap that previews where a drop will land./// Open or close the gap that previews where a drop will land.
 fn set_drop_gap(state: &Rc<RefCell<State>>, at: Option<usize>, icon: f64) {
     {
         let mut s = state.borrow_mut();
@@ -1143,8 +1240,14 @@ fn attach_drop(
         target.connect_motion(move |_, x, y| {
             let at = {
                 let s = state.borrow();
-                let pos = if s.geom.horizontal() { x } else { y };
-                drop_position(&s, pos, icon).map(|(i, _)| i)
+                // Over a workspace tile the drop is a "send there", so the
+                // icons must not part as if something were being inserted.
+                if workspace_under(&s, x, y).is_some() {
+                    None
+                } else {
+                    let pos = if s.geom.horizontal() { x } else { y };
+                    drop_position(&s, pos, icon).map(|(i, _)| i)
+                }
             };
             set_drop_gap(&state, at, icon);
             gdk::DragAction::MOVE
@@ -1160,6 +1263,16 @@ fn attach_drop(
         target.connect_drop(move |_, value, x, y| {
             let Ok(from) = value.get::<u32>() else { return false };
             let from = from as usize;
+
+            // Dropping an app onto a workspace tile means "put this there",
+            // not "reorder the pins". Checked first because a workspace tile
+            // occupies a slot the reorder logic would otherwise read as an
+            // insertion point.
+            if let Some(cmd) = send_to_workspace(&state.borrow(), from, x, y) {
+                set_drop_gap(&state, None, icon);
+                sink(MenuAction::Command(cmd));
+                return true;
+            }
 
             let to = {
                 let s = state.borrow();
@@ -1352,7 +1465,24 @@ fn hover_plate(fixed: &gtk::Fixed, x: f64, y: f64, w: f64, h: f64) -> gtk::Widge
 /// item without a glyph, or a config that turned glyphs off, falls back to the
 /// icon theme.
 fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
-    match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui) {
+    if item.kind == ItemKind::Workspace {
+        // A number in a pill, like the bar's workspace widget. Occupancy and
+        // the current workspace are CSS states rather than separate widgets,
+        // so a refresh can move them without rebuilding anything.
+        let label = gtk::Label::new(Some(&item.label));
+        label.add_css_class("dock-workspace");
+        set_class(&label, "occupied", !item.windows.is_empty());
+        set_class(&label, "current", item.active);
+        label.set_attributes(Some(&glyph_attrs((size as f64 * 0.62).round() as i32)));
+        return label.upcast::<gtk::Widget>();
+    }
+
+    // A command tile has no icon at all, only a glyph, so it ignores the
+    // glyph_ui preference — that setting is about whether the dock's *furniture*
+    // is drawn in the bar's monochrome language, not about items that have
+    // nothing else to draw.
+    let always_glyph = matches!(item.kind, ItemKind::Command | ItemKind::Scratchpad);
+    match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui || always_glyph) {
         Some(glyph) => {
             let label = gtk::Label::new(Some(glyph));
             label.add_css_class("dock-glyph");

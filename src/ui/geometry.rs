@@ -13,6 +13,10 @@ use crate::state::ItemKind;
 /// Thickness of a divider slot along the dock's long axis.
 const SEPARATOR_EXTENT: f64 = 13.0;
 
+/// A workspace tile is a number, not an icon, so it takes a fraction of an
+/// icon's width — the same narrow pill the bar's workspace widget draws.
+const WORKSPACE_EXTENT_RATIO: f64 = 0.5;
+
 #[derive(Debug, Clone)]
 pub struct Geometry {
     pub window_w: f64,
@@ -43,7 +47,11 @@ impl Geometry {
 
         let extents: Vec<f64> = kinds
             .iter()
-            .map(|k| if *k == ItemKind::Separator { SEPARATOR_EXTENT } else { icon })
+            .map(|k| match k {
+                ItemKind::Separator => SEPARATOR_EXTENT,
+                ItemKind::Workspace => (icon * WORKSPACE_EXTENT_RATIO).round(),
+                _ => icon,
+            })
             .collect();
 
         // Total extent along the long axis, plus the gaps between slots.
