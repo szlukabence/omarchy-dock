@@ -1,0 +1,17 @@
+/* Spike styling — deliberately close to phase0.css so the magnification is
+   judged against the real glass panel, not a bare window. */
+
+window { background: transparent; }
+
+.dock-panel {
+  background-color: rgba(20, 21, 30, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 22px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.fps {
+  color: rgba(255, 255, 255, 0.55);
+  font-family: monospace;
+  font-size: 11px;
+}

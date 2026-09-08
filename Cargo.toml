@@ -1,0 +1,60 @@
+[package]
+name         = "omarchy-dock"
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.85"
+description  = "A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
+license      = "MIT"
+
+[[bin]]
+name = "omarchy-dock"
+path = "src/main.rs"
+
+# Phase-0 de-risking spike: single-icon hover magnification.
+[[bin]]
+name = "spike-magnify"
+path = "src/bin/spike_magnify.rs"
+
+[dependencies]
+# --- GTK stack. GTK 4.22.4 is installed, so v4_22 is safe. ---
+gtk4             = { version = "0.11.4", features = ["v4_22"] }
+gdk4             = "0.11.4"
+glib             = "0.22.9"
+gio              = "0.22.9"
+gtk4-layer-shell = "0.8.1"
+
+# --- async runtime + bridge into the GTK main context ---
+tokio         = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "process"] }
+async-channel = "2.5.0"
+futures-util  = "0.3.34"
+
+# --- config + theme ---
+serde      = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+toml       = "1.1"
+
+# --- file watching: config.toml, style.css, theme symlink, Trash, stacks ---
+notify                = "8.2.0"
+notify-debouncer-full = "0.7.0"
+
+# --- misc ---
+anyhow             = "1.0.104"
+thiserror          = "2"
+tracing            = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs               = "6"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+# Fast iteration during the spike: optimise deps even in debug so animation
+# is representative, but keep our own crate cheap to rebuild.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

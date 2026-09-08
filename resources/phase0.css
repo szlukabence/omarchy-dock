@@ -1,0 +1,23 @@
+/* Phase 0 styling. Colours are hard-coded here; Phase 1 replaces them with
+   @define-color vars generated from the active Omarchy theme's colors.toml. */
+
+/* The layer surface must be fully transparent: Hyprland blurs whatever the
+   surface covers, so any window-level background would be blurred too and the
+   rounded corners would be lost. */
+window {
+  background: transparent;
+}
+
+.dock-panel {
+  /* The "glass" slab. Alpha here is what the compositor blurs behind. */
+  background-color: rgba(20, 21, 30, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 22px;
+  padding: 10px 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.dock-icon {
+  /* Transform-only effects keep magnification off the layout path. */
+  transition: -gtk-icon-filter 140ms ease-out;
+}
