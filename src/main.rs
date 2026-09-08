@@ -2,10 +2,12 @@
 
 mod anim;
 mod app;
+mod autohide;
 mod config;
 mod event;
 mod desktop;
 mod hypr;
+mod ipc_ctl;
 mod runtime;
 mod state;
 mod theme;

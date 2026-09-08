@@ -95,6 +95,9 @@ impl App {
             }
             ActiveWindowAddr(addr) => {
                 self.state.set_focused(addr);
+                // Focus drives both the active indicator and intelligent
+                // hiding, and the new window's geometry may differ.
+                self.request_snapshot();
                 true
             }
             Urgent(addr) => {
@@ -114,7 +117,97 @@ impl App {
         };
 
         if dirty {
-            self.rebuild(gtk_app);
+            self.sync(gtk_app);
+        }
+    }
+
+    /// Handle a command from `omarchy-dockctl`.
+    fn on_control(&mut self, cmd: crate::ipc_ctl::Control, gtk_app: &gtk::Application) {
+        use crate::ipc_ctl::Control;
+        match cmd {
+            Control::Activate(i) => self.activate(i),
+            Control::Reveal => self.set_hidden(false),
+            Control::Hide => self.set_hidden(true),
+            Control::ToggleAutohide => {
+                // Persist it, so the toggle survives a restart and matches
+                // what the config file says.
+                let mut cfg = Config::load();
+                cfg.autohide.mode = match cfg.autohide.mode {
+                    crate::config::HideMode::Never => crate::config::HideMode::Intelligent,
+                    _ => crate::config::HideMode::Never,
+                };
+                let mode = cfg.autohide.mode;
+                if let Err(e) = cfg.save() {
+                    tracing::error!(error = %e, "cannot save autohide mode");
+                }
+                tracing::info!(?mode, "autohide toggled");
+            }
+            Control::Reload => {
+                self.cfg = Config::load();
+                self.restyle();
+                self.rebuild(gtk_app);
+            }
+        }
+    }
+
+    /// Activate the nth dock item, exactly as a left-click would.
+    fn activate(&mut self, index: usize) {
+        let items = self.current_items();
+        let Some(item) = items.get(index) else {
+            tracing::warn!(index, count = items.len(), "no such dock item");
+            return;
+        };
+
+        let cmd = match item.click_target() {
+            Some(addr) => Some(crate::runtime::DockCommand::Focus(addr.clone())),
+            None => (!item.exec.is_empty())
+                .then(|| crate::runtime::DockCommand::Exec(item.exec.clone())),
+        };
+        if let (Some(cmd), Some(w)) = (cmd, &self.worker) {
+            let _ = w.commands.try_send(cmd);
+        }
+    }
+
+    fn set_hidden(&self, hidden: bool) {
+        for d in &self.docks {
+            d.set_hidden(hidden, &self.cfg);
+        }
+    }
+
+    /// Re-evaluate auto-hide, per surface.
+    ///
+    /// Each dock decides independently: a window covering one monitor's dock
+    /// says nothing about the dock on another.
+    fn update_autohide(&self) {
+        use crate::config::HideMode;
+        if self.cfg.autohide.mode == HideMode::Never {
+            self.set_hidden(false);
+            return;
+        }
+
+        let focused = self.state.focused_client();
+        let headroom = self.cfg.headroom();
+
+        for dock in &self.docks {
+            // Fall back to the focused output when a surface has no name,
+            // which happens only if GDK gave us no connector.
+            let monitor = dock
+                .monitor_name
+                .as_deref()
+                .and_then(|n| self.state.monitor_by_name(n))
+                .or_else(|| self.state.focused_monitor());
+
+            let Some(monitor) = monitor else { continue };
+            let (w, h) = dock.surface_size;
+            let rect = crate::autohide::dock_rect(&self.cfg, monitor, w, h, headroom);
+            let hide = crate::autohide::should_hide(
+                &self.cfg,
+                &rect,
+                monitor.id,
+                self.state.clients(),
+                focused,
+            );
+            dock.set_hidden(hide, &self.cfg);
         }
     }
 
@@ -126,7 +219,8 @@ impl App {
         }
     }
 
-    fn rebuild(&mut self, gtk_app: &gtk::Application) {
+    /// The items currently rendered, in dock order.
+    fn current_items(&self) -> Vec<DockItem> {
         let mut items = self.state.items(&self.cfg.items.pinned, self.cfg.items.show_running);
         if self.cfg.items.show_trash {
             items.push(crate::state::DockItem {
@@ -144,11 +238,35 @@ impl App {
             });
         }
 
+        items
+    }
+
+    /// Apply current state to the dock, refreshing in place when possible.
+    ///
+    /// Recreating layer surfaces on every focus change would flicker and reset
+    /// the auto-hide slide, so a full rebuild is reserved for changes that
+    /// alter the item set itself.
+    fn sync(&mut self, gtk_app: &gtk::Application) {
+        let items = self.current_items();
+        let refreshed =
+            !self.docks.is_empty() && self.docks.iter().all(|d| d.refresh(&items));
+
+        if refreshed {
+            self.update_autohide();
+        } else {
+            self.rebuild(gtk_app);
+        }
+    }
+
+    fn rebuild(&mut self, gtk_app: &gtk::Application) {
+        let items = self.current_items();
+
         for d in self.docks.drain(..) {
             d.close();
         }
         let sink = make_sink(self.worker.clone());
         self.docks = build_docks(gtk_app, &self.cfg, &items, sink);
+        self.update_autohide();
         if tracing::enabled!(tracing::Level::DEBUG) {
             for i in &items {
                 tracing::debug!(
@@ -223,12 +341,19 @@ pub fn run() -> glib::ExitCode {
 
                 match event {
                     AppEvent::StyleChanged => app.restyle(),
-                    AppEvent::HyprSnapshot(clients) => {
-                        tracing::info!(windows = clients.len(), "window snapshot");
+                    AppEvent::HyprSnapshot { clients, monitors, focused } => {
+                        tracing::info!(
+                            windows = clients.len(),
+                            monitors = monitors.len(),
+                            "state snapshot"
+                        );
                         app.state.set_clients(clients);
-                        app.rebuild(&gtk_app);
+                        app.state.set_monitors(monitors);
+                        app.state.set_focused(focused);
+                        app.sync(&gtk_app);
                     }
                     AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),
+                    AppEvent::Control(c) => app.on_control(c, &gtk_app),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
                         // Geometry-affecting changes need new surfaces;
@@ -239,6 +364,10 @@ pub fn run() -> glib::ExitCode {
                         app.restyle();
                         if structural {
                             app.rebuild(&gtk_app);
+                        } else {
+                            // Non-structural changes can still alter hide
+                            // policy (mode, delays, offsets).
+                            app.update_autohide();
                         }
                     }
                 }

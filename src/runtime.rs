@@ -73,6 +73,16 @@ pub fn spawn(tx: Sender) -> std::io::Result<Handles> {
                 .await;
             });
 
+            // The control socket is independent of Hyprland; if it cannot
+            // bind (usually a second instance) the dock still works, just
+            // without hotkeys.
+            let ctl_tx = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::ipc_ctl::serve(ctl_tx).await {
+                    tracing::warn!(error = %e, "control socket unavailable");
+                }
+            });
+
             // Commands run concurrently with snapshot servicing so a slow
             // dispatch never delays a resync, or vice versa.
             tokio::spawn(async move {
@@ -107,9 +117,25 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
 }
 
 async fn snapshot(tx: &Sender) {
-    match hypr::request::clients().await {
+    // Both queries in flight together: they are independent and the dock
+    // needs them consistently, so serialising them only adds latency.
+    let (clients, monitors, active) = tokio::join!(
+        hypr::request::clients(),
+        hypr::request::monitors(),
+        hypr::request::active_window(),
+    );
+
+    match clients {
         Ok(clients) => {
-            let _ = tx.send(AppEvent::HyprSnapshot(clients)).await;
+            let monitors = monitors.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "monitor query failed");
+                Vec::new()
+            });
+            // `j/activewindow` is authoritative and distinguishes "nothing is
+            // focused" from "focus unknown"; focusHistoryID cannot, because it
+            // is global and still names a window on another workspace.
+            let focused = active.ok().flatten().map(|c| c.address);
+            let _ = tx.send(AppEvent::HyprSnapshot { clients, monitors, focused }).await;
         }
         Err(e) => tracing::warn!(error = %e, "client snapshot failed"),
     }

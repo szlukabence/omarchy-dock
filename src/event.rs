@@ -6,7 +6,7 @@
 //! drains inside `glib::spawn_future_local`. Nothing else touches widgets.
 
 use crate::hypr::events::HyprEvent;
-use crate::hypr::model::Client;
+use crate::hypr::model::{Client, Monitor};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -15,10 +15,17 @@ pub enum AppEvent {
     /// Active Omarchy theme or the user's `style.css` changed. Restyle only,
     /// which is far cheaper than a rebuild and keeps hover state intact.
     StyleChanged,
-    /// A full window list, sent at startup and after any reconnect.
-    HyprSnapshot(Vec<Client>),
+    /// Full window and monitor state, sent at startup and after any reconnect.
+    /// `focused` is `None` when Hyprland has no focused window at all.
+    HyprSnapshot {
+        clients: Vec<Client>,
+        monitors: Vec<Monitor>,
+        focused: Option<crate::hypr::Address>,
+    },
     /// An incremental Hyprland event.
     Hypr(HyprEvent),
+    /// A command from `omarchy-dockctl`.
+    Control(crate::ipc_ctl::Control),
 }
 
 pub type Sender = async_channel::Sender<AppEvent>;

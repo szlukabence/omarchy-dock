@@ -14,7 +14,7 @@
 pub mod matcher;
 
 use crate::desktop::Entry;
-use crate::hypr::model::Client;
+use crate::hypr::model::{Client, Monitor};
 use crate::hypr::Address;
 use matcher::Matcher;
 
@@ -79,6 +79,7 @@ impl DockItem {
 pub struct DockState {
     matcher: Matcher,
     clients: Vec<Client>,
+    monitors: Vec<Monitor>,
     focused: Option<Address>,
     urgent: Vec<Address>,
 }
@@ -88,6 +89,7 @@ impl DockState {
         Self {
             matcher: Matcher::build(entries),
             clients: Vec::new(),
+            monitors: Vec::new(),
             focused: None,
             urgent: Vec::new(),
         }
@@ -102,6 +104,29 @@ impl DockState {
         self.clients = clients;
         // An urgent window that has since closed must not stay urgent.
         self.urgent.retain(|a| self.clients.iter().any(|c| &c.address == a));
+    }
+
+    pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
+        self.monitors = monitors;
+    }
+
+    pub fn monitor_by_name(&self, name: &str) -> Option<&Monitor> {
+        self.monitors.iter().find(|m| m.name == name)
+    }
+
+    /// The monitor Hyprland currently considers focused.
+    pub fn focused_monitor(&self) -> Option<&Monitor> {
+        self.monitors.iter().find(|m| m.focused)
+    }
+
+    /// The focused window, if the dock knows about it.
+    pub fn focused_client(&self) -> Option<&Client> {
+        let addr = self.focused.as_ref()?;
+        self.clients.iter().find(|c| &c.address == addr)
+    }
+
+    pub fn clients(&self) -> &[Client] {
+        &self.clients
     }
 
     pub fn add_client(&mut self, client: Client) {
@@ -298,5 +323,48 @@ mod tests {
         // nothing would make the click silently do nothing.
         let i = item(&["a", "b"], Some("zz"));
         assert_eq!(i.click_target(), Some(&Address::parse("a")));
+    }
+}
+
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::hypr::model::WorkspaceRef;
+    use crate::hypr::Address;
+
+    fn client(addr: &str) -> Client {
+        Client {
+            address: Address::parse(addr),
+            class: "x".into(),
+            title: "x".into(),
+            initial_class: "x".into(),
+            workspace: WorkspaceRef { id: 1, name: "1".into() },
+            monitor: 0,
+            pid: 1,
+            floating: false,
+            hidden: false,
+            mapped: true,
+            fullscreen: 0,
+            at: (0, 0),
+            size: (100, 100),
+            focus_history_id: 0,
+        }
+    }
+
+    #[test]
+    fn an_empty_workspace_really_clears_focus() {
+        // Regression: focus used to be re-inferred from focusHistoryID, which
+        // is global and kept naming a window on another workspace. That left
+        // intelligent auto-hide stuck hidden on an empty workspace.
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(s.focused_client().is_some());
+
+        // Snapshot arrives while nothing is focused.
+        s.set_clients(vec![client("a")]);
+        s.set_focused(None);
+        assert!(s.focused_client().is_none());
     }
 }

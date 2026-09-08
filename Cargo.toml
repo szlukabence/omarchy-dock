@@ -10,6 +10,10 @@ license      = "MIT"
 name = "omarchy-dock"
 path = "src/main.rs"
 
+[[bin]]
+name = "omarchy-dockctl"
+path = "src/bin/dockctl.rs"
+
 # Phase-0 de-risking spike: single-icon hover magnification.
 [[bin]]
 name = "spike-magnify"

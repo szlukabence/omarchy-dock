@@ -39,6 +39,13 @@ const BOUNCE_IMPULSE: f64 = -320.0;
 
 struct State {
     fixed: gtk::Fixed,
+    /// Current item data. Click handlers read this by index rather than
+    /// capturing a copy, so an in-place refresh cannot leave them stale.
+    data: Vec<DockItem>,
+    /// Per-slot indicator and badge widgets. Always created, shown or hidden
+    /// as state changes, so a refresh never has to build widgets.
+    indicators: Vec<gtk::Widget>,
+    badges: Vec<gtk::Label>,
     items: Vec<gtk::Widget>,
     springs: Vec<Spring>,
     /// Displacement away from the screen edge, in pixels, for launch bounce
@@ -95,6 +102,12 @@ impl State {
 
 pub struct DockSurface {
     pub window: gtk::ApplicationWindow,
+    /// Connector name (e.g. "eDP-1"), matching Hyprland's monitor name.
+    pub monitor_name: Option<String>,
+    /// Logical size of the layer surface, including magnification headroom.
+    pub surface_size: (f64, f64),
+    /// Slide offset animation, in pixels away from the screen edge.
+    slide: Rc<RefCell<Slide>>,
     /// Kept so later phases can update items in place instead of rebuilding.
     #[allow(dead_code)]
     state: Rc<RefCell<State>>,
@@ -109,6 +122,8 @@ impl DockSurface {
         sink: ActionSink,
     ) -> Self {
         let geom = Geometry::compute(cfg, items.len());
+        let travel = travel_for(cfg, &geom);
+        let geom_size = (geom.window_w, geom.window_h);
 
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(geom.window_w as i32, geom.window_h as i32);
@@ -122,6 +137,8 @@ impl DockSurface {
         let size = cfg.dock.icon_size as i32;
         let mut widgets = Vec::with_capacity(items.len());
         let mut slots = Vec::with_capacity(items.len());
+        let mut indicators = Vec::with_capacity(items.len());
+        let mut badges = Vec::with_capacity(items.len());
 
         for (i, item) in items.iter().enumerate() {
             // Icon and badge share one widget so the badge tracks the icon as
@@ -132,20 +149,12 @@ impl DockSurface {
             let img = make_icon(&item.icon, size);
             slot.set_child(Some(&img));
 
-            if let Some(n) = item.badge() {
-                let badge = gtk::Label::new(Some(&n.to_string()));
-                badge.add_css_class("dock-badge");
-                badge.set_halign(gtk::Align::End);
-                badge.set_valign(gtk::Align::Start);
-                slot.add_overlay(&badge);
-            }
-
-            let tip = if item.windows.len() > 1 {
-                format!("{} ({} windows)", item.label, item.windows.len())
-            } else {
-                item.label.clone()
-            };
-            slot.set_tooltip_text(Some(&tip));
+            let badge = gtk::Label::new(None);
+            badge.add_css_class("dock-badge");
+            badge.set_halign(gtk::Align::End);
+            badge.set_valign(gtk::Align::Start);
+            slot.add_overlay(&badge);
+            badges.push(badge);
 
             let (x, y) = geom.slots[i];
             fixed.put(&slot, x, y);
@@ -154,24 +163,14 @@ impl DockSurface {
 
             // The indicator is a separate, untransformed child: on macOS the
             // running dot stays put while the icon above it grows.
-            if item.running() {
-                let (len, thick) =
-                    if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
-                if let Some((ix, iy)) =
-                    geom.indicator_at(i, cfg.dock.icon_size, len, thick)
-                {
-                    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                    dot.add_css_class("dock-indicator");
-                    if item.urgent {
-                        dot.add_css_class("urgent");
-                    }
-                    if item.active {
-                        dot.add_css_class("active");
-                    }
-                    dot.set_size_request(len as i32, thick as i32);
-                    fixed.put(&dot, ix, iy);
-                }
+            let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.add_css_class("dock-indicator");
+            dot.set_size_request(len as i32, thick as i32);
+            if let Some((ix, iy)) = geom.indicator_at(i, cfg.dock.icon_size, len, thick) {
+                fixed.put(&dot, ix, iy);
             }
+            indicators.push(dot.upcast::<gtk::Widget>());
         }
         let widget_count = widgets.len();
 
@@ -179,6 +178,9 @@ impl DockSurface {
             fixed: fixed.clone(),
             springs: vec![Spring::at(1.0); widget_count],
             bounces: vec![Spring::at(0.0); widget_count],
+            data: items.to_vec(),
+            indicators,
+            badges,
             items: widgets,
             geom,
             cfg: cfg.clone(),
@@ -198,15 +200,33 @@ impl DockSurface {
             .child(&fixed)
             .build();
 
-        init_layer_shell(&window, cfg, monitor);
+        let edge = init_layer_shell(&window, cfg, monitor);
         window.present();
 
-        let surface = Self { window, state: state.clone() };
+        let slide = Rc::new(RefCell::new(Slide {
+            spring: Spring::at(0.0),
+            hidden: false,
+            edge,
+            base_margin: cfg.dock.edge_offset,
+            // How far the surface must travel to be off-screen, minus the
+            // sliver left behind as a pointer trigger.
+            travel,
+            ticking: false,
+            last_us: 0,
+        }));
+
+        let surface = Self {
+            window: window.clone(),
+            monitor_name: monitor.and_then(|m| m.connector()).map(|c| c.to_string()),
+            surface_size: (geom_size.0, geom_size.1),
+            slide: slide.clone(),
+            state: state.clone(),
+        };
 
         // Clicks are wired after State exists so a launch can bounce its own
         // icon without a second lookup.
-        for (i, (slot, item)) in slots.iter().zip(items).enumerate() {
-            attach_clicks(slot, item, &sink, &state, i);
+        for (i, slot) in slots.iter().enumerate() {
+            attach_clicks(slot, &sink, &state, i);
         }
 
         // Anything already demanding attention should bounce on appear.
@@ -222,6 +242,122 @@ impl DockSurface {
         self.window.close();
     }
 
+    /// Refresh indicators, badges and tooltips without rebuilding.
+    ///
+    /// Returns false when the item *set* changed (different apps, or a
+    /// different order), which needs new widgets. Rebuilding on every focus
+    /// change would destroy and recreate the layer surface — losing slide
+    /// state and flickering — so only shape changes pay that cost.
+    pub fn refresh(&self, items: &[DockItem]) -> bool {
+        let mut s = self.state.borrow_mut();
+        if s.data.len() != items.len()
+            || !s.data.iter().zip(items).all(|(a, b)| a.key == b.key)
+        {
+            return false;
+        }
+
+        for (i, item) in items.iter().enumerate() {
+            if let Some(dot) = s.indicators.get(i) {
+                dot.set_visible(item.running());
+                // Toggle rather than add: classes persist across refreshes.
+                set_class(dot, "urgent", item.urgent);
+                set_class(dot, "active", item.active);
+            }
+            if let Some(badge) = s.badges.get(i) {
+                match item.badge() {
+                    Some(n) => {
+                        badge.set_text(&n.to_string());
+                        badge.set_visible(true);
+                    }
+                    None => badge.set_visible(false),
+                }
+            }
+            if let Some(w) = s.items.get(i) {
+                let tip = if item.windows.len() > 1 {
+                    format!("{} ({} windows)", item.label, item.windows.len())
+                } else {
+                    item.label.clone()
+                };
+                w.set_tooltip_text(Some(&tip));
+            }
+        }
+
+        s.data = items.to_vec();
+        true
+    }
+
+    /// Slide the surface off-screen, or back on.
+    ///
+    /// A few pixels are deliberately left on screen: that sliver still
+    /// receives pointer events, so the dock can reveal itself on hover without
+    /// a separate trigger surface.
+    pub fn set_hidden(&self, hidden: bool, cfg: &Config) {
+        {
+            let mut s = self.slide.borrow_mut();
+            if s.hidden == hidden {
+                return;
+            }
+            s.hidden = hidden;
+            s.spring.target = if hidden { s.travel } else { 0.0 };
+        }
+        self.animate_slide(cfg);
+    }
+
+    /// Whether the surface is currently slid away. Used by Phase 7's
+    /// drag-to-reveal.
+    #[allow(dead_code)]
+    pub fn hidden(&self) -> bool {
+        self.slide.borrow().hidden
+    }
+
+    /// Drive the slide with the frame clock, applying it as a layer-shell
+    /// margin. Unlike icon magnification this cannot be a GPU transform: the
+    /// surface itself has to move, or it keeps eating input where it is no
+    /// longer drawn.
+    fn animate_slide(&self, cfg: &Config) {
+        {
+            let mut s = self.slide.borrow_mut();
+            if s.ticking {
+                return;
+            }
+            s.ticking = true;
+            s.last_us = 0;
+        }
+
+        let slide = self.slide.clone();
+        let window = self.window.clone();
+        let stiffness = 1000.0 / (cfg.autohide.slide_ms.max(40) as f64 / 100.0);
+        let damping = 2.0 * stiffness.sqrt();
+
+        window.clone().add_tick_callback(move |_, clock| {
+            let now = clock.frame_time();
+            let mut s = slide.borrow_mut();
+
+            if s.last_us == 0 {
+                s.last_us = now;
+                return glib::ControlFlow::Continue;
+            }
+            let dt = (now - s.last_us) as f64 / 1_000_000.0;
+            s.last_us = now;
+
+            s.spring.step(dt, stiffness, damping);
+            let settled = s.spring.settled();
+            if settled {
+                s.spring.settle();
+            }
+
+            let margin = s.base_margin - s.spring.pos.round() as i32;
+            window.set_margin(s.edge, margin);
+
+            if settled {
+                s.ticking = false;
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
     /// Kick an item upwards; used for launches and urgency.
     pub fn bounce(&self, i: usize) {
         kick(&self.state, i);
@@ -231,7 +367,6 @@ impl DockSurface {
 /// Wire left-click (focus / cycle / launch) and right-click (menu).
 fn attach_clicks(
     slot: &gtk::Overlay,
-    item: &DockItem,
     sink: &ActionSink,
     state: &Rc<RefCell<State>>,
     index: usize,
@@ -240,11 +375,19 @@ fn attach_clicks(
     let left = gtk::GestureClick::new();
     left.set_button(gdk::BUTTON_PRIMARY);
     {
-        let item = item.clone();
         let sink = sink.clone();
         let state = state.clone();
         left.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
+
+            // Read current data: focus may have moved since the dock was built.
+            let item = {
+                let s = state.borrow();
+                match s.data.get(index) {
+                    Some(i) => i.clone(),
+                    None => return,
+                }
+            };
 
             let action = if item.windows.is_empty() {
                 // Nothing running: launch, unless this is a pure UI slot.
@@ -269,11 +412,18 @@ fn attach_clicks(
     let right = gtk::GestureClick::new();
     right.set_button(gdk::BUTTON_SECONDARY);
     {
-        let item = item.clone();
         let sink = sink.clone();
         let anchor = slot.clone();
+        let state = state.clone();
         right.connect_pressed(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
+            let item = {
+                let s = state.borrow();
+                match s.data.get(index) {
+                    Some(i) => i.clone(),
+                    None => return,
+                }
+            };
             let sink = sink.clone();
             let popover = menu::build(&item, move |a| sink(a));
             popover.set_parent(&anchor);
@@ -285,6 +435,31 @@ fn attach_clicks(
         });
     }
     slot.add_controller(right);
+}
+
+fn set_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {
+    if on {
+        w.add_css_class(class);
+    } else {
+        w.remove_css_class(class);
+    }
+}
+
+/// Slide state for one surface.
+struct Slide {
+    spring: Spring,
+    hidden: bool,
+    edge: Edge,
+    base_margin: i32,
+    travel: f64,
+    ticking: bool,
+    last_us: i64,
+}
+
+/// Distance the surface must move to be off-screen but for a trigger sliver.
+fn travel_for(cfg: &Config, geom: &Geometry) -> f64 {
+    let extent = if cfg.dock.position.is_vertical() { geom.window_w } else { geom.window_h };
+    (extent - cfg.autohide.trigger_px.max(1) as f64).max(0.0)
 }
 
 /// Give an item an upward impulse and make sure the tick loop is running.
@@ -301,7 +476,11 @@ fn kick(state: &Rc<RefCell<State>>, index: usize) {
 }
 
 /// Anchor the surface to the configured screen edge.
-fn init_layer_shell(window: &gtk::ApplicationWindow, cfg: &Config, monitor: Option<&gdk::Monitor>) {
+fn init_layer_shell(
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+    monitor: Option<&gdk::Monitor>,
+) -> Edge {
     window.init_layer_shell();
     window.set_namespace(Some(LAYER_NAMESPACE));
     window.set_layer(Layer::Top);
@@ -325,6 +504,7 @@ fn init_layer_shell(window: &gtk::ApplicationWindow, cfg: &Config, monitor: Opti
         // Float over windows without reserving screen space.
         window.set_exclusive_zone(0);
     }
+    edge
 }
 
 /// Build an icon image from a desktop entry's `Icon=` value.
