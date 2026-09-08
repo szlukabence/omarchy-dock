@@ -149,14 +149,14 @@ impl State {
         // a drop gap, but it deliberately does not zoom, lift or bounce: it is
         // the seat the icon sits in, not part of the icon.
         if let Some(plate) = self.plates.get(i) {
-            let (sx, sy) = self.geom.slots[i];
+            let (px, py) = plate_origin(&self.geom, i);
             let shift = self.shifts[i].pos;
             let (dx, dy) = if self.geom.horizontal() { (shift, 0.0) } else { (0.0, shift) };
             self.fixed.set_child_transform(
                 plate,
                 Some(&gsk::Transform::new().translate(&graphene::Point::new(
-                    (sx + dx) as f32,
-                    (sy + dy) as f32,
+                    (px + dx) as f32,
+                    (py + dy) as f32,
                 ))),
             );
             plate.set_opacity(self.hovers[i].pos.clamp(0.0, 1.0));
@@ -254,7 +254,8 @@ impl DockSurface {
                 widgets.push(slot.upcast::<gtk::Widget>());
                 // Keep the per-slot vectors aligned with the item list. A
                 // divider has no hover state, so its plate is never shown.
-                plates.push(hover_plate(&fixed, x, y, 0.0, 0.0));
+                let (px, py) = plate_origin(&geom, i);
+                plates.push(hover_plate(&fixed, px, py, 0.0, 0.0));
                 let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 dot.set_visible(false);
                 indicators.push(dot.upcast::<gtk::Widget>());
@@ -269,15 +270,9 @@ impl DockSurface {
             // The plate goes in first so it draws beneath this slot. Sized a
             // little tighter than the icon box, the way a bar widget's
             // highlight sits inside its cell rather than filling it.
-            let (px, py) = geom.slots[i];
+            let (px, py) = plate_origin(&geom, i);
             let plate_size = cfg.dock.icon_size + PLATE_MARGIN * 2.0;
-            plates.push(hover_plate(
-                &fixed,
-                px - PLATE_MARGIN,
-                py - PLATE_MARGIN,
-                plate_size,
-                plate_size,
-            ));
+            plates.push(hover_plate(&fixed, px, py, plate_size, plate_size));
 
             slot.set_child(Some(&item_visual(item, size, cfg)));
 
@@ -1322,6 +1317,17 @@ fn init_layer_shell(
 /// That value may be a themed icon name or an absolute path, and the state
 /// engine has already resolved it, so this only has to handle both forms and
 /// fall back when the theme lacks the name.
+/// Top-left of a slot's hover plate, in surface coordinates.
+///
+/// `GtkFixed` expresses a child's position *as* its transform, so the position
+/// given to `put()` is discarded the first time `apply` runs. Both therefore
+/// have to come from here, or the plate ends up offset from its icon by
+/// exactly the margin — visibly off-centre, down and to the right.
+fn plate_origin(geom: &Geometry, i: usize) -> (f64, f64) {
+    let (x, y) = geom.slots[i];
+    (x - PLATE_MARGIN, y - PLATE_MARGIN)
+}
+
 /// The fill drawn behind a hovered slot, placed and hidden.
 ///
 /// Created for every slot rather than on demand: the tick callback animates it
