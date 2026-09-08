@@ -46,8 +46,6 @@ struct State {
     /// as state changes, so a refresh never has to build widgets.
     indicators: Vec<gtk::Widget>,
     badges: Vec<gtk::Label>,
-    /// The slot widgets, needed to anchor the name label over the right icon.
-    slots: Vec<gtk::Widget>,
     /// The hovered icon's name, drawn in the reserved band at the top of the
     /// surface. GTK's own tooltips follow the pointer, which puts the name
     /// below the icon and over the panel; a dock wants it above the icon.
@@ -244,7 +242,6 @@ impl DockSurface {
             data: items.to_vec(),
             indicators,
             badges,
-            slots: slots.iter().cloned().map(|s| s.upcast::<gtk::Widget>()).collect(),
             tip_label: tip_label.clone(),
             tip_generation: 0,
             tooltip_delay: cfg.dock.tooltip_delay_ms,
