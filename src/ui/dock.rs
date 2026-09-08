@@ -16,16 +16,35 @@ use std::rc::Rc;
 
 use crate::anim::Spring;
 use crate::config::{Config, Position};
+use crate::runtime::DockCommand;
 use crate::state::DockItem;
+use crate::ui::menu::{self, MenuAction};
 use crate::ui::Geometry;
+
+/// Actions a dock surface emits. The app owns the worker channels and config,
+/// so the UI reports intent rather than acting on it.
+pub type ActionSink = Rc<dyn Fn(MenuAction)>;
 
 /// Must match the Hyprland `layerrule` namespace.
 pub const LAYER_NAMESPACE: &str = "omarchy-dock";
+
+/// Bounce spring: deliberately underdamped so the icon overshoots and settles
+/// with a couple of visible swings.
+const BOUNCE_STIFFNESS: f64 = 220.0;
+/// ~0.28 of critical damping (2*sqrt(220) ~= 29.66), precomputed because
+/// `sqrt` is not const.
+const BOUNCE_DAMPING: f64 = 8.3;
+/// Initial upward velocity, in px/s, of a launch or urgency bounce.
+const BOUNCE_IMPULSE: f64 = -320.0;
 
 struct State {
     fixed: gtk::Fixed,
     items: Vec<gtk::Widget>,
     springs: Vec<Spring>,
+    /// Displacement away from the screen edge, in pixels, for launch bounce
+    /// and urgency. Separate from the zoom spring so a bounce can play while
+    /// the icon is magnified.
+    bounces: Vec<Spring>,
     geom: Geometry,
     cfg: Config,
     hovered: Option<usize>,
@@ -46,10 +65,12 @@ impl State {
         let (ax, ay) = self.geom.anchor;
         let (lx, ly) = self.geom.lift_dir;
 
+        let bounce = self.bounces[i].pos;
         let zoom = self.cfg.magnify.zoom;
         // 0..1 as the spring travels from rest to full zoom.
         let p = if zoom > 1.0 { ((s.pos - 1.0) / (zoom - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
-        let lift = self.cfg.magnify.lift * p;
+        // Bounce rides on top of magnification lift, along the same axis.
+        let lift = self.cfg.magnify.lift * p + bounce;
         let k = s.pos as f32;
 
         gsk::Transform::new()
@@ -85,6 +106,7 @@ impl DockSurface {
         cfg: &Config,
         items: &[DockItem],
         monitor: Option<&gdk::Monitor>,
+        sink: ActionSink,
     ) -> Self {
         let geom = Geometry::compute(cfg, items.len());
 
@@ -99,6 +121,7 @@ impl DockSurface {
 
         let size = cfg.dock.icon_size as i32;
         let mut widgets = Vec::with_capacity(items.len());
+        let mut slots = Vec::with_capacity(items.len());
 
         for (i, item) in items.iter().enumerate() {
             // Icon and badge share one widget so the badge tracks the icon as
@@ -126,6 +149,7 @@ impl DockSurface {
 
             let (x, y) = geom.slots[i];
             fixed.put(&slot, x, y);
+            slots.push(slot.clone());
             widgets.push(slot.upcast::<gtk::Widget>());
 
             // The indicator is a separate, untransformed child: on macOS the
@@ -149,12 +173,13 @@ impl DockSurface {
                 }
             }
         }
-        let items = widgets;
+        let widget_count = widgets.len();
 
         let state = Rc::new(RefCell::new(State {
             fixed: fixed.clone(),
-            springs: vec![Spring::at(1.0); items.len()],
-            items,
+            springs: vec![Spring::at(1.0); widget_count],
+            bounces: vec![Spring::at(0.0); widget_count],
+            items: widgets,
             geom,
             cfg: cfg.clone(),
             hovered: None,
@@ -176,12 +201,103 @@ impl DockSurface {
         init_layer_shell(&window, cfg, monitor);
         window.present();
 
-        Self { window, state }
+        let surface = Self { window, state: state.clone() };
+
+        // Clicks are wired after State exists so a launch can bounce its own
+        // icon without a second lookup.
+        for (i, (slot, item)) in slots.iter().zip(items).enumerate() {
+            attach_clicks(slot, item, &sink, &state, i);
+        }
+
+        // Anything already demanding attention should bounce on appear.
+        for (i, item) in items.iter().enumerate() {
+            if item.urgent {
+                surface.bounce(i);
+            }
+        }
+        surface
     }
 
     pub fn close(&self) {
         self.window.close();
     }
+
+    /// Kick an item upwards; used for launches and urgency.
+    pub fn bounce(&self, i: usize) {
+        kick(&self.state, i);
+    }
+}
+
+/// Wire left-click (focus / cycle / launch) and right-click (menu).
+fn attach_clicks(
+    slot: &gtk::Overlay,
+    item: &DockItem,
+    sink: &ActionSink,
+    state: &Rc<RefCell<State>>,
+    index: usize,
+) {
+    // ── left button ─────────────────────────────────────────────────────────
+    let left = gtk::GestureClick::new();
+    left.set_button(gdk::BUTTON_PRIMARY);
+    {
+        let item = item.clone();
+        let sink = sink.clone();
+        let state = state.clone();
+        left.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+
+            let action = if item.windows.is_empty() {
+                // Nothing running: launch, unless this is a pure UI slot.
+                (!item.exec.is_empty()).then(|| {
+                    kick(&state, index);
+                    MenuAction::Command(DockCommand::Exec(item.exec.clone()))
+                })
+            } else {
+                // Running: focus, or cycle when this app already has focus.
+                item.click_target()
+                    .map(|next| MenuAction::Command(DockCommand::Focus(next.clone())))
+            };
+
+            if let Some(a) = action {
+                sink(a);
+            }
+        });
+    }
+    slot.add_controller(left);
+
+    // ── right button ────────────────────────────────────────────────────────
+    let right = gtk::GestureClick::new();
+    right.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let item = item.clone();
+        let sink = sink.clone();
+        let anchor = slot.clone();
+        right.connect_pressed(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let sink = sink.clone();
+            let popover = menu::build(&item, move |a| sink(a));
+            popover.set_parent(&anchor);
+            popover.set_position(gtk::PositionType::Top);
+            // Detach on close so repeated right-clicks do not stack popovers
+            // as children of the slot.
+            popover.connect_closed(|p| p.unparent());
+            popover.popup();
+        });
+    }
+    slot.add_controller(right);
+}
+
+/// Give an item an upward impulse and make sure the tick loop is running.
+fn kick(state: &Rc<RefCell<State>>, index: usize) {
+    {
+        let mut s = state.borrow_mut();
+        if index >= s.bounces.len() {
+            return;
+        }
+        s.bounces[index].vel = BOUNCE_IMPULSE;
+        s.bounces[index].target = 0.0;
+    }
+    ensure_ticking(state);
 }
 
 /// Anchor the surface to the configured screen edge.
@@ -297,14 +413,29 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
         let cfg = s.cfg.clone();
         let mut moving = false;
         for i in 0..s.springs.len() {
-            if s.springs[i].settled() {
+            let zoom_busy = !s.springs[i].settled();
+            let bounce_busy = !s.bounces[i].settled();
+            if !zoom_busy && !bounce_busy {
                 continue;
             }
-            s.springs[i].step_cfg(dt, &cfg);
-            if s.springs[i].settled() {
-                s.springs[i].settle();
-            } else {
-                moving = true;
+
+            if zoom_busy {
+                s.springs[i].step_cfg(dt, &cfg);
+                if s.springs[i].settled() {
+                    s.springs[i].settle();
+                } else {
+                    moving = true;
+                }
+            }
+            if bounce_busy {
+                // Softer and less damped than the zoom spring, so a launch
+                // reads as a bounce rather than a nudge.
+                s.bounces[i].step(dt, BOUNCE_STIFFNESS, BOUNCE_DAMPING);
+                if s.bounces[i].settled() {
+                    s.bounces[i].settle();
+                } else {
+                    moving = true;
+                }
             }
             s.apply(i);
         }

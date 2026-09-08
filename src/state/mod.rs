@@ -34,6 +34,12 @@ pub struct DockItem {
     pub urgent: bool,
     /// True when every window is on a special (scratchpad) workspace.
     pub scratchpad: bool,
+    /// Which of `windows` currently holds focus, for click-to-cycle.
+    pub active_window: Option<Address>,
+    /// Command line to launch when nothing is running.
+    pub exec: String,
+    /// `Desktop Action` entries, offered in the context menu.
+    pub actions: Vec<crate::desktop::Action>,
 }
 
 impl DockItem {
@@ -44,6 +50,29 @@ impl DockItem {
     /// Count shown as a badge; `None` below two windows.
     pub fn badge(&self) -> Option<usize> {
         (self.windows.len() > 1).then_some(self.windows.len())
+    }
+
+    /// Which window a left-click should focus.
+    ///
+    /// Clicking an app that already holds focus advances to its next window,
+    /// so repeated clicks cycle — the behaviour a dock icon is expected to
+    /// have. Clicking an app that does *not* hold focus jumps to its first
+    /// window rather than resuming the cycle, so a click from elsewhere is
+    /// predictable instead of landing on wherever the cycle last stopped.
+    pub fn click_target(&self) -> Option<&Address> {
+        if self.windows.is_empty() {
+            return None;
+        }
+        // A stale focus (naming a window that closed between events) falls
+        // through to the first window: doing nothing on click would be worse
+        // than being slightly arbitrary.
+        let next = self
+            .active_window
+            .as_ref()
+            .and_then(|current| self.windows.iter().position(|w| w == current))
+            .map(|at| (at + 1) % self.windows.len())
+            .unwrap_or(0);
+        self.windows.get(next)
     }
 }
 
@@ -138,13 +167,16 @@ impl DockState {
                 entry.map(|e| e.icon.clone()).filter(|i| !i.is_empty()).unwrap_or_else(|| id.clone()),
                 windows,
                 true,
+                entry.map(|e| e.command()).unwrap_or_default(),
+                entry.map(|e| e.actions.clone()).unwrap_or_default(),
             ));
         }
 
         if show_running {
             // Group leftovers by matched entry so multiple windows of one app
             // collapse into a single icon.
-            let mut groups: Vec<(String, String, String, Vec<Address>)> = Vec::new();
+            type Group = (String, String, String, Vec<Address>, String, Vec<crate::desktop::Action>);
+            let mut groups: Vec<Group> = Vec::new();
             for (i, c) in self.clients.iter().enumerate() {
                 if claimed[i] || c.is_special() {
                     continue;
@@ -160,17 +192,25 @@ impl DockState {
 
                 match groups.iter_mut().find(|g| g.0 == key) {
                     Some(g) => g.3.push(c.address.clone()),
-                    None => groups.push((key, label, icon, vec![c.address.clone()])),
+                    None => groups.push((
+                        key,
+                        label,
+                        icon,
+                        vec![c.address.clone()],
+                        entry.map(|e| e.command()).unwrap_or_default(),
+                        entry.map(|e| e.actions.clone()).unwrap_or_default(),
+                    )),
                 }
             }
-            for (key, label, icon, windows) in groups {
-                items.push(self.make_item(key, label, icon, windows, false));
+            for (key, label, icon, windows, exec, actions) in groups {
+                items.push(self.make_item(key, label, icon, windows, false, exec, actions));
             }
         }
 
         items
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_item(
         &self,
         key: String,
@@ -178,13 +218,85 @@ impl DockState {
         icon: String,
         windows: Vec<Address>,
         pinned: bool,
+        exec: String,
+        actions: Vec<crate::desktop::Action>,
     ) -> DockItem {
-        let active = self.focused.as_ref().is_some_and(|f| windows.contains(f));
+        let active_window =
+            self.focused.as_ref().filter(|f| windows.contains(f)).cloned();
+        let active = active_window.is_some();
         let urgent = windows.iter().any(|w| self.urgent.contains(w));
         let scratchpad = !windows.is_empty()
             && windows.iter().all(|w| {
                 self.clients.iter().any(|c| &c.address == w && c.is_special())
             });
-        DockItem { key, label, icon, windows, pinned, active, urgent, scratchpad }
+        DockItem {
+            key,
+            label,
+            icon,
+            windows,
+            pinned,
+            active,
+            urgent,
+            scratchpad,
+            active_window,
+            exec,
+            actions,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(windows: &[&str], active: Option<&str>) -> DockItem {
+        DockItem {
+            key: "k".into(),
+            label: "k".into(),
+            icon: "k".into(),
+            windows: windows.iter().map(|w| Address::parse(w)).collect(),
+            pinned: true,
+            active: active.is_some(),
+            urgent: false,
+            scratchpad: false,
+            active_window: active.map(Address::parse),
+            exec: String::new(),
+            actions: vec![],
+        }
+    }
+
+    #[test]
+    fn repeated_clicks_cycle_and_wrap() {
+        let i = item(&["a", "b", "c"], Some("a"));
+        assert_eq!(i.click_target(), Some(&Address::parse("b")));
+        let i = item(&["a", "b", "c"], Some("c"));
+        // Wraps back to the first rather than stopping at the end.
+        assert_eq!(i.click_target(), Some(&Address::parse("a")));
+    }
+
+    #[test]
+    fn clicking_from_elsewhere_jumps_to_the_first_window() {
+        let i = item(&["a", "b", "c"], None);
+        assert_eq!(i.click_target(), Some(&Address::parse("a")));
+    }
+
+    #[test]
+    fn single_window_click_is_idempotent() {
+        // Focusing the only window again must not wrap to nothing.
+        let i = item(&["a"], Some("a"));
+        assert_eq!(i.click_target(), Some(&Address::parse("a")));
+    }
+
+    #[test]
+    fn nothing_running_has_no_target_so_the_caller_launches() {
+        assert_eq!(item(&[], None).click_target(), None);
+    }
+
+    #[test]
+    fn stale_focus_falls_back_to_the_first_window() {
+        // Focus can name a window that closed between events. Returning
+        // nothing would make the click silently do nothing.
+        let i = item(&["a", "b"], Some("zz"));
+        assert_eq!(i.click_target(), Some(&Address::parse("a")));
     }
 }
