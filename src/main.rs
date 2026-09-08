@@ -13,6 +13,7 @@ mod runtime;
 mod stacks;
 mod state;
 mod theme;
+mod tray;
 mod ui;
 
 use gtk4 as gtk;

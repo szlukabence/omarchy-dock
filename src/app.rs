@@ -335,7 +335,11 @@ pub fn run() -> glib::ExitCode {
     if let Err(e) = crate::config::watcher::spawn(tx.clone()) {
         tracing::error!(error = %e, "live reload unavailable");
     }
-    let worker = match crate::runtime::spawn(tx) {
+    // Read once here rather than reacting to the setting later: hosting the
+    // tray means claiming a bus name and registering with the watcher, which
+    // is a process-lifetime thing, not something to toggle per frame.
+    let tray = Config::load().tray.enabled;
+    let worker = match crate::runtime::spawn(tx, tray) {
         Ok(handle) => Some(handle),
         Err(e) => {
             tracing::error!(error = %e, "Hyprland IPC unavailable");
@@ -392,6 +396,10 @@ pub fn run() -> glib::ExitCode {
                 match event {
                     // A recording started or stopped; nothing else changed.
                     AppEvent::HidePolicyChanged => app.update_autohide(),
+                    AppEvent::Tray(items) => {
+                        app.state.set_tray(items);
+                        app.sync(&gtk_app);
+                    }
                     AppEvent::StyleChanged => {
                         // A theme carries its own spacing and font scale, so
                         // switching themes can change the dock's geometry, not
@@ -533,6 +541,8 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
         || old.workspaces.enabled != new.workspaces.enabled
         || old.workspaces.scratchpad != new.workspaces.scratchpad
         || old.workspaces.show_empty != new.workspaces.show_empty
+        || old.tray.enabled != new.tray.enabled
+        || old.tray.show_passive != new.tray.show_passive
         || old.items.folders.len() != new.items.folders.len()
         || old
             .items

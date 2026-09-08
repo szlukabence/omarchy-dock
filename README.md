@@ -111,6 +111,7 @@ Notable keys:
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
+| `tray.enabled`, `.show_passive` | Host the system tray in the dock (off by default — the bar already has one) |
 | `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |
 | `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |
 | `dock.tooltip_delay_ms` | Delay before a hovered icon's name appears |
@@ -120,6 +121,17 @@ Notable keys:
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 | `items.glyph_ui` | Draw launcher, folders and Trash as monochrome glyphs (default: on) |
 | `dock.avoid_bar` | Offset past the Omarchy bar when both share an edge (default: on) |
+
+The dock can host the **system tray** itself: it registers as a
+StatusNotifierItem host alongside the shell's, so items appear in both until
+you turn off the bar's `omarchy.tray` widget. Clicks go straight to the
+application — left activates, middle is the secondary action, right asks the
+app to post its own menu, which belongs to it rather than to the dock.
+
+`ContextMenu` is optional in the protocol, though: an item that serves its menu
+only over DBusMenu — cc-switch, for one — will not respond to a right click,
+and the dock logs that rather than pretending otherwise. Drawing those menus
+means implementing DBusMenu, which is a whole protocol rather than a fallback.
 
 Workspace tiles switch on click; dropping an app icon on one sends that
 window there, and dropping on the scratchpad tile stashes it. A Chromium web

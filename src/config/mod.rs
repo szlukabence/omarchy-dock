@@ -98,6 +98,7 @@ pub struct Config {
     pub monitors: Monitors,
     pub items: Items,
     pub workspaces: Workspaces,
+    pub tray: Tray,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +200,26 @@ pub struct Monitors {
     pub mode: MonitorMode,
     /// Output name for `MonitorMode::Primary`, e.g. "eDP-1".
     pub primary: String,
+}
+
+/// The system tray, hosted in the dock rather than the bar.
+///
+/// Off by default, for the same reason the workspace strip is: Omarchy's bar
+/// already has a tray widget, and showing every item twice is not an
+/// improvement. Turn this on and `omarchy.tray` off to move it here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tray {
+    pub enabled: bool,
+    /// Show items whose status is "Passive". Applications use it to mean
+    /// "nothing to see", and most trays hide them.
+    pub show_passive: bool,
+}
+
+impl Default for Tray {
+    fn default() -> Self {
+        Self { enabled: false, show_passive: true }
+    }
 }
 
 /// The workspace strip, which mirrors what the bar's workspace widget shows.

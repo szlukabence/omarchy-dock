@@ -794,6 +794,17 @@ fn attach_clicks(
                     )));
                     return;
                 }
+                ItemKind::Tray => {
+                    // Handed straight to the application: a tray icon's click
+                    // means whatever that application decided it means.
+                    if let Some(service) = crate::state::tray_service(&item.key) {
+                        sink(MenuAction::Command(DockCommand::TrayClick {
+                            service: service.to_string(),
+                            click: crate::tray::Click::Primary,
+                        }));
+                    }
+                    return;
+                }
                 ItemKind::Command => {
                     if !item.exec.is_empty() {
                         kick(&state, index);
@@ -839,6 +850,32 @@ fn attach_clicks(
     }
     slot.add_controller(left);
 
+    // ── middle button ───────────────────────────────────────────────────────
+    // Only tray items use it, for the secondary action the application
+    // defines. Nothing else in the dock has a meaningful third gesture.
+    {
+        let middle = gtk::GestureClick::new();
+        middle.set_button(gdk::BUTTON_MIDDLE);
+        let sink = sink.clone();
+        let state = state.clone();
+        let at = at.clone();
+        middle.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let s = state.borrow();
+            let Some(item) = s.data.get(at.get()) else { return };
+            if item.kind != ItemKind::Tray {
+                return;
+            }
+            if let Some(service) = crate::state::tray_service(&item.key) {
+                sink(MenuAction::Command(DockCommand::TrayClick {
+                    service: service.to_string(),
+                    click: crate::tray::Click::Middle,
+                }));
+            }
+        });
+        slot.add_controller(middle);
+    }
+
     // ── right button ────────────────────────────────────────────────────────
     let right = gtk::GestureClick::new();
     right.set_button(gdk::BUTTON_SECONDARY);
@@ -861,6 +898,19 @@ fn attach_clicks(
                 }
             };
             let sink = sink.clone();
+            // A tray item's menu belongs to its application: it is served over
+            // DBusMenu, and redrawing it here would mean reproducing another
+            // program's UI and getting it subtly wrong. Ask the app to post it.
+            if item.kind == ItemKind::Tray {
+                if let Some(service) = crate::state::tray_service(&item.key) {
+                    sink(MenuAction::Command(DockCommand::TrayClick {
+                        service: service.to_string(),
+                        click: crate::tray::Click::Secondary,
+                    }));
+                }
+                return;
+            }
+
             let popover = if item.kind == ItemKind::Separator {
                 // Only user-placed separators are editable; automatic dividers
                 // are derived from the item list and have no pinned index.
@@ -1482,6 +1532,16 @@ fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
     // is drawn in the bar's monochrome language, not about items that have
     // nothing else to draw.
     let always_glyph = matches!(item.kind, ItemKind::Command | ItemKind::Scratchpad);
+    // A tray item often ships no themed icon, only raw pixels. Uploading them
+    // as a texture is the only way to show such an app at all.
+    if let Some(pixmap) = &item.pixmap {
+        if item.icon.is_empty() {
+            if let Some(img) = pixmap_image(pixmap, size) {
+                return img.upcast::<gtk::Widget>();
+            }
+        }
+    }
+
     match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui || always_glyph) {
         Some(glyph) => {
             let label = gtk::Label::new(Some(glyph));
@@ -1505,6 +1565,35 @@ fn glyph_attrs(size: i32) -> gtk::pango::AttrList {
     let points = (size as f64 * 0.62).round() as i32;
     attrs.insert(gtk::pango::AttrSize::new(points * gtk::pango::SCALE));
     attrs
+}
+
+/// Turn a StatusNotifierItem pixmap into an image.
+///
+/// The protocol specifies ARGB32 in network byte order, which is exactly
+/// GDK's `A8r8g8b8` — no conversion, just a copy into a texture. Returns
+/// `None` rather than panicking on a pixmap whose declared size does not match
+/// its data, because that data comes from another application.
+fn pixmap_image(pixmap: &(i32, i32, Vec<u8>), size: i32) -> Option<gtk::Image> {
+    let (w, h, ref data) = *pixmap;
+    let (w, h) = (w.max(0) as usize, h.max(0) as usize);
+    let stride = w.checked_mul(4)?;
+    if w == 0 || h == 0 || data.len() < stride.checked_mul(h)? {
+        return None;
+    }
+
+    let bytes = glib::Bytes::from(&data[..stride * h]);
+    let texture = gdk::MemoryTexture::new(
+        w as i32,
+        h as i32,
+        gdk::MemoryFormat::A8r8g8b8,
+        &bytes,
+        stride,
+    );
+
+    let img = gtk::Image::from_paintable(Some(&texture));
+    img.set_pixel_size(size);
+    img.add_css_class("dock-icon");
+    Some(img)
 }
 
 fn make_icon(icon: &str, size: i32) -> gtk::Image {

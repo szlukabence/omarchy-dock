@@ -34,6 +34,8 @@ pub enum ItemKind {
     /// A macOS-style stack: a directory whose recent contents fan out.
     Folder,
     Trash,
+    /// A system-tray item, hosted over D-Bus rather than owned by the dock.
+    Tray,
     /// One Hyprland workspace, rendered as a numbered tile the way the bar's
     /// workspace widget does. Clicking switches to it; dropping an app icon on
     /// it sends that window there.
@@ -77,6 +79,10 @@ pub struct DockItem {
     /// furniture is rendered the way the bar's widgets are. `None` for real
     /// applications, which always keep their own icon.
     pub glyph: Option<String>,
+    /// Raw icon pixels a tray item supplied itself, for the many applications
+    /// that ship no themed icon. Shared, because the item list is cloned on
+    /// every rebuild.
+    pub pixmap: Option<std::sync::Arc<(i32, i32, Vec<u8>)>>,
 }
 
 impl DockItem {
@@ -127,6 +133,43 @@ impl DockItem {
     }
 }
 
+/// Key prefix for a tray item. The D-Bus service follows, which is both the
+/// item's identity and the address every click has to be sent to.
+const TRAY_KEY: &str = "__tray:";
+
+/// D-Bus service a tray item refers to, if it is one.
+pub fn tray_service(key: &str) -> Option<&str> {
+    key.strip_prefix(TRAY_KEY)
+}
+
+/// Fallback glyph for a tray item that ships neither a themed icon nor a
+/// pixmap. Rare, but an invisible dock item is worse than a generic one.
+const GLYPH_TRAY: &str = "\u{f013}";
+
+fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
+    DockItem {
+        kind: ItemKind::Tray,
+        key: format!("{TRAY_KEY}{}", t.service),
+        label: t.label().to_string(),
+        icon: t.icon_name.clone(),
+        windows: Vec::new(),
+        pinned: false,
+        active: false,
+        urgent: t.needs_attention(),
+        scratchpad: false,
+        active_window: None,
+        exec: String::new(),
+        actions: Vec::new(),
+        path: None,
+        pin_index: None,
+        // Only when there is nothing else to draw: a themed name or the app's
+        // own pixmap both beat a generic mark.
+        glyph: (t.icon_name.is_empty() && t.pixmap.is_none())
+            .then(|| GLYPH_TRAY.to_string()),
+        pixmap: t.pixmap.clone(),
+    }
+}
+
 /// Prefix marking a pinned entry as a command tile rather than an app id.
 pub const COMMAND_KEY: &str = "cmd:";
 
@@ -155,6 +198,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
         } else {
             cmd.glyph.clone()
         }),
+        pixmap: None,
     }
 }
 
@@ -324,6 +368,7 @@ fn separator() -> DockItem {
         path: None,
         pin_index: None,
         glyph: None,
+        pixmap: None,
     }
 }
 
@@ -332,6 +377,7 @@ pub struct DockState {
     clients: Vec<Client>,
     monitors: Vec<Monitor>,
     workspaces: Vec<Workspace>,
+    tray: Vec<crate::tray::TrayItem>,
     focused: Option<Address>,
     urgent: Vec<Address>,
 }
@@ -343,6 +389,7 @@ impl DockState {
             clients: Vec::new(),
             monitors: Vec::new(),
             workspaces: Vec::new(),
+            tray: Vec::new(),
             focused: None,
             urgent: Vec::new(),
         }
@@ -361,6 +408,10 @@ impl DockState {
 
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
         self.monitors = monitors;
+    }
+
+    pub fn set_tray(&mut self, items: Vec<crate::tray::TrayItem>) {
+        self.tray = items;
     }
 
     pub fn set_workspaces(&mut self, mut workspaces: Vec<Workspace>) {
@@ -473,6 +524,7 @@ impl DockState {
                 path: None,
                 pin_index: None,
                 glyph: Some(GLYPH_LAUNCHER.into()),
+                pixmap: None,
             });
         }
 
@@ -626,6 +678,15 @@ impl DockState {
         // Stacks and Trash form the dock's tail section, as on macOS.
         let tail_start = items.len();
 
+        if cfg.tray.enabled {
+            for t in &self.tray {
+                if t.status == "Passive" && !cfg.tray.show_passive {
+                    continue;
+                }
+                items.push(tray_item(t));
+            }
+        }
+
         for folder in cfg.items.folders.iter().filter(|f| f.enabled) {
             let path = crate::config::expand_tilde(&folder.path);
             let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
@@ -644,6 +705,7 @@ impl DockState {
                 actions: Vec::new(),
                 pin_index: None,
                 glyph: Some(folder_glyph(&path).into()),
+                pixmap: None,
                 path: Some(path),
             });
         }
@@ -667,6 +729,7 @@ impl DockState {
                 path: Some(crate::stacks::trash_files_dir()),
                 pin_index: None,
                 glyph: Some(if empty { GLYPH_TRASH.into() } else { GLYPH_TRASH_FULL.into() }),
+                pixmap: None,
             });
         }
 
@@ -732,6 +795,7 @@ impl DockState {
                     pin_index: None,
                     // The tile draws its own number, not a glyph.
                     glyph: None,
+                    pixmap: None,
                 });
             }
         }
@@ -761,6 +825,7 @@ impl DockState {
                 path: None,
                 pin_index: None,
                 glyph: Some(GLYPH_SCRATCHPAD.into()),
+                pixmap: None,
             });
         }
 
@@ -802,6 +867,7 @@ impl DockState {
             path: None,
             pin_index: None,
             glyph: None,
+            pixmap: None,
         }
     }
 }
@@ -827,6 +893,7 @@ mod tests {
             path: None,
             pin_index: None,
             glyph: None,
+            pixmap: None,
         }
     }
 
@@ -1248,6 +1315,7 @@ mod separator_key_tests {
             path: None,
             pin_index: Some(pin),
             glyph: None,
+            pixmap: None,
         }
     }
 

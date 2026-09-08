@@ -28,6 +28,8 @@ pub enum AppEvent {
     },
     /// An incremental Hyprland event.
     Hypr(HyprEvent),
+    /// The current set of system-tray items. Sent whole on every change.
+    Tray(Vec<crate::tray::TrayItem>),
     /// A command from `omarchy-dockctl`.
     Control(crate::ipc_ctl::Control),
 }
