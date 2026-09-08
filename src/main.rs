@@ -4,8 +4,10 @@ mod anim;
 mod app;
 mod config;
 mod event;
+mod desktop;
 mod hypr;
 mod runtime;
+mod state;
 mod theme;
 mod ui;
 

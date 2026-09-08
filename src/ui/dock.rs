@@ -8,15 +8,15 @@
 use gtk4 as gtk;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib, graphene, gsk};
+use gtk::{gdk, glib, graphene, gsk};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::anim::Spring;
 use crate::config::{Config, Position};
+use crate::state::DockItem;
 use crate::ui::Geometry;
 
 /// Must match the Hyprland `layerrule` namespace.
@@ -83,10 +83,10 @@ impl DockSurface {
     pub fn build(
         app: &gtk::Application,
         cfg: &Config,
+        items: &[DockItem],
         monitor: Option<&gdk::Monitor>,
     ) -> Self {
-        let ids = visible_items(cfg);
-        let geom = Geometry::compute(cfg, ids.len());
+        let geom = Geometry::compute(cfg, items.len());
 
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(geom.window_w as i32, geom.window_h as i32);
@@ -97,19 +97,59 @@ impl DockSurface {
         panel.set_size_request(geom.panel_w as i32, geom.panel_h as i32);
         fixed.put(&panel, geom.panel_x, geom.panel_y);
 
-        // Index desktop entries once. `AppInfo::all()` walks every installed
-        // .desktop file, so doing it per item would be quadratic.
-        let entries = desktop_index();
+        let size = cfg.dock.icon_size as i32;
+        let mut widgets = Vec::with_capacity(items.len());
 
-        let mut items = Vec::with_capacity(ids.len());
-        for (i, id) in ids.iter().enumerate() {
-            let img = make_icon(id, cfg.dock.icon_size as i32, &entries);
-            img.set_size_request(cfg.dock.icon_size as i32, cfg.dock.icon_size as i32);
-            img.set_tooltip_text(Some(id));
+        for (i, item) in items.iter().enumerate() {
+            // Icon and badge share one widget so the badge tracks the icon as
+            // it magnifies.
+            let slot = gtk::Overlay::new();
+            slot.set_size_request(size, size);
+
+            let img = make_icon(&item.icon, size);
+            slot.set_child(Some(&img));
+
+            if let Some(n) = item.badge() {
+                let badge = gtk::Label::new(Some(&n.to_string()));
+                badge.add_css_class("dock-badge");
+                badge.set_halign(gtk::Align::End);
+                badge.set_valign(gtk::Align::Start);
+                slot.add_overlay(&badge);
+            }
+
+            let tip = if item.windows.len() > 1 {
+                format!("{} ({} windows)", item.label, item.windows.len())
+            } else {
+                item.label.clone()
+            };
+            slot.set_tooltip_text(Some(&tip));
+
             let (x, y) = geom.slots[i];
-            fixed.put(&img, x, y);
-            items.push(img.upcast::<gtk::Widget>());
+            fixed.put(&slot, x, y);
+            widgets.push(slot.upcast::<gtk::Widget>());
+
+            // The indicator is a separate, untransformed child: on macOS the
+            // running dot stays put while the icon above it grows.
+            if item.running() {
+                let (len, thick) =
+                    if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
+                if let Some((ix, iy)) =
+                    geom.indicator_at(i, cfg.dock.icon_size, len, thick)
+                {
+                    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    dot.add_css_class("dock-indicator");
+                    if item.urgent {
+                        dot.add_css_class("urgent");
+                    }
+                    if item.active {
+                        dot.add_css_class("active");
+                    }
+                    dot.set_size_request(len as i32, thick as i32);
+                    fixed.put(&dot, ix, iy);
+                }
+            }
         }
+        let items = widgets;
 
         let state = Rc::new(RefCell::new(State {
             fixed: fixed.clone(),
@@ -171,57 +211,29 @@ fn init_layer_shell(window: &gtk::ApplicationWindow, cfg: &Config, monitor: Opti
     }
 }
 
-/// Pinned apps, plus the trash slot when enabled.
+/// Build an icon image from a desktop entry's `Icon=` value.
 ///
-/// Running-but-unpinned apps join this list in Phase 3, once Hyprland IPC and
-/// desktop-entry matching exist.
-fn visible_items(cfg: &Config) -> Vec<String> {
-    let mut v = cfg.items.pinned.clone();
-    if cfg.items.show_trash {
-        v.push("user-trash".into());
-    }
-    v
-}
-
-/// Resolve an item id to an image.
-///
-/// Ids come from the user's pin list and may be desktop-entry ids, Hyprland
-/// window classes, or plain icon names. Desktop entries win because they carry
-/// the app's real icon; otherwise the id is tried as an icon name directly.
-fn make_icon(id: &str, size: i32, entries: &HashMap<String, gio::AppInfo>) -> gtk::Image {
+/// That value may be a themed icon name or an absolute path, and the state
+/// engine has already resolved it, so this only has to handle both forms and
+/// fall back when the theme lacks the name.
+fn make_icon(icon: &str, size: i32) -> gtk::Image {
     let img = gtk::Image::new();
     img.set_pixel_size(size);
     img.add_css_class("dock-icon");
 
-    if let Some(icon) = entries.get(&id.to_lowercase()).and_then(|e| e.icon()) {
-        img.set_from_gicon(&icon);
+    if icon.starts_with('/') {
+        img.set_from_file(Some(icon));
         return img;
     }
 
     let has = gdk::Display::default()
         .map(|d| gtk::IconTheme::for_display(&d))
-        .is_some_and(|t| t.has_icon(id));
+        .is_some_and(|t| t.has_icon(icon));
 
-    img.set_icon_name(Some(if has { id } else { "application-x-executable" }));
+    img.set_icon_name(Some(if has { icon } else { "application-x-executable" }));
     img
 }
 
-/// Map desktop-entry id (lowercased, without the `.desktop` suffix) to its
-/// `AppInfo`.
-///
-/// gio-rs does not bind `GDesktopAppInfo` (it lives in gio-unix), so entries
-/// are reached through `AppInfo::all()` instead. Phase 3 replaces this with a
-/// cached matcher that also indexes `StartupWMClass` for Hyprland classes.
-fn desktop_index() -> HashMap<String, gio::AppInfo> {
-    gio::AppInfo::all()
-        .into_iter()
-        .filter_map(|a| {
-            let id = a.id()?;
-            let key = id.strip_suffix(".desktop").unwrap_or(&id).to_lowercase();
-            Some((key, a))
-        })
-        .collect()
-}
 
 // ── hover and animation ─────────────────────────────────────────────────────
 

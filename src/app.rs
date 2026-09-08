@@ -12,15 +12,19 @@ use std::rc::Rc;
 use crate::config::Config;
 use crate::event::{self, AppEvent};
 use crate::hypr::events::HyprEvent;
+use crate::state::DockState;
 use crate::theme::{css, Palette};
+use crate::state::DockItem;
 use crate::ui::DockSurface;
 
 pub const APP_ID: &str = "dev.omarchy.Dock";
 
 struct App {
     cfg: Config,
-    /// Live window list. Phase 3 reconciles this against pinned items.
-    windows: Vec<crate::hypr::model::Client>,
+    /// Reconciles pins against live Hyprland windows.
+    state: DockState,
+    /// Nudges the async worker to re-query `j/clients`.
+    snapshot_tx: Option<crate::runtime::SnapshotRequest>,
     palette: Palette,
     /// One provider, reloaded in place. Adding a new provider per reload would
     /// stack styles and leak the old ones.
@@ -68,41 +72,86 @@ impl App {
         }
     }
 
-    /// Fold one Hyprland event into the window list.
+    /// Fold one Hyprland event into dock state, rebuilding only when the
+    /// rendered item set could actually have changed.
     ///
     /// Deltas are applied locally rather than re-querying, so a busy desktop
-    /// costs no IPC round-trips. A `Reconnected` event is the exception: the
-    /// stream lost events while down, so full state must be re-fetched.
-    fn on_hypr(&mut self, event: HyprEvent) {
+    /// costs no IPC round-trips. `OpenWindow` is the exception: the event
+    /// carries less than `j/clients` (no workspace id, geometry or pid), so a
+    /// snapshot is requested instead of inventing a partial `Client`.
+    fn on_hypr(&mut self, event: HyprEvent, gtk_app: &gtk::Application) {
         use HyprEvent::*;
-        match event {
-            OpenWindow { addr, class, title, workspace } => {
-                tracing::debug!(%addr, %class, "window opened");
-                // The event carries less than `j/clients`, so record what we
-                // have; Phase 3's engine re-queries for geometry when needed.
-                let _ = (class, title, workspace);
+        let dirty = match event {
+            OpenWindow { .. } | Reconnected => {
+                // Ask the worker for a fresh snapshot; it arrives as
+                // HyprSnapshot and rebuilds then.
+                self.request_snapshot();
+                false
             }
             CloseWindow(addr) => {
-                self.windows.retain(|c| c.address != addr);
-                tracing::debug!(%addr, remaining = self.windows.len(), "window closed");
+                self.state.remove_client(&addr);
+                true
+            }
+            ActiveWindowAddr(addr) => {
+                self.state.set_focused(addr);
+                true
+            }
+            Urgent(addr) => {
+                self.state.set_urgent(addr);
+                true
             }
             WindowTitle { addr, title } => {
-                if let Some(c) = self.windows.iter_mut().find(|c| c.address == addr) {
-                    c.title = title;
-                }
+                // Titles only show in tooltips, so no relayout is needed.
+                self.state.set_title(&addr, title);
+                false
             }
-            Urgent(addr) => tracing::info!(%addr, "window urgent"),
-            Reconnected => tracing::warn!("Hyprland reconnected; state may be stale"),
-            other => tracing::trace!(?other, "hypr event"),
+            MoveWindow { .. } | ActiveSpecial { .. } => {
+                self.request_snapshot();
+                false
+            }
+            _ => false,
+        };
+
+        if dirty {
+            self.rebuild(gtk_app);
+        }
+    }
+
+    /// Ask the async worker to re-query the full window list.
+    fn request_snapshot(&self) {
+        if let Some(tx) = &self.snapshot_tx {
+            let _ = tx.try_send(());
         }
     }
 
     fn rebuild(&mut self, gtk_app: &gtk::Application) {
+        let mut items = self.state.items(&self.cfg.items.pinned, self.cfg.items.show_running);
+        if self.cfg.items.show_trash {
+            items.push(crate::state::DockItem {
+                key: "__trash".into(),
+                label: "Trash".into(),
+                icon: "user-trash".into(),
+                windows: Vec::new(),
+                pinned: true,
+                active: false,
+                urgent: false,
+                scratchpad: false,
+            });
+        }
+
         for d in self.docks.drain(..) {
             d.close();
         }
-        self.docks = build_docks(gtk_app, &self.cfg);
-        tracing::info!(surfaces = self.docks.len(), "dock rebuilt");
+        self.docks = build_docks(gtk_app, &self.cfg, &items);
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            for i in &items {
+                tracing::debug!(
+                    key = %i.key, icon = %i.icon, pinned = i.pinned,
+                    windows = i.windows.len(), active = i.active, "item"
+                );
+            }
+        }
+        tracing::debug!(surfaces = self.docks.len(), items = items.len(), "dock rebuilt");
     }
 }
 
@@ -114,9 +163,13 @@ pub fn run() -> glib::ExitCode {
     if let Err(e) = crate::config::watcher::spawn(tx.clone()) {
         tracing::error!(error = %e, "live reload unavailable");
     }
-    if let Err(e) = crate::runtime::spawn(tx) {
-        tracing::error!(error = %e, "Hyprland IPC unavailable");
-    }
+    let snapshot_tx = match crate::runtime::spawn(tx) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::error!(error = %e, "Hyprland IPC unavailable");
+            None
+        }
+    };
 
     let state: Rc<RefCell<Option<App>>> = Rc::new(RefCell::new(None));
 
@@ -136,9 +189,13 @@ pub fn run() -> glib::ExitCode {
             );
         }
 
+        let entries = crate::desktop::scan();
+        tracing::info!(count = entries.len(), "desktop entries scanned");
+
         let mut app = App {
             cfg,
-            windows: Vec::new(),
+            state: DockState::new(entries),
+            snapshot_tx: snapshot_tx.clone(),
             palette: Palette::default(),
             provider,
             docks: Vec::new(),
@@ -146,7 +203,7 @@ pub fn run() -> glib::ExitCode {
         // Style before building, so surfaces map already themed and the user
         // never sees an unstyled frame.
         app.restyle();
-        app.docks = build_docks(gtk_app, &app.cfg);
+        app.rebuild(gtk_app);
         *state.borrow_mut() = Some(app);
 
         // Drain reload events on the main thread.
@@ -160,13 +217,12 @@ pub fn run() -> glib::ExitCode {
 
                 match event {
                     AppEvent::StyleChanged => app.restyle(),
-                    // Phase 3 turns these into dock state. For now they prove
-                    // the pipeline end to end and drive nothing.
                     AppEvent::HyprSnapshot(clients) => {
-                        app.windows = clients;
-                        tracing::info!(windows = app.windows.len(), "window snapshot applied");
+                        tracing::info!(windows = clients.len(), "window snapshot");
+                        app.state.set_clients(clients);
+                        app.rebuild(&gtk_app);
                     }
-                    AppEvent::Hypr(e) => app.on_hypr(e),
+                    AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
                         // Geometry-affecting changes need new surfaces;
@@ -206,11 +262,15 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
 }
 
 /// Create one surface per monitor the config asks for.
-fn build_docks(gtk_app: &gtk::Application, cfg: &Config) -> Vec<DockSurface> {
+fn build_docks(
+    gtk_app: &gtk::Application,
+    cfg: &Config,
+    items: &[DockItem],
+) -> Vec<DockSurface> {
     use crate::config::MonitorMode;
 
     let Some(display) = gdk::Display::default() else {
-        return vec![DockSurface::build(gtk_app, cfg, None)];
+        return vec![DockSurface::build(gtk_app, cfg, items, None)];
     };
     let monitors = display.monitors();
     let all: Vec<gdk::Monitor> = (0..monitors.n_items())
@@ -218,12 +278,12 @@ fn build_docks(gtk_app: &gtk::Application, cfg: &Config) -> Vec<DockSurface> {
         .collect();
 
     if all.is_empty() {
-        return vec![DockSurface::build(gtk_app, cfg, None)];
+        return vec![DockSurface::build(gtk_app, cfg, items, None)];
     }
 
     match cfg.monitors.mode {
         MonitorMode::All => {
-            all.iter().map(|m| DockSurface::build(gtk_app, cfg, Some(m))).collect()
+            all.iter().map(|m| DockSurface::build(gtk_app, cfg, items, Some(m))).collect()
         }
         // "Focused" follows the active output; until Hyprland IPC lands in
         // Phase 2 it behaves like "primary".
@@ -235,7 +295,7 @@ fn build_docks(gtk_app: &gtk::Application, cfg: &Config) -> Vec<DockSurface> {
                         && m.connector().is_some_and(|c| c == cfg.monitors.primary)
                 })
                 .unwrap_or(&all[0]);
-            vec![DockSurface::build(gtk_app, cfg, Some(chosen))]
+            vec![DockSurface::build(gtk_app, cfg, items, Some(chosen))]
         }
     }
 }

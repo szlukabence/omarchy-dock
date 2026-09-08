@@ -89,6 +89,26 @@ impl Geometry {
         }
     }
 
+    /// Where an item's running-indicator sits: centred on the slot's cross
+    /// axis and tucked against the screen-edge side of the panel, so it stays
+    /// put while the icon above it scales.
+    pub fn indicator_at(&self, i: usize, icon: f64, len: f64, thick: f64) -> Option<(f64, f64)> {
+        let (sx, sy) = *self.slots.get(i)?;
+        // `lift_dir` points away from the screen edge, so negating it walks
+        // back towards the edge the dock is anchored to.
+        Some(match self.lift_dir {
+            (0.0, -1.0) => (sx + (icon - len) / 2.0, self.panel_y + self.panel_h - thick - 3.0),
+            (0.0, _) => (sx + (icon - len) / 2.0, self.panel_y + 3.0),
+            (-1.0, 0.0) => (self.panel_x + self.panel_w - thick - 3.0, sy + (icon - len) / 2.0),
+            _ => (self.panel_x + 3.0, sy + (icon - len) / 2.0),
+        })
+    }
+
+    /// True when the dock runs horizontally, so indicators are wide and short.
+    pub fn horizontal(&self) -> bool {
+        self.lift_dir.0 == 0.0
+    }
+
     /// Which slot contains a surface-local point, ignoring any magnification.
     ///
     /// Hit-testing the *static* slot rather than the scaled icon is deliberate:
