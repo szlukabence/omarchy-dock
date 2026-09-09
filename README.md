@@ -40,8 +40,8 @@ omarchy-dockctl install
 
 `makepkg -p` takes a *filename in the current directory*, not a path, so running
 it from the repository root fails with "must be in the current working
-directory". `packaging/aur/` fetches a released tarball and is for publishing;
-`packaging/local/` builds the tree it sits in.
+directory". `packaging/local/` builds the tree it sits in; `packaging/aur/` is
+the published package and builds from a git tag.
 
 ### Removal
 
