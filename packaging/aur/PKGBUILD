@@ -4,7 +4,7 @@
 # prebuilt variant, which most people should install instead.
 
 pkgname=omarchy-dock
-pkgver=0.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
 arch=('x86_64' 'aarch64')

@@ -94,84 +94,13 @@ fn hook_script() -> String {
 /// dock, disabling it stops the dock, and it is listed and managed exactly
 /// like every first-party plugin. It also gives the dock an autostart that
 /// follows the shell's own lifecycle instead of a stray `exec-once`.
-fn plugin_manifest() -> String {
-    format!(
-        r#"{{
-  "schemaVersion": 1,
-  "id": "{PLUGIN_ID}",
-  "name": "Omarchy Dock",
-  "version": "{version}",
-  "license": "MIT",
-  "description": "macOS-style application dock drawn with the Omarchy shell's own design tokens.",
-  "kinds": [
-    "service"
-  ],
-  "entryPoints": {{
-    "service": "Service.qml"
-  }},
-  "tags": [
-    "dock",
-    "launcher",
-    "hyprland"
-  ]
-}}
-"#,
-        version = env!("CARGO_PKG_VERSION"),
-    )
-}
-
-fn plugin_service_qml() -> String {
-    // Deliberately minimal. The dock owns its own config, theming and
-    // lifetime; all the plugin does is decide whether it is running, so that
-    // Omarchy's plugin manager is the single switch a user reaches for.
-    r#"import QtQuick
-import Quickshell.Io
-
-// Installed by omarchy-dock. Removed by `omarchy-dockctl uninstall`.
-//
-// omarchy-dock is a separate GTK4 layer-shell process rather than QML, so this
-// plugin supervises it instead of drawing it: enabling the plugin starts the
-// dock, disabling it stops the dock. That is what makes the dock appear in
-// `omarchy menu plugin` and the plugin managers alongside every other
-// component, and gives it an autostart tied to the shell's own lifecycle.
-Item {
-  id: root
-
-  // Injected by omarchy-shell's service loader.
-  property var shell: null
-
-  // Start only if one is not already running: the user may have launched the
-  // dock by hand, and two docks would fight over the control socket.
-  //
-  // The missing-binary case is handled explicitly rather than left to fail.
-  // `omarchy plugin add` only clones a repo — it never builds anything — so a
-  // plugin installed on its own has no binary behind it, and a bare
-  // "command not found" at login says nothing about what to do next.
-  Process {
-    id: starter
-    command: ["bash", "-lc",
-      "if ! command -v omarchy-dock >/dev/null 2>&1; then " +
-        "omarchy notification send --app-name Dock -u critical " +
-        "'Dock is not installed' " +
-        "'This plugin is only the supervisor. Install the dock with: omarchy pkg aur add omarchy-dock-bin'; " +
-        "exit 0; " +
-      "fi; " +
-      "pgrep -x omarchy-dock >/dev/null || setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"]
-    running: true
-  }
-
-  Process {
-    id: stopper
-    command: ["pkill", "-x", "omarchy-dock"]
-  }
-
-  // Stopping on teardown is what makes disabling the plugin actually disable
-  // the dock, rather than leaving an orphan running until the next login.
-  Component.onDestruction: stopper.running = true
-}
-"#
-    .into()
-}
+///
+/// Both files are the repository's own, embedded at compile time rather than
+/// written out as string literals. The repo root has to carry them anyway —
+/// that is what makes `omarchy plugin add <git url>` work — and two copies of
+/// a manifest is two things to forget to update.
+const PLUGIN_MANIFEST: &str = include_str!("../manifest.json");
+const PLUGIN_SERVICE_QML: &str = include_str!("../Service.qml");
 
 /// Enable or disable the plugin in `shell.json`.
 ///
@@ -489,22 +418,41 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
     });
 
     // Plugin.
+    //
+    // Unless it is a git checkout: `omarchy plugin add` clones this repository
+    // into exactly this directory, and writing our own copies over its tracked
+    // files would leave the checkout dirty and break `omarchy plugin update`.
+    // Omarchy itself uses the presence of `.git` to tell a cloned plugin from
+    // a hand-written one, so the same test is used here.
     let dir = plugin_dir();
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
-    write_file(&dir.join("manifest.json"), &plugin_manifest())?;
-    write_file(&dir.join("Service.qml"), &plugin_service_qml())?;
-    let enabled = set_plugin_enabled(true)?;
-    out.push(Report {
-        label: "shell plugin",
-        path: dir,
-        installed: true,
-        note: Some(if enabled {
-            "enabled in shell.json; the shell now starts and stops the dock".into()
-        } else {
-            "already enabled in shell.json".into()
-        }),
-    });
+    if dir.join(".git").exists() {
+        out.push(Report {
+            label: "shell plugin",
+            path: dir,
+            installed: true,
+            note: Some(
+                "already installed from git; left alone so `omarchy plugin update` \
+                 keeps working"
+                    .into(),
+            ),
+        });
+    } else {
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
+        write_file(&dir.join("manifest.json"), PLUGIN_MANIFEST)?;
+        write_file(&dir.join("Service.qml"), PLUGIN_SERVICE_QML)?;
+        let enabled = set_plugin_enabled(true)?;
+        out.push(Report {
+            label: "shell plugin",
+            path: dir,
+            installed: true,
+            note: Some(if enabled {
+                "enabled in shell.json; the shell now starts and stops the dock".into()
+            } else {
+                "already enabled in shell.json".into()
+            }),
+        });
+    }
 
     // Menu extension.
     let path = menu_extension_path();
@@ -558,14 +506,24 @@ pub fn uninstall() -> Result<Vec<Report>> {
     // pointed at a plugin directory that has just been deleted.
     set_plugin_enabled(false)?;
     let dir = plugin_dir();
-    let removed = if dir.exists() {
+    let git_managed = dir.join(".git").exists();
+    let removed = if dir.exists() && !git_managed {
         std::fs::remove_dir_all(&dir)
             .with_context(|| format!("removing {}", dir.display()))?;
         true
     } else {
         false
     };
-    out.push(Report { label: "shell plugin", path: dir, installed: !removed, note: None });
+    out.push(Report {
+        label: "shell plugin",
+        path: dir,
+        installed: !removed,
+        // Deleting someone's git checkout is not ours to do; disabling it in
+        // shell.json already stops the dock, and `omarchy plugin remove` is
+        // the command that owns removing it.
+        note: git_managed
+            .then(|| "disabled; remove the checkout with `omarchy plugin remove omarchy-dock`".into()),
+    });
 
     let path = menu_extension_path();
     if let Ok(existing) = std::fs::read_to_string(&path) {
@@ -647,6 +605,23 @@ fn remove_path(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_manifest_version_matches_the_crate() {
+        // The manifest is a checked-in file rather than generated, so nothing
+        // stops it drifting from Cargo.toml — except this.
+        let manifest: serde_json::Value =
+            serde_json::from_str(PLUGIN_MANIFEST).expect("manifest.json is valid JSON");
+        assert_eq!(
+            manifest["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "manifest.json version must match Cargo.toml"
+        );
+        assert_eq!(manifest["id"].as_str(), Some(PLUGIN_ID));
+        // The entry point has to name a file that is actually in the repo, or
+        // `omarchy plugin add` clones something the shell cannot load.
+        assert_eq!(manifest["entryPoints"]["service"].as_str(), Some("Service.qml"));
+    }
 
     #[test]
     fn a_block_is_inserted_before_the_closing_brace() {

@@ -1,59 +1,109 @@
 # omarchy-dock
 
-A fast, modern dock for [Omarchy](https://omarchy.org/) (Hyprland / Arch), in
-Rust + GTK4 with `gtk4-layer-shell`.
+A dock for [Omarchy](https://omarchy.org/) that looks like it came with it.
 
-## Status
+Rust + GTK4 on `gtk4-layer-shell`, talking to Hyprland directly. It reads the
+active Omarchy theme's own design tokens, so it is drawn with the same
+background, borders, hover fills, corner radius and type scale as the bar and
+the menus — rather than being a dock that merely runs on the same desktop.
 
-Working: launcher button, separators, folder stacks and Trash, layer-shell
-surface with Hyprland blur, single-icon hover
-magnification, live theming from the active Omarchy palette, Hyprland IPC,
-window/app matching with running indicators and window-count badges,
-click-to-focus/cycle/launch, context menus, auto-hide, multi-monitor, and a
-control socket for hotkeys.
-
-Not yet: drag-and-drop, and the status widgets (clock, battery, network,
-MPRIS).
+![The dock on Omarchy](screenshot.png)
 
 ## Install
 
+Two pieces, because that is how Omarchy distributes a plugin with a binary
+behind it:
+
 ```bash
-omarchy pkg aur add omarchy-dock-bin        # the binaries
-omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
+omarchy pkg aur add omarchy-dock-bin                                    # the dock
+omarchy plugin add https://github.com/szlukabence/Omarchy-dock.git --enable   # the supervisor
 ```
 
-Two pieces, because that is how Omarchy distributes a plugin with a binary
-behind it (`ai-usagebar` is the precedent). `omarchy plugin add` only *clones* a
-repo — it never builds or runs anything — so the plugin cannot compile a Rust
-project. The plugin is the supervisor that starts and stops the dock and puts
-it in `omarchy menu plugin`; the package is the dock itself. Install the plugin
-alone and it tells you which package is missing rather than failing with
-"command not found".
+`omarchy plugin add` only *clones* a repository — it never builds or runs
+anything — so the plugin cannot compile a Rust project. The plugin is what
+starts and stops the dock and puts it in `omarchy menu plugin`; the package is
+the dock itself. Install the plugin alone and it tells you which package is
+missing rather than failing with "command not found".
 
-Building a local checkout instead:
+Then wire it into the rest of Omarchy:
+
+```bash
+omarchy-dockctl install     # theme-set hook and menu entries
+```
+
+### From source
 
 ```bash
 cd packaging/local && makepkg -si
-omarchy-dockctl install     # hook, shell plugin, menu entries
+omarchy-dockctl install
 ```
 
-`makepkg -p` takes a *filename in the current directory*, not a path, so
-running it from the repo root fails with "must be in the current working
+`makepkg -p` takes a *filename in the current directory*, not a path, so running
+it from the repository root fails with "must be in the current working
 directory". `packaging/aur/` fetches a released tarball and is for publishing;
 `packaging/local/` builds the tree it sits in.
 
-`install --blur` additionally turns on Hyprland blur and opts the dock's layer
-into it. That is opt-in because it changes how the *whole* desktop renders —
-Omarchy ships blur off — and only `theme.style = "glass"` needs it.
-
-## Build
+### Removal
 
 ```bash
-cargo build --release
-./target/release/omarchy-dock
+omarchy-dockctl uninstall              # hook, menu entries, shell.json entry
+omarchy plugin remove omarchy-dock     # the plugin checkout
+omarchy pkg remove omarchy-dock-bin    # the binaries
+rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
-Requires GTK 4, `gtk4-layer-shell`, and a running Hyprland.
+`uninstall` reverses everything `install` did and nothing else. It will not
+delete a git-managed plugin checkout — that is `omarchy plugin remove`'s job.
+
+## What it does
+
+- **Pinned and running apps**, with running indicators, window-count badges and
+  urgency. Click to focus, click again to cycle windows, click an idle icon to
+  launch.
+- **Drag to reorder**, with the icons parting to show where the drop lands.
+  User-placed dividers drag too.
+- **Folder stacks and Trash**, drawn as monochrome glyphs so only real
+  applications carry colour — the way the bar draws its widgets.
+- **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
+  tile to switch; drop an app icon on one to send that window there.
+- **Command tiles** — a glyph, a label and a shell command, exactly how Omarchy
+  menu rows are defined, so anything reachable from `omarchy` can be a tile.
+- **The system tray**, hosted in the dock instead of the bar if you prefer.
+- **Intelligent auto-hide** that also gets out of the way of fullscreen windows
+  and screen recordings.
+- **Live theming**: change theme, font size or Hyprland's rounding and the dock
+  follows without a restart.
+
+## Requirements
+
+| | | |
+| --- | --- | --- |
+| [GTK4](https://gitlab.gnome.org/GNOME/gtk) | LGPL-2.1 | the toolkit |
+| [gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell) | MIT | anchoring the surface to a screen edge |
+| [Hyprland](https://hypr.land/) | BSD-3-Clause | window state, workspaces, dispatching |
+| [Omarchy](https://omarchy.org/) | MIT | theme tokens, menu, notifications, plugin host |
+| A Nerd Font | varies | glyphs for the launcher, stacks and Trash |
+
+Only GTK4 and gtk4-layer-shell are hard requirements. Without Hyprland the dock
+shows pinned apps but knows nothing about windows; without Omarchy it falls back
+to a palette of its own. Nothing here reaches the network.
+
+## What it writes
+
+Everything the dock changes outside its own `~/.config/omarchy-dock/`, and only
+ever in response to an explicit action:
+
+| Path | When | What |
+| --- | --- | --- |
+| `~/.config/omarchy/hooks/theme-set.d/omarchy-dock` | `dockctl install` | A hook that restyles the dock after a theme change |
+| `~/.config/omarchy/plugins/omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout |
+| `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
+| `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
+| `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
+
+`uninstall` removes all of it. Nothing is written on start, on poll, or on
+open. There is no `sudo` anywhere, and no network access. `/tmp` is read once —
+Omarchy's own screen-recording marker — and never written.
 
 ## Looking like Omarchy
 
@@ -86,7 +136,7 @@ omarchy-dockctl uninstall
 | Piece | What it gives you |
 | --- | --- |
 | `theme-set` hook | Theme changes reach the dock the moment Omarchy finishes applying them, rather than whenever an inotify watch fires — so it can never restyle from a half-written theme |
-| Shell plugin | The dock appears in `omarchy menu plugin`; enabling starts it, disabling stops it, and it autostarts with the shell |
+| Shell plugin | The dock appears in `omarchy menu plugin`; enabling starts it, disabling stops it, and it autostarts with the shell. Skipped when the plugin is already a git checkout, so `omarchy plugin update` keeps working |
 | Menu entries | `Dock` on the Omarchy menu and in its search: reveal, auto-hide, settings, reload, restart |
 
 Everything lands in `~/.config/omarchy/` and is removed by `uninstall`. The
@@ -203,6 +253,21 @@ switching moves elsewhere:
 for i = 1, 9 do hl.unbind("SUPER + " .. i) end
 ```
 
+## Development
+
+```bash
+cargo build --release
+cargo test
+cargo clippy --all-targets
+```
+
+`cargo build` alone does not change what runs if you installed the package —
+rebuild it with `cd packaging/local && makepkg -f` and reinstall.
+
+`src/bin/spike_magnify.rs` is the Phase-0 de-risking spike for hover
+magnification, kept because it is the cheapest way to measure frame timing in
+isolation. It is not shipped by either PKGBUILD.
+
 ## Notes on Hyprland 0.56
 
 The IPC protocol is split. **Dispatch** is Lua
@@ -213,3 +278,7 @@ events omit the `0x` that JSON includes.
 
 Sockets live in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`, not
 `/tmp/hypr/`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
