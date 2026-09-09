@@ -1,6 +1,11 @@
 # Maintainer: Bence Szluka <szlukabence@gmail.com>
 #
-# Prebuilt package. This is the one the shell plugin tells people to install:
+# Prebuilt package. NOT PUBLISHED YET: it needs a GitHub release carrying
+# omarchy-dock-$pkgver-x86_64.tar.gz, and real checksums instead of SKIP.
+# Publish PKGBUILD (source, builds from the git tag) first; add this one when
+# compile time becomes a complaint.
+#
+# Prebuilt packages exist because:
 # `omarchy plugin add` only clones a repo, it never builds, so a plugin on its
 # own has no binary behind it — and asking someone to compile a GTK4 Rust
 # project before their dock appears is not an install experience.
@@ -26,6 +31,8 @@ conflicts=('omarchy-dock')
 provides=('omarchy-dock')
 
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
+# TODO: real checksum once a release tarball exists. SKIP on a downloaded
+# tarball is exactly what AUR reviewers object to.
 sha256sums=('SKIP')
 
 package() {

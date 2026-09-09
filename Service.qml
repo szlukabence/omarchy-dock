@@ -27,7 +27,7 @@ Item {
       "if ! command -v omarchy-dock >/dev/null 2>&1; then " +
         "omarchy notification send --app-name Dock -u critical " +
         "'Dock is not installed' " +
-        "'This plugin is only the supervisor. Install the dock with: omarchy pkg aur add omarchy-dock-bin'; " +
+        "'This plugin is only the supervisor. Install the dock with: omarchy pkg aur add omarchy-dock'; " +
         "exit 0; " +
       "fi; " +
       "pgrep -x omarchy-dock >/dev/null || setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"]

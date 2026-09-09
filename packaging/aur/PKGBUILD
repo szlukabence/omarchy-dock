@@ -1,7 +1,16 @@
 # Maintainer: Bence Szluka <szlukabence@gmail.com>
 #
-# Source package: builds the dock from a release tag. See PKGBUILD-bin for the
-# prebuilt variant, which most people should install instead.
+# Source package. Builds the dock from a signed-off git tag.
+#
+# The source is the git repository at a tag rather than a GitHub release
+# tarball, which means publishing needs nothing but `git push --tags`: no
+# release artifact to upload and no checksum to regenerate on every version.
+# `SKIP` is the correct and conventional checksum for a VCS source — the tag
+# already identifies the tree — whereas SKIP on a downloaded tarball is the
+# thing AUR reviewers object to.
+#
+# See PKGBUILD-bin for the prebuilt variant. That one *does* need a GitHub
+# release, so it is worth adding only once compile time is a complaint.
 
 pkgname=omarchy-dock
 pkgver=1.2.0
@@ -28,17 +37,18 @@ optdepends=(
 conflicts=('omarchy-dock-bin')
 provides=('omarchy-dock')
 
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+makedepends+=('git')
+source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgname"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgname"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   # The magnification spike is a development artefact and is not shipped.
@@ -46,13 +56,13 @@ build() {
 }
 
 check() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgname"
   export RUSTUP_TOOLCHAIN=stable
   cargo test --frozen --release --bin omarchy-dock --bin omarchy-dockctl
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgname"
   install -Dm0755 "target/release/omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
   install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"

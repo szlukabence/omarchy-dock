@@ -1,8 +1,8 @@
 # Marketplace submission — omarchyplugins.com
 
 **Draft.** Not part of the plugin. This is the submission form filled in ahead of
-time so it can be reviewed before it is sent. Two fields are marked TODO: the
-allowed values are defined by the form itself, which has not been read here.
+time so it can be reviewed before it is sent. Field values below are the ones
+the form actually offers.
 
 Form: <https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml>
 
@@ -14,24 +14,29 @@ Form: <https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?te
 https://github.com/szlukabence/Omarchy-dock
 ```
 
-**Category** (required, pick one)
+**Category** (required, pick one of: Appearance, Desktop, Developer Tools,
+Hardware, Kids, Productivity, System, Widgets, Other)
 
 ```
-TODO — check the form's list.
+Desktop
 ```
 
-Suggestion: whichever of *Productivity* / *Desktop* / *Utilities* exists. The
-plugin's payoff is launching and switching applications, not system state.
+Rationale: it is a piece of desktop furniture. *Appearance* is the runner-up
+because the dock is drawn from the theme's own tokens, but that category reads
+as theming rather than a thing you use; *Productivity* overclaims.
 
-**Tags** (required, max 3)
+**Tags** (required, max 3 — more than three is an automatic rejection)
 
 ```
-TODO — check the form's list. Suggested: Dock, Hyprland, Launcher
+Launcher, Hyprland, Workspaces
 ```
 
-`Quickshell` would be misleading: the plugin is a supervisor, and the dock
-itself is a GTK4 layer-shell process, not QML. `Bar` would be wrong too — this
-does not touch the bar, though it can host the tray the bar would otherwise.
+There is no `Dock` tag. `Launcher` and `Hyprland` are certain: it launches and
+focuses applications, and it drives the compositor directly over its socket.
+`Workspaces` covers the workspace strip and the drop-to-send gesture — swap it
+for `System` if the tray host matters more to a reviewer. `Quickshell` would be
+misleading, since the plugin is a supervisor and the dock itself is GTK4, not
+QML; `Bar` would be wrong, as this does not touch the bar.
 
 **Maintainer notes** (optional)
 
@@ -40,7 +45,7 @@ Supervisor plugin for omarchy-dock, a GTK4 layer-shell dock (MIT, same author).
 The plugin is not the dock: it starts and stops the binary so the dock can be
 enabled and disabled like any other component. Install the binary with:
 
-  omarchy pkg aur add omarchy-dock-bin
+  omarchy pkg aur add omarchy-dock
 
 If it is missing, the plugin sends a notification naming that package rather
 than failing with "command not found".
@@ -78,11 +83,11 @@ against a fresh clone.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Repository is public with installation/removal instructions | Yes — README has `omarchy plugin add`, the AUR package, and a Removal section covering all four pieces |
-| 2 | License and dependencies documented | Yes — MIT in `LICENSE`; the Requirements table names every dependency and its license |
-| 3 | Ownership/permission confirmed | Yes — sole author; the preview image is a screenshot of this dock on the author's own machine |
-| 4 | Plugin respects user configuration | Yes, with disclosure — see the table below and the "What it writes" section of the README |
-| 5 | Approval is listing-only, not a security review | Understood |
+| 1 | The repository is public and contains installation and removal instructions | Yes — README has `omarchy plugin add`, the AUR package, and a Removal section covering all four pieces |
+| 2 | I have documented the plugin license and any external dependencies | Yes — MIT in `LICENSE`; the Requirements table names every dependency and its license |
+| 3 | I own or have permission to submit this plugin and its preview assets | Yes — sole author; the preview image is a screenshot of this dock on the author's own machine |
+| 4 | The plugin does not overwrite user configuration without explicit consent | Yes. **The plugin submitted here writes nothing at all** — it only starts and stops a binary. The dock's own `omarchy-dockctl install` writes the files listed below, and only when a user runs it; it also refuses to touch the plugin directory when that directory is a git checkout, so a marketplace install is never overwritten |
+| 5 | Approval is for listing and is not a security review | Understood |
 
 ## What it writes outside its own config
 

@@ -15,7 +15,7 @@ Two pieces, because that is how Omarchy distributes a plugin with a binary
 behind it:
 
 ```bash
-omarchy pkg aur add omarchy-dock-bin                                    # the dock
+omarchy pkg aur add omarchy-dock                                    # the dock
 omarchy plugin add https://github.com/szlukabence/Omarchy-dock.git --enable   # the supervisor
 ```
 
@@ -48,7 +48,7 @@ directory". `packaging/aur/` fetches a released tarball and is for publishing;
 ```bash
 omarchy-dockctl uninstall              # hook, menu entries, shell.json entry
 omarchy plugin remove omarchy-dock     # the plugin checkout
-omarchy pkg remove omarchy-dock-bin    # the binaries
+omarchy pkg remove omarchy-dock    # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
