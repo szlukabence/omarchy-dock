@@ -11,7 +11,7 @@ Form: <https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?te
 **Repository URL** (required)
 
 ```
-https://github.com/szlukabence/Omarchy-dock
+https://github.com/szlukabence/omarchy-dock
 ```
 
 **Category** (required, pick one of: Appearance, Desktop, Developer Tools,
@@ -43,12 +43,15 @@ QML; `Bar` would be wrong, as this does not touch the bar.
 ```
 Supervisor plugin for omarchy-dock, a GTK4 layer-shell dock (MIT, same author).
 The plugin is not the dock: it starts and stops the binary so the dock can be
-enabled and disabled like any other component. Install the binary with:
+enabled and disabled like any other component. The clone this plugin arrives in
+is the full source tree, so it can build the binary it supervises:
 
-  omarchy pkg aur add omarchy-dock
+  cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
 
-If it is missing, the plugin sends a notification naming that package rather
-than failing with "command not found".
+That runs makepkg, so pacman owns the binaries. If the binary is missing, the
+plugin sends a notification naming that command rather than failing with
+"command not found". An AUR package is prepared in packaging/aur/ and will
+replace this step once it is published.
 
 The dock reads the active theme's shell.toml and draws itself with the same
 tokens as the bar and menus — background, borders, hover fills, corner radius

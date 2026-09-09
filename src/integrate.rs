@@ -425,34 +425,30 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
     // Omarchy itself uses the presence of `.git` to tell a cloned plugin from
     // a hand-written one, so the same test is used here.
     let dir = plugin_dir();
-    if dir.join(".git").exists() {
-        out.push(Report {
-            label: "shell plugin",
-            path: dir,
-            installed: true,
-            note: Some(
-                "already installed from git; left alone so `omarchy plugin update` \
-                 keeps working"
-                    .into(),
-            ),
-        });
-    } else {
+    let git_managed = dir.join(".git").exists();
+    if !git_managed {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
         write_file(&dir.join("manifest.json"), PLUGIN_MANIFEST)?;
         write_file(&dir.join("Service.qml"), PLUGIN_SERVICE_QML)?;
-        let enabled = set_plugin_enabled(true)?;
-        out.push(Report {
-            label: "shell plugin",
-            path: dir,
-            installed: true,
-            note: Some(if enabled {
-                "enabled in shell.json; the shell now starts and stops the dock".into()
-            } else {
-                "already enabled in shell.json".into()
-            }),
-        });
     }
+    // Enabling happens either way. A clone made by `omarchy plugin add` without
+    // `--enable` is present but inert, and skipping this because the files were
+    // already there would leave it that way with nothing saying so.
+    let enabled = set_plugin_enabled(true)?;
+    out.push(Report {
+        label: "shell plugin",
+        path: dir,
+        installed: true,
+        note: Some(match (git_managed, enabled) {
+            (true, true) => "git checkout left alone; enabled in shell.json".into(),
+            (true, false) => "git checkout left alone; already enabled".into(),
+            (false, true) => {
+                "enabled in shell.json; the shell now starts and stops the dock".into()
+            }
+            (false, false) => "already enabled in shell.json".into(),
+        }),
+    });
 
     // Menu extension.
     let path = menu_extension_path();

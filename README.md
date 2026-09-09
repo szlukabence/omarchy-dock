@@ -11,44 +11,44 @@ the menus — rather than being a dock that merely runs on the same desktop.
 
 ## Install
 
-Two pieces, because that is how Omarchy distributes a plugin with a binary
-behind it:
-
 ```bash
-omarchy pkg aur add omarchy-dock                                    # the dock
-omarchy plugin add https://github.com/szlukabence/Omarchy-dock.git --enable   # the supervisor
+omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
+cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
 ```
 
-`omarchy plugin add` only *clones* a repository — it never builds or runs
-anything — so the plugin cannot compile a Rust project. The plugin is what
-starts and stops the dock and puts it in `omarchy menu plugin`; the package is
-the dock itself. Install the plugin alone and it tells you which package is
-missing rather than failing with "command not found".
+Two steps, because `omarchy plugin add` only *clones* a repository — it never
+builds or runs anything — so it cannot compile a Rust project on your behalf.
+But the clone it leaves behind is the full source tree, so the plugin can build
+the binary it supervises. That is what `install.sh` does: `makepkg -si`, so
+pacman owns the result and upgrading or removing it is a normal package
+operation, and then `omarchy-dockctl install` for the theme hook and menu
+entries.
 
-Then wire it into the rest of Omarchy:
+It asks for your password once, for the pacman step. Nothing else here is
+privileged, and nothing touches the network beyond the git clone.
+
+The plugin on its own is only the supervisor — it starts and stops the dock and
+puts it in `omarchy menu plugin`. Install it without building and it says so,
+rather than failing with "command not found".
+
+### Already have a checkout
 
 ```bash
-omarchy-dockctl install     # theme-set hook and menu entries
+./install.sh
 ```
 
-### From source
+### AUR
 
-```bash
-cd packaging/local && makepkg -si
-omarchy-dockctl install
-```
-
-`makepkg -p` takes a *filename in the current directory*, not a path, so running
-it from the repository root fails with "must be in the current working
-directory". `packaging/local/` builds the tree it sits in; `packaging/aur/` is
-the published package and builds from a git tag.
+`packaging/aur/` holds a ready-to-publish package that builds from a git tag,
+with its `.SRCINFO`. It is not on the AUR yet. Once it is, installing becomes
+`omarchy pkg aur add omarchy-dock` and `install.sh` is unnecessary.
 
 ### Removal
 
 ```bash
 omarchy-dockctl uninstall              # hook, menu entries, shell.json entry
 omarchy plugin remove omarchy-dock     # the plugin checkout
-omarchy pkg remove omarchy-dock    # the binaries
+sudo pacman -Rns omarchy-dock-git      # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
