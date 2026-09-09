@@ -18,7 +18,22 @@ MPRIS).
 ## Install
 
 ```bash
-makepkg -si                 # Arch package, from this tree
+omarchy pkg aur add omarchy-dock-bin        # the binaries
+omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
+```
+
+Two pieces, because that is how Omarchy distributes a plugin with a binary
+behind it (`ai-usagebar` is the precedent). `omarchy plugin add` only *clones* a
+repo — it never builds or runs anything — so the plugin cannot compile a Rust
+project. The plugin is the supervisor that starts and stops the dock and puts
+it in `omarchy menu plugin`; the package is the dock itself. Install the plugin
+alone and it tells you which package is missing rather than failing with
+"command not found".
+
+Building from source instead:
+
+```bash
+makepkg -si -p packaging/aur/PKGBUILD
 omarchy-dockctl install     # hook, shell plugin, menu entries
 ```
 

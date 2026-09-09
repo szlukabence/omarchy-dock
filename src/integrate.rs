@@ -142,9 +142,20 @@ Item {
 
   // Start only if one is not already running: the user may have launched the
   // dock by hand, and two docks would fight over the control socket.
+  //
+  // The missing-binary case is handled explicitly rather than left to fail.
+  // `omarchy plugin add` only clones a repo — it never builds anything — so a
+  // plugin installed on its own has no binary behind it, and a bare
+  // "command not found" at login says nothing about what to do next.
   Process {
     id: starter
     command: ["bash", "-lc",
+      "if ! command -v omarchy-dock >/dev/null 2>&1; then " +
+        "omarchy notification send --app-name Dock -u critical " +
+        "'Dock is not installed' " +
+        "'This plugin is only the supervisor. Install the dock with: omarchy pkg aur add omarchy-dock-bin'; " +
+        "exit 0; " +
+      "fi; " +
       "pgrep -x omarchy-dock >/dev/null || setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"]
     running: true
   }

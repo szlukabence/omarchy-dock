@@ -1,0 +1,36 @@
+# Maintainer: Bence Szluka <szlukabence@gmail.com>
+#
+# Prebuilt package. This is the one the shell plugin tells people to install:
+# `omarchy plugin add` only clones a repo, it never builds, so a plugin on its
+# own has no binary behind it — and asking someone to compile a GTK4 Rust
+# project before their dock appears is not an install experience.
+
+pkgname=omarchy-dock-bin
+_pkgname=omarchy-dock
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — prebuilt binaries"
+arch=('x86_64')
+url="https://github.com/szlukabence/omarchy-dock"
+license=('MIT')
+
+depends=('gtk4' 'gtk4-layer-shell' 'glib2' 'cairo' 'pango' 'gdk-pixbuf2')
+
+optdepends=(
+  'omarchy: theme tokens, menu, notifications, and the shell integration'
+  'hyprland: window state, workspaces, and dispatching'
+  'ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash'
+)
+
+conflicts=('omarchy-dock')
+provides=('omarchy-dock')
+
+source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  install -Dm0755 "omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
+  install -Dm0755 "omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
+  install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$_pkgname/README.md"
+  install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+}
