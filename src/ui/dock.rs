@@ -1543,18 +1543,58 @@ fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
     }
 
     match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui || always_glyph) {
-        Some(glyph) => {
-            let label = gtk::Label::new(Some(glyph));
-            label.add_css_class("dock-glyph");
-            // Glyphs are drawn by the font, so the size has to come from the
-            // type scale rather than from a pixel-size request. The ratio
-            // leaves the same optical weight as a themed icon of `size`.
-            label.set_attributes(Some(&glyph_attrs(size)));
-            label.set_size_request(size, size);
-            label.upcast::<gtk::Widget>()
-        }
+        Some(glyph) => glyph_widget(glyph, size),
         None => make_icon(&item.icon, size).upcast::<gtk::Widget>(),
     }
+}
+
+/// A glyph drawn centred on its *ink*, not on its advance box.
+///
+/// Pango centres text by its logical extents, which is right for text and
+/// wrong for an icon font: Nerd Font glyphs have asymmetric side bearings, so
+/// the visible mark lands off-centre by a different amount for every glyph.
+/// Measured on this machine that was a 5px spread between the Home and
+/// Documents glyphs — plainly visible against the hover fill, which *is*
+/// centred on the slot.
+///
+/// So the label is placed by hand inside a `gtk::Fixed`, offset by the
+/// difference between its ink centre and its layout origin. Ink extents are
+/// only known once the label has a Pango context, hence the deferral to `map`.
+fn glyph_widget(glyph: &str, size: i32) -> gtk::Widget {
+    let holder = gtk::Fixed::new();
+    holder.set_size_request(size, size);
+
+    let label = gtk::Label::new(Some(glyph));
+    label.add_css_class("dock-glyph");
+    // Glyphs are drawn by the font, so the size has to come from the type
+    // scale rather than from a pixel-size request. The ratio leaves the same
+    // optical weight as a themed icon of `size`.
+    label.set_attributes(Some(&glyph_attrs(size)));
+    holder.put(&label, 0.0, 0.0);
+
+    {
+        let holder = holder.clone();
+        let label_ref = label.clone();
+        // Re-centred on every map rather than once: a font or scale change
+        // gives the same glyph different metrics, and a stale offset would be
+        // worse than none.
+        label.connect_map(move |_| centre_on_ink(&holder, &label_ref, size));
+    }
+
+    holder.upcast::<gtk::Widget>()
+}
+
+/// Move `label` within `holder` so the glyph's ink is centred on the slot.
+fn centre_on_ink(holder: &gtk::Fixed, label: &gtk::Label, size: i32) {
+    let (ink, _logical) = label.layout().extents();
+    if ink.width() <= 0 || ink.height() <= 0 {
+        return;
+    }
+    let scale = gtk::pango::SCALE as f64;
+    let ink_cx = (ink.x() as f64 + ink.width() as f64 / 2.0) / scale;
+    let ink_cy = (ink.y() as f64 + ink.height() as f64 / 2.0) / scale;
+    let centre = size as f64 / 2.0;
+    holder.move_(label, centre - ink_cx, centre - ink_cy);
 }
 
 /// Pango attributes sizing a glyph to fill an icon box.

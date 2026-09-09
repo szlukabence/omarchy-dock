@@ -35,7 +35,8 @@ fn main() -> std::process::ExitCode {
              hide               hide the dock now\n  \
              toggle-autohide    switch auto-hide on or off\n  \
              reload             re-read config and rebuild\n  \
-             restyle            re-read the Omarchy theme only\n\n\
+             restyle            re-read the Omarchy theme only\n  \
+             settings           open the settings window\n\n\
              omarchy integration:\n  \
              install [--blur]   theme-set hook, shell plugin, and menu entries;\n                     \
              --blur also sets up Hyprland blur for `style = glass`\n  \

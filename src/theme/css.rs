@@ -332,6 +332,27 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 
 .dock-settings {{ min-width: {settings_w}px; }}
 
+/* The settings window is a real toplevel, not a layer surface, so unlike the
+   dock it does want an opaque background of its own. */
+.dock-settings-window,
+.dock-settings-window > * {{
+  background-color: {menu_bg};
+  color: {menu_fg};
+}}
+
+/* GTK's default switch accent is its own blue, which is the one thing in the
+   window that does not come from the theme. */
+.dock-settings-window switch:checked {{
+  background-color: @dock_accent;
+}}
+
+.dock-settings-note {{
+  color: {menu_fg};
+  opacity: 0.55;
+  font-size: {caption}px;
+  padding: 0 {row_x}px {gap}px {row_x}px;
+}}
+
 .dock-settings-row {{ padding: 2px {row_x}px; }}
 
 .dock-settings-row label {{
@@ -355,6 +376,8 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
         sel_fill = sel_bg.with_alpha(sel_alpha),
         stack_w = m.space("searchable-dropdown-width", 260.0).max(220.0),
         settings_w = m.space("searchable-dropdown-width", 270.0).max(240.0),
+        menu_bg = menu.background_css(),
+        caption = m.font("caption", 0.833),
     ));
 
     // ── user overrides ──────────────────────────────────────────────────────

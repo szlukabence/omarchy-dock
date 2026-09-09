@@ -30,12 +30,17 @@ it in `omarchy menu plugin`; the package is the dock itself. Install the plugin
 alone and it tells you which package is missing rather than failing with
 "command not found".
 
-Building from source instead:
+Building a local checkout instead:
 
 ```bash
-makepkg -si -p packaging/aur/PKGBUILD
+cd packaging/local && makepkg -si
 omarchy-dockctl install     # hook, shell plugin, menu entries
 ```
+
+`makepkg -p` takes a *filename in the current directory*, not a path, so
+running it from the repo root fails with "must be in the current working
+directory". `packaging/aur/` fetches a released tarball and is for publishing;
+`packaging/local/` builds the tree it sits in.
 
 `install --blur` additionally turns on Hyprland blur and opts the dock's layer
 into it. That is opt-in because it changes how the *whole* desktop renders —
@@ -159,10 +164,10 @@ the drop will land; right-click a divider to remove it. A divider is also
 added automatically between pinned apps and running-but-unpinned ones, and
 before Trash; dividers that would end up at either end are dropped.
 
-Right-click the launcher button for a settings panel covering position,
-auto-hide, icon size, hover zoom, icon spacing, and per-folder, Trash and
-running-app toggles. It writes
-`config.toml`, so the panel, a hand-edited file, and `omarchy-dockctl` all take
+Right-click the launcher for a short menu: the Omarchy surfaces the dock can
+raise, and "Settings…", which opens a proper window (also `omarchy-dockctl
+settings`, or `Dock > Settings` on the Omarchy menu). Everything writes
+`config.toml`, so the window, a hand-edited file, and `omarchy-dockctl` all take
 the same path into the running dock.
 
 `theme.user_css` can reference the live palette, e.g. `@omarchy_accent`,

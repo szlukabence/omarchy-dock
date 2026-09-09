@@ -255,7 +255,7 @@ fn menu_block() -> String {
         r#""dock": {"icon":"\uf07c","label":"Dock","description":"Application dock"}"#,
         r#""dock.reveal": {"icon":"\uf06e","label":"Reveal","action":"omarchy-dockctl reveal"}"#,
         r#""dock.toggle_autohide": {"icon":"\uf070","label":"Toggle auto-hide","action":"omarchy-dockctl toggle-autohide"}"#,
-        r#""dock.settings": {"icon":"\uf013","label":"Settings","description":"Edit config.toml","action":"omarchy-launch-config-editor ~/.config/omarchy-dock/config.toml"}"#,
+        r#""dock.settings": {"icon":"\uf013","label":"Settings","description":"Open the dock settings window","action":"omarchy-dockctl settings"}"#,
         r#""dock.reload": {"icon":"\uf021","label":"Reload","description":"Re-read config and rebuild","action":"omarchy-dockctl reload"}"#,
         r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x omarchy-dock; setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"}"#,
     ];

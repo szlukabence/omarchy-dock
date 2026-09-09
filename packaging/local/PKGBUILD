@@ -1,0 +1,51 @@
+# Build and install the working tree as a package.
+#
+# The AUR PKGBUILDs fetch a released tarball, which is what a published package
+# must do but is useless for installing what you have checked out. This one
+# builds the checkout it sits in:
+#
+#   cd packaging/local && makepkg -si
+#
+# `makepkg -p` takes a filename in the current directory, not a path, which is
+# why running it from the repo root does not work.
+
+pkgname=omarchy-dock-git
+_root="$(cd "$startdir/../.." && pwd)"
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — built from a local checkout"
+arch=('x86_64' 'aarch64')
+url="https://github.com/szlukabence/omarchy-dock"
+license=('MIT')
+
+depends=('gtk4' 'gtk4-layer-shell' 'glib2' 'cairo' 'pango' 'gdk-pixbuf2')
+makedepends=('cargo')
+
+optdepends=(
+  'omarchy: theme tokens, menu, notifications, and the shell integration'
+  'hyprland: window state, workspaces, and dispatching'
+  'ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash'
+)
+
+conflicts=('omarchy-dock' 'omarchy-dock-bin')
+provides=('omarchy-dock')
+
+options=('!lto')
+source=()
+sha256sums=()
+
+build() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR="$_root/target"
+  # The magnification spike is a development artefact and is not shipped.
+  cargo build --release --bin omarchy-dock --bin omarchy-dockctl
+}
+
+package() {
+  cd "$_root"
+  install -Dm0755 "target/release/omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
+  install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
+  install -Dm0644 "README.md" "$pkgdir/usr/share/doc/omarchy-dock/README.md"
+  install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/omarchy-dock/LICENSE"
+}

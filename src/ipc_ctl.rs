@@ -28,6 +28,8 @@ pub enum Control {
     /// Re-read the active Omarchy theme and restyle, without rebuilding.
     /// What Omarchy's `theme-set` hook fires.
     Restyle,
+    /// Open the settings window.
+    Settings,
 }
 
 pub fn socket_path() -> PathBuf {
@@ -52,6 +54,7 @@ pub fn parse(line: &str) -> Option<Control> {
         "toggle-autohide" => Some(Control::ToggleAutohide),
         "reload" => Some(Control::Reload),
         "restyle" => Some(Control::Restyle),
+        "settings" => Some(Control::Settings),
         _ => None,
     }
 }

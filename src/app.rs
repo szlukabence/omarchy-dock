@@ -179,6 +179,7 @@ impl App {
                 self.restyle();
                 self.rebuild(gtk_app);
             }
+            Control::Settings => crate::ui::settings::open_window(),
             // Theme only: what Omarchy's theme-set hook fires. Restyling keeps
             // hover and slide state, and only rebuilds if the new theme's
             // scale actually moved the geometry.

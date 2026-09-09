@@ -1,5 +1,11 @@
 //! Dock settings, reached by right-clicking the launcher button.
 //!
+//! Two surfaces. The right-click itself opens a short menu — the Omarchy
+//! surfaces the dock can raise, plus the handful of actions that are one
+//! click and done. Everything with a value attached lives in a proper window
+//! behind "Dock settings…", because a popover that has to scroll is a popover
+//! that has outgrown being one.
+//!
 //! Every control writes `config.toml` and lets the file watcher apply the
 //! change, so the panel, a hand-edited config, and `omarchy-dockctl` all take
 //! exactly one path into the running dock. That costs a file round-trip per
@@ -10,10 +16,15 @@ use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 
-use crate::config::{Config, HideMode, Position};
+use std::cell::RefCell;
+
+use crate::config::{Config, HideMode, Hover, Position, Style};
 use crate::ui::menu::MenuAction;
 
-/// Build the settings popover.
+/// The launcher's right-click menu: shell surfaces and one-click actions.
+///
+/// Deliberately short. Anything with a value to choose lives in the settings
+/// window instead — a menu you have to scroll is not a menu.
 pub fn build<F>(on_action: F) -> gtk::Popover
 where
     F: Fn(MenuAction) + Clone + 'static,
@@ -22,11 +33,8 @@ where
     popover.add_css_class("dock-menu");
     popover.set_autohide(true);
 
-    let cfg = Config::load();
-
     let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
     list.add_css_class("dock-menu-list");
-    list.add_css_class("dock-settings");
 
     // ── Omarchy surfaces ────────────────────────────────────────────────────
     // The launcher already opens the Omarchy menu on a left click; a right
@@ -46,7 +54,85 @@ where
     list.append(&separator());
     list.append(&heading("Dock"));
 
-    // ── position ────────────────────────────────────────────────────────────
+    {
+        let pop = popover.clone();
+        list.append(&row("Settings…", move || {
+            pop.popdown();
+            open_window();
+        }));
+    }
+
+    {
+        let pop = popover.clone();
+        list.append(&row("Add separator", move || {
+            add_separator();
+            pop.popdown();
+        }));
+    }
+
+    {
+        let pop = popover.clone();
+        list.append(&row("Edit config file…", move || {
+            let path = crate::config::config_path();
+            // Hand off to the desktop's handler rather than guessing an editor.
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+            pop.popdown();
+        }));
+    }
+
+    popover.set_child(Some(&list));
+    popover
+}
+
+/// Open the settings window, or raise the one already open.
+///
+/// A single instance: opening a second copy of a panel that edits one file on
+/// disk would let the two disagree about what that file currently says.
+pub fn open_window() {
+    thread_local! {
+        static OPEN: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+    }
+
+    OPEN.with(|slot| {
+        if let Some(win) = slot.borrow().as_ref() {
+            win.present();
+            return;
+        }
+
+        let win = build_window();
+        {
+            let slot_clear = || OPEN.with(|s| *s.borrow_mut() = None);
+            win.connect_close_request(move |_| {
+                slot_clear();
+                glib::Propagation::Proceed
+            });
+        }
+        win.present();
+        *slot.borrow_mut() = Some(win);
+    });
+}
+
+fn build_window() -> gtk::Window {
+    let cfg = Config::load();
+
+    let win = gtk::Window::builder()
+        .title("Dock Settings")
+        .default_width(420)
+        .default_height(620)
+        .resizable(true)
+        .build();
+    win.add_css_class("dock-settings-window");
+
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.add_css_class("dock-settings");
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(8);
+    list.set_margin_end(8);
+
+    // ── placement ───────────────────────────────────────────────────────────
+    list.append(&heading("Placement"));
+
     let positions = ["Bottom", "Top", "Left", "Right"];
     let current = match cfg.dock.position {
         Position::Bottom => 0,
@@ -68,7 +154,6 @@ where
     });
     list.append(&field("Position", &pos));
 
-    // ── auto-hide ───────────────────────────────────────────────────────────
     let modes = ["Never", "Intelligent", "Always"];
     let current = match cfg.autohide.mode {
         HideMode::Never => 0,
@@ -88,55 +173,132 @@ where
     });
     list.append(&field("Auto-hide", &hide));
 
-    // ── icon size ───────────────────────────────────────────────────────────
-    let size = gtk::SpinButton::with_range(24.0, 128.0, 2.0);
-    size.set_value(cfg.dock.icon_size);
-    // `value-changed` fires on every step; the watcher debounces the writes.
-    size.connect_value_changed(|s| {
+    list.append(&toggle("Reserve screen space", cfg.dock.reserve_space, |v| {
+        edit(move |c| c.dock.reserve_space = v)
+    }));
+
+    list.append(&separator());
+
+    // ── appearance ──────────────────────────────────────────────────────────
+    list.append(&heading("Appearance"));
+
+    let styles = ["Omarchy", "Glass"];
+    let style = gtk::DropDown::from_strings(&styles);
+    style.set_selected(if cfg.theme.style == Style::Glass { 1 } else { 0 });
+    style.connect_selected_notify(move |d| {
+        let glass = d.selected() == 1;
+        edit(move |c| c.theme.style = if glass { Style::Glass } else { Style::Omarchy })
+    });
+    style.set_tooltip_text(Some(
+        "Omarchy: the theme's own tokens, opaque. Glass: translucent and blurred.",
+    ));
+    list.append(&field("Style", &style));
+
+    let icon = gtk::SpinButton::with_range(16.0, 128.0, 2.0);
+    icon.set_value(cfg.dock.icon_size);
+    icon.connect_value_changed(|s| {
         let v = s.value();
         edit(move |c| c.dock.icon_size = v)
     });
-    list.append(&field("Icon size", &size));
+    list.append(&field("Icon size", &icon));
 
-    // ── magnification ───────────────────────────────────────────────────────
-    let zoom = gtk::SpinButton::with_range(1.0, 2.5, 0.05);
-    zoom.set_digits(2);
-    zoom.set_value(cfg.magnify.zoom);
-    zoom.connect_value_changed(|s| {
-        let v = s.value();
-        // 1.0 means no growth, which reads as "off" more clearly than a
-        // separate switch that can disagree with the number.
-        edit(move |c| {
-            c.magnify.zoom = v;
-            c.magnify.enabled = v > 1.001;
-        })
-    });
-    list.append(&field("Hover zoom", &zoom));
-
-    // ── icon spacing ────────────────────────────────────────────────────────
     // 0 means "derive it from the zoom factor", which is the default and keeps
     // magnified icons from overlapping. Any other value pins it.
     let spacing = gtk::SpinButton::with_range(0.0, 64.0, 1.0);
     spacing.set_value(cfg.dock.spacing.unwrap_or(0.0));
-    spacing.set_tooltip_text(Some("0 = automatic (derived from hover zoom)"));
+    spacing.set_tooltip_text(Some("0 = automatic"));
     spacing.connect_value_changed(|s| {
         let v = s.value();
         edit(move |c| c.dock.spacing = if v <= 0.0 { None } else { Some(v) })
     });
     list.append(&field("Icon spacing", &spacing));
 
+    list.append(&toggle("Monochrome glyphs", cfg.items.glyph_ui, |v| {
+        edit(move |c| c.items.glyph_ui = v)
+    }));
+
     list.append(&separator());
 
-    // ── toggles ─────────────────────────────────────────────────────────────
+    // ── hover ───────────────────────────────────────────────────────────────
+    list.append(&heading("Hover"));
+
+    // Zoom is only meaningful in one of the three modes, so the control that
+    // sets it follows the one that selects them rather than sitting there
+    // looking live when it does nothing.
+    let hovers = ["Highlight", "Magnify", "Nothing"];
+    let hover = gtk::DropDown::from_strings(&hovers);
+    hover.set_selected(match cfg.magnify.hover {
+        Hover::Fill => 0,
+        Hover::Scale => 1,
+        Hover::None => 2,
+    });
+    hover.set_tooltip_text(Some(
+        "Highlight matches the rest of Omarchy; magnify is the classic dock effect.",
+    ));
+
+    let zoom = gtk::SpinButton::with_range(1.05, 2.5, 0.05);
+    zoom.set_digits(2);
+    zoom.set_value(cfg.magnify.zoom.max(1.05));
+    zoom.connect_value_changed(|s| {
+        let v = s.value();
+        edit(move |c| c.magnify.zoom = v)
+    });
+    let zoom_row = field("Magnification", &zoom);
+    zoom_row.set_sensitive(cfg.magnify.hover == Hover::Scale);
+
+    {
+        let zoom_row = zoom_row.clone();
+        hover.connect_selected_notify(move |d| {
+            let mode = match d.selected() {
+                1 => Hover::Scale,
+                2 => Hover::None,
+                _ => Hover::Fill,
+            };
+            zoom_row.set_sensitive(mode == Hover::Scale);
+            edit(move |c| {
+                c.magnify.hover = mode;
+                // `enabled` gates hover reactions as a whole; the mode says
+                // which one. Keeping them in step means neither can silently
+                // cancel the other.
+                c.magnify.enabled = mode != Hover::None;
+            })
+        });
+    }
+    list.append(&field("On hover", &hover));
+    list.append(&zoom_row);
+
+    let delay = gtk::SpinButton::with_range(0.0, 2000.0, 50.0);
+    delay.set_value(cfg.dock.tooltip_delay_ms as f64);
+    delay.connect_value_changed(|s| {
+        let v = s.value() as u64;
+        edit(move |c| c.dock.tooltip_delay_ms = v)
+    });
+    list.append(&field("Name delay (ms)", &delay));
+
+    list.append(&separator());
+
+    // ── items ───────────────────────────────────────────────────────────────
+    list.append(&heading("Items"));
+
     list.append(&toggle("Show running apps", cfg.items.show_running, |v| {
         edit(move |c| c.items.show_running = v)
     }));
     list.append(&toggle("Workspaces", cfg.workspaces.enabled, |v| {
         edit(move |c| c.workspaces.enabled = v)
     }));
+    list.append(&toggle("Empty workspaces", cfg.workspaces.show_empty, |v| {
+        edit(move |c| c.workspaces.show_empty = v)
+    }));
     list.append(&toggle("Scratchpad", cfg.workspaces.scratchpad, |v| {
         edit(move |c| c.workspaces.scratchpad = v)
     }));
+    list.append(&toggle("System tray", cfg.tray.enabled, |v| {
+        edit(move |c| c.tray.enabled = v)
+    }));
+    // Hosting the tray means claiming a bus name and registering with the
+    // watcher, which happens once at startup.
+    list.append(&note("The tray needs a dock restart to start or stop hosting."));
+
     // One switch per folder: they are independent shortcuts, so a single
     // "show folders" toggle would be an all-or-nothing blunt instrument.
     for (i, folder) in cfg.items.folders.iter().enumerate() {
@@ -152,80 +314,58 @@ where
     list.append(&toggle("Show Trash", cfg.items.show_trash, |v| {
         edit(move |c| c.items.show_trash = v)
     }));
-    list.append(&toggle("Reserve screen space", cfg.dock.reserve_space, |v| {
-        edit(move |c| c.dock.reserve_space = v)
-    }));
 
     list.append(&separator());
 
     // ── separators ──────────────────────────────────────────────────────────
-    {
-        let cb = on_action.clone();
-        let pop = popover.clone();
-        list.append(&row("Add separator", move || {
-            edit(|c| {
-                let sep = crate::state::SEPARATOR;
-                // Appending puts it exactly where the automatic divider
-                // already goes, so the two collapse and nothing appears to
-                // happen. Insert it mid-list instead, where it is visible and
-                // can be dragged into place.
-                let mut at = c.items.pinned.len() / 2;
-                // Never land next to an existing separator: adjacent dividers
-                // collapse when rendered, so the click would look like a
-                // no-op and invite the user to click again, piling up dead
-                // entries in the config.
-                let is_sep = |i: usize| {
-                    c.items.pinned.get(i).is_some_and(|p: &String| p.trim() == sep)
-                };
-                while at < c.items.pinned.len()
-                    && (is_sep(at) || (at > 0 && is_sep(at - 1)))
-                {
-                    at += 1;
-                }
-                if at > 0 && is_sep(at - 1) {
-                    return;
-                }
-                c.items.pinned.insert(at.min(c.items.pinned.len()), sep.into());
-            });
-            let _ = &cb;
-            pop.popdown();
-        }));
-    }
-
-    {
-        let pop = popover.clone();
-        list.append(&row("Remove last separator", move || {
-            edit(|c| {
-                if let Some(i) =
-                    c.items.pinned.iter().rposition(|p| p.trim() == crate::state::SEPARATOR)
-                {
-                    c.items.pinned.remove(i);
-                }
-            });
-            pop.popdown();
-        }));
-    }
+    list.append(&heading("Separators"));
+    list.append(&row("Add separator", add_separator));
+    list.append(&row("Remove last separator", || {
+        edit(|c| {
+            if let Some(i) =
+                c.items.pinned.iter().rposition(|p| p.trim() == crate::state::SEPARATOR)
+            {
+                c.items.pinned.remove(i);
+            }
+        });
+    }));
+    list.append(&note("Drag a separator on the dock to move it."));
 
     list.append(&separator());
-
-    {
-        let pop = popover.clone();
-        list.append(&row("Edit config file…", move || {
-            let path = crate::config::config_path();
-            // Hand off to the desktop's handler rather than guessing an editor.
-            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-            pop.popdown();
-        }));
-    }
+    list.append(&row("Edit config file…", || {
+        let path = crate::config::config_path();
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }));
 
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scroll.set_propagate_natural_height(true);
-    // Cap the height so a short screen still shows the whole dock.
-    scroll.set_max_content_height(520);
+    scroll.set_vexpand(true);
     scroll.set_child(Some(&list));
-    popover.set_child(Some(&scroll));
-    popover
+    win.set_child(Some(&scroll));
+    win
+}
+
+/// Insert a divider somewhere it will actually be visible.
+fn add_separator() {
+    edit(|c| {
+        let sep = crate::state::SEPARATOR;
+        // Appending puts it exactly where the automatic divider already goes,
+        // so the two collapse and nothing appears to happen. Insert it
+        // mid-list instead, where it is visible and can be dragged into place.
+        let mut at = c.items.pinned.len() / 2;
+        // Never land next to an existing separator: adjacent dividers collapse
+        // when rendered, so the click would look like a no-op and invite the
+        // user to click again, piling up dead entries in the config.
+        let is_sep =
+            |i: usize| c.items.pinned.get(i).is_some_and(|p: &String| p.trim() == sep);
+        while at < c.items.pinned.len() && (is_sep(at) || (at > 0 && is_sep(at - 1))) {
+            at += 1;
+        }
+        if at > 0 && is_sep(at - 1) {
+            return;
+        }
+        c.items.pinned.insert(at.min(c.items.pinned.len()), sep.into());
+    });
 }
 
 /// Load, mutate, and save the config. The watcher applies it.
@@ -269,6 +409,15 @@ fn row<F: Fn() + 'static>(label: &str, on_click: F) -> gtk::Button {
     }
     b.connect_clicked(move |_| on_click());
     b
+}
+
+/// A muted line of explanation under a control.
+fn note(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(Some(text));
+    l.add_css_class("dock-settings-note");
+    l.set_xalign(0.0);
+    l.set_wrap(true);
+    l
 }
 
 fn heading(text: &str) -> gtk::Label {
