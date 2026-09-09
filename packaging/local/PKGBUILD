@@ -30,7 +30,9 @@ optdepends=(
 conflicts=('omarchy-dock' 'omarchy-dock-bin')
 provides=('omarchy-dock')
 
-options=('!lto')
+# !debug because the release profile carries no debug symbols, so the split
+# debug package makepkg would otherwise build is empty and just noise.
+options=('!lto' '!debug')
 source=()
 sha256sums=()
 
