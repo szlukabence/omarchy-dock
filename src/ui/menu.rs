@@ -70,19 +70,16 @@ where
     list.add_css_class("dock-menu-list");
 
     // ── open windows ────────────────────────────────────────────────────────
-    // Listing them lets a multi-window app be steered directly, instead of
-    // only cycling blindly with repeated clicks.
-    if item.windows.len() > 1 {
-        list.append(&heading(&format!("{} windows", item.windows.len())));
+    // One row per window: its title and workspace, so an app open on several
+    // workspaces can be steered directly instead of cycled through blindly.
+    // Each row carries a move button, which is how windows get organised in
+    // Omarchy — by workspace — rather than by minimising.
+    if !item.windows.is_empty() {
+        let n = item.windows.len();
+        list.append(&heading(if n == 1 { "Window" } else { "Windows" }));
         for (i, addr) in item.windows.iter().enumerate() {
-            let label = format!("Window {}", i + 1);
-            let a = addr.clone();
-            let cb = on_action.clone();
-            let pop = popover.clone();
-            list.append(&row(&label, move || {
-                cb(MenuAction::Command(DockCommand::Focus(a.clone())));
-                pop.popdown();
-            }));
+            let meta = item.window_meta.get(i).cloned().unwrap_or_default();
+            list.append(&window_row(addr, &meta, &item.label, &popover, &on_action));
         }
         list.append(&separator());
     }
@@ -136,6 +133,145 @@ where
 
     popover.set_child(Some(&list));
     popover
+}
+
+/// Workspaces offered as move targets: the nine Omarchy binds to SUPER+1..9.
+/// Hyprland creates a workspace on first use, so all nine are always valid.
+const MOVE_TARGETS: u32 = 9;
+
+/// One window in the context menu: focus it, or move it elsewhere.
+fn window_row<F>(
+    addr: &crate::hypr::Address,
+    meta: &crate::state::WindowMeta,
+    app_label: &str,
+    popover: &gtk::Popover,
+    on_action: &F,
+) -> gtk::Box
+where
+    F: Fn(MenuAction) + Clone + 'static,
+{
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+
+    let title = if meta.title.is_empty() { app_label.to_string() } else { meta.title.clone() };
+    let focus = row("", {
+        let a = addr.clone();
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        move || {
+            cb(MenuAction::Command(DockCommand::Focus(a.clone())));
+            pop.popdown();
+        }
+    });
+    // Title and workspace are separate labels. Titles run long ("Inbox —
+    // Bence Szluka — Outlook") and are ellipsised; the workspace is the part
+    // that tells two windows of one app apart, so it must never be the part
+    // that gets cut off.
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let title_label = gtk::Label::new(Some(&title));
+    title_label.set_xalign(0.0);
+    title_label.set_hexpand(true);
+    title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(30);
+    content.append(&title_label);
+    if !meta.workspace.is_empty() {
+        let ws = gtk::Label::new(Some(meta.workspace_label()));
+        ws.add_css_class("dock-menu-workspace");
+        content.append(&ws);
+    }
+    focus.set_child(Some(&content));
+    focus.set_hexpand(true);
+    line.append(&focus);
+
+    // The move targets live in a nested popover so the main menu stays one row
+    // per window however many workspaces there are.
+    let mover = gtk::Button::with_label("\u{f061}"); // arrow-right glyph
+    mover.add_css_class("dock-menu-item");
+    mover.add_css_class("dock-glyph");
+    mover.set_has_frame(false);
+    mover.set_tooltip_text(Some("Move to workspace"));
+    {
+        let a = addr.clone();
+        let current = meta.workspace.clone();
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        mover.connect_clicked(move |btn| {
+            let sub = move_menu(&a, &current, &cb, &pop);
+            sub.set_parent(btn);
+            sub.connect_closed(|p| p.unparent());
+            sub.popup();
+        });
+    }
+    line.append(&mover);
+    line
+}
+
+/// The nested "move to" popover: workspaces 1–9 and the scratchpad.
+fn move_menu<F>(
+    addr: &crate::hypr::Address,
+    current: &str,
+    on_action: &F,
+    outer: &gtk::Popover,
+) -> gtk::Popover
+where
+    F: Fn(MenuAction) + Clone + 'static,
+{
+    let sub = gtk::Popover::new();
+    sub.add_css_class("dock-menu");
+    sub.set_autohide(true);
+    sub.set_position(gtk::PositionType::Right);
+
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.add_css_class("dock-menu-list");
+    list.append(&heading("Move to workspace"));
+
+    // A row of numbers, like the bar's workspace widget, rather than nine
+    // menu rows.
+    let grid = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    grid.add_css_class("dock-move-grid");
+    for n in 1..=MOVE_TARGETS {
+        let name = n.to_string();
+        let b = gtk::Button::with_label(&name);
+        b.add_css_class("dock-menu-item");
+        b.add_css_class("dock-move-target");
+        b.set_has_frame(false);
+        // Moving a window to where it already is does nothing; say so.
+        b.set_sensitive(name != current);
+        let a = addr.clone();
+        let cb = on_action.clone();
+        let (s2, o2) = (sub.clone(), outer.clone());
+        b.connect_clicked(move |_| {
+            cb(MenuAction::Command(DockCommand::SendToWorkspace {
+                window: a.clone(),
+                workspace: name.clone(),
+            }));
+            s2.popdown();
+            o2.popdown();
+        });
+        grid.append(&b);
+    }
+    list.append(&grid);
+    list.append(&separator());
+
+    let scratch = format!("special:{}", crate::state::SCRATCHPAD);
+    let in_scratch = current == scratch;
+    let stash = row("Send to scratchpad", {
+        let a = addr.clone();
+        let cb = on_action.clone();
+        let (s2, o2) = (sub.clone(), outer.clone());
+        move || {
+            cb(MenuAction::Command(DockCommand::SendToWorkspace {
+                window: a.clone(),
+                workspace: scratch.clone(),
+            }));
+            s2.popdown();
+            o2.popdown();
+        }
+    });
+    stash.set_sensitive(!in_scratch);
+    list.append(&stash);
+
+    sub.set_child(Some(&list));
+    sub
 }
 
 fn row<F: Fn() + 'static>(label: &str, on_click: F) -> gtk::Button {

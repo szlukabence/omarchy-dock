@@ -204,6 +204,11 @@ impl DockSurface {
     ) -> Self {
         let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
         let geom = Geometry::compute(cfg, &kinds);
+        // Slot order, for the test hooks that address items by index.
+        tracing::debug!(
+            slots = ?items.iter().enumerate().map(|(i, it)| format!("{i}:{}", it.key)).collect::<Vec<_>>(),
+            "building dock surface"
+        );
         let travel = travel_for(cfg, &geom);
         let geom_size = (geom.panel_w, geom.panel_h);
 
@@ -435,13 +440,18 @@ impl DockSurface {
                 let sink = sink.clone();
                 let anchor = slots.get(i).cloned();
                 let side = popover_side(cfg);
+                let st_menu = state.clone();
+                let (slide_m, window_m, cfg_m) = (slide.clone(), window.clone(), cfg.clone());
                 glib::timeout_add_local_once(
                     std::time::Duration::from_millis(600),
                     move || {
                         let Some(anchor) = anchor else { return };
-                        let pop = crate::ui::settings::build(move |a| sink(a));
+                        let item = st_menu.borrow().data.get(i).cloned();
+                        let Some(pop) = item.and_then(|it| context_menu(&it, &sink)) else { return };
                         pop.set_parent(&anchor);
                         pop.set_position(side);
+                        // Hold the dock out, exactly as a real right-click does.
+                        hold_for_popover(&pop, &slide_m, &window_m, &cfg_m);
                         pop.popup();
                     },
                 );
@@ -911,31 +921,7 @@ fn attach_clicks(
                 return;
             }
 
-            let popover = if item.kind == ItemKind::Separator {
-                // Only user-placed separators are editable; automatic dividers
-                // are derived from the item list and have no pinned index.
-                match item.pin_index {
-                    Some(pin) => menu::build_separator(pin, move |a| sink(a)),
-                    None => return,
-                }
-            } else if item.kind == ItemKind::Trash || item.kind == ItemKind::Folder {
-                let sink2 = sink.clone();
-                let refresh = move || sink2(MenuAction::Rescan);
-                if item.kind == ItemKind::Trash {
-                    crate::ui::stack::build_trash(refresh)
-                } else {
-                    match item.path.clone() {
-                        Some(dir) => crate::ui::stack::build_folder(&dir, &item.label, refresh),
-                        None => return,
-                    }
-                }
-            } else if item.kind == ItemKind::Launcher {
-                // The launcher has no windows or desktop actions, so its
-                // right-click is the natural home for the dock's own settings.
-                crate::ui::settings::build(move |a| sink(a))
-            } else {
-                menu::build(&item, move |a| sink(a))
-            };
+            let Some(popover) = context_menu(&item, &sink) else { return };
             popover.set_parent(&anchor);
             popover.set_position(menu_side_r);
             // hold_for_popover also unparents on close, so repeated
@@ -945,6 +931,34 @@ fn attach_clicks(
         });
     }
     slot.add_controller(right);
+}
+
+/// The popover a right-click on `item` opens, if it has one.
+///
+/// Separate from the click handler so the test hook opens exactly the menu a
+/// real right-click would.
+fn context_menu(item: &DockItem, sink: &ActionSink) -> Option<gtk::Popover> {
+    let sink = sink.clone();
+            let popover = if item.kind == ItemKind::Separator {
+                // Only user-placed separators are editable; automatic dividers
+                // are derived from the item list and have no pinned index.
+                menu::build_separator(item.pin_index?, move |a| sink(a))
+            } else if item.kind == ItemKind::Trash || item.kind == ItemKind::Folder {
+                let sink2 = sink.clone();
+                let refresh = move || sink2(MenuAction::Rescan);
+                if item.kind == ItemKind::Trash {
+                    crate::ui::stack::build_trash(refresh)
+                } else {
+                    crate::ui::stack::build_folder(item.path.as_ref()?, &item.label, refresh)
+                }
+            } else if item.kind == ItemKind::Launcher {
+                // The launcher has no windows or desktop actions, so its
+                // right-click is the natural home for the dock's own settings.
+                crate::ui::settings::build(move |a| sink(a))
+            } else {
+                menu::build(item, move |a| sink(a))
+            };
+            Some(popover)
 }
 
 /// Re-apply a workspace tile's occupancy and current-workspace styling.

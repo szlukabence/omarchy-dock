@@ -131,9 +131,11 @@ impl App {
                 false
             }
             WindowTitle { addr, title } => {
-                // Titles only show in tooltips, so no relayout is needed.
+                // Titles show in the window list and the previews. The key
+                // sequence does not change, so this is a cheap in-place
+                // refresh, never a rebuild.
                 self.state.set_title(&addr, title);
-                false
+                true
             }
             MoveWindow { .. } | ActiveSpecial { .. } => {
                 self.request_snapshot();

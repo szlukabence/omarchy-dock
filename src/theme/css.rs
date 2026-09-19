@@ -233,6 +233,24 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 
 .dock-menu-item:active {{ background-color: {pressed_fill}; }}
 
+/* Workspace targets in the move menu: a row of numbers, like the bar's own
+   workspace widget, rather than a column of rows. */
+.dock-move-target {{
+  min-width: {move_w}px;
+  padding: {row_y}px 0;
+}}
+
+.dock-move-grid {{ padding: 0 {pad}px; }}
+
+/* The workspace a window is on, after its title: dim, like the bar's own
+   unfocused workspace numbers. */
+.dock-menu-workspace {{
+  opacity: 0.55;
+  font-size: {caption}px;
+}}
+
+.dock-menu-item:disabled {{ opacity: 0.35; }}
+
 .dock-menu-heading {{
   padding: {row_y}px {row_x}px 2px {row_x}px;
   font-size: {caption}px;
@@ -249,6 +267,7 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
         menu_fg = menu.text.to_css(),
         menu_border = border_rules(&menu.border, menu.border_alpha, menu.border_width, 2),
         menu_w = m.space("dropdown-width", 240.0).max(190.0),
+        move_w = m.space("control-height", 28.0).max(24.0),
         pad = m.space("popup-padding", 6.0).max(4.0),
         row_x = m.space("row-padding-x", 12.0).max(8.0),
         row_y = m.space("control-padding-y", 6.0).max(4.0),

@@ -46,6 +46,21 @@ pub enum ItemKind {
     Command,
 }
 
+/// What the dock shows about one window.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowMeta {
+    pub title: String,
+    /// Workspace name as Hyprland reports it: "3", or "special:scratchpad".
+    pub workspace: String,
+}
+
+impl WindowMeta {
+    /// Short human label for the workspace: "3", or "scratchpad".
+    pub fn workspace_label(&self) -> &str {
+        self.workspace.strip_prefix("special:").unwrap_or(&self.workspace)
+    }
+}
+
 /// One rendered dock item.
 #[derive(Debug, Clone)]
 pub struct DockItem {
@@ -83,6 +98,11 @@ pub struct DockItem {
     /// that ship no themed icon. Shared, because the item list is cloned on
     /// every rebuild.
     pub pixmap: Option<std::sync::Arc<(i32, i32, Vec<u8>)>>,
+    /// Title and workspace of each window in `windows`, index for index. The
+    /// window list in the context menu and the hover previews both need to say
+    /// *which* window is which — with an app open on several workspaces,
+    /// "Window 1 / Window 2" is no help at all.
+    pub window_meta: Vec<WindowMeta>,
 }
 
 impl DockItem {
@@ -167,6 +187,7 @@ fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
         glyph: (t.icon_name.is_empty() && t.pixmap.is_none())
             .then(|| GLYPH_TRAY.to_string()),
         pixmap: t.pixmap.clone(),
+        window_meta: Vec::new(),
     }
 }
 
@@ -199,6 +220,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
             cmd.glyph.clone()
         }),
         pixmap: None,
+        window_meta: Vec::new(),
     }
 }
 
@@ -369,6 +391,7 @@ fn separator() -> DockItem {
         pin_index: None,
         glyph: None,
         pixmap: None,
+        window_meta: Vec::new(),
     }
 }
 
@@ -531,6 +554,7 @@ impl DockState {
                 pin_index: None,
                 glyph: Some(GLYPH_LAUNCHER.into()),
                 pixmap: None,
+                window_meta: Vec::new(),
             });
         }
 
@@ -712,6 +736,7 @@ impl DockState {
                 pin_index: None,
                 glyph: Some(folder_glyph(&path).into()),
                 pixmap: None,
+                window_meta: Vec::new(),
                 path: Some(path),
             });
         }
@@ -736,6 +761,7 @@ impl DockState {
                 pin_index: None,
                 glyph: Some(if empty { GLYPH_TRASH.into() } else { GLYPH_TRASH_FULL.into() }),
                 pixmap: None,
+                window_meta: Vec::new(),
             });
         }
 
@@ -802,6 +828,7 @@ impl DockState {
                     // The tile draws its own number, not a glyph.
                     glyph: None,
                     pixmap: None,
+                    window_meta: Vec::new(),
                 });
             }
         }
@@ -832,6 +859,7 @@ impl DockState {
                 pin_index: None,
                 glyph: Some(GLYPH_SCRATCHPAD.into()),
                 pixmap: None,
+                window_meta: Vec::new(),
             });
         }
 
@@ -849,6 +877,19 @@ impl DockState {
         exec: String,
         actions: Vec<crate::desktop::Action>,
     ) -> DockItem {
+        let window_meta = windows
+            .iter()
+            .map(|w| {
+                self.clients
+                    .iter()
+                    .find(|c| &c.address == w)
+                    .map(|c| WindowMeta {
+                        title: c.title.clone(),
+                        workspace: c.workspace.name.clone(),
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
         let active_window =
             self.focused.as_ref().filter(|f| windows.contains(f)).cloned();
         let active = active_window.is_some();
@@ -874,6 +915,7 @@ impl DockState {
             pin_index: None,
             glyph: None,
             pixmap: None,
+            window_meta,
         }
     }
 }
@@ -900,6 +942,7 @@ mod tests {
             pin_index: None,
             glyph: None,
             pixmap: None,
+            window_meta: Vec::new(),
         }
     }
 
@@ -1322,6 +1365,7 @@ mod separator_key_tests {
             pin_index: Some(pin),
             glyph: None,
             pixmap: None,
+            window_meta: Vec::new(),
         }
     }
 
