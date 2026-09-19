@@ -28,7 +28,7 @@ provides=('omarchy-dock')
 
 options=('!debug')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
-sha256sums=('76b87e883946c00e6534497f6380e5e552bd3b7840e666a76d873c9e76bbc8f7')
+sha256sums=('b53db6ad2d1b6aa3ca5f0aa3fabc8eea6aeddf93e694fe34e8648e91bf745679')
 
 package() {
   install -Dm0755 "omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
