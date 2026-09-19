@@ -387,6 +387,7 @@ impl DockSurface {
             peeking: false,
             held: 0,
             generation: 0,
+            settle_gen: 0,
             edge,
             // Zero: the edge offset lives inside the surface now, so the
             // surface itself is flush with the screen edge.
@@ -1089,6 +1090,10 @@ struct Slide {
     /// Bumped whenever a reveal/hide timer is scheduled, so a stale timer
     /// firing after the pointer moved on is ignored.
     generation: u64,
+    /// Bumped whenever a hold is released, so only the latest release's
+    /// deferred pointer check acts. Separate from `generation`, which a
+    /// pending reveal timer depends on.
+    settle_gen: u64,
     edge: Edge,
     base_margin: i32,
     travel: f64,
@@ -1542,6 +1547,17 @@ fn pointer_inside(window: &gtk::ApplicationWindow) -> bool {
 /// Counted rather than boolean: a drag can begin from a slot while a popover
 /// is still closing, and a plain flag would let the first release drop the
 /// dock out from under the second holder.
+/// How long after a grab ends before "the pointer is not over the dock" is
+/// believed.
+///
+/// During a Wayland drag the compositor sends drag events rather than pointer
+/// events, so GTK considers the pointer gone. When the drag ends, the pointer
+/// enter that follows arrives a little later — asking at that instant says
+/// "outside" for a pointer sitting on the dock, which hid the dock on every
+/// drop wherever a window made auto-hide want it hidden, and brought it back a
+/// moment later when the enter arrived.
+const GRAB_SETTLE_MS: u64 = 250;
+
 fn hold(
     slide: &Rc<RefCell<Slide>>,
     window: &gtk::ApplicationWindow,
@@ -1549,11 +1565,12 @@ fn hold(
     take: bool,
 ) {
     // A drag or popover grabs the pointer, which makes the dock's motion
-    // controller report a `leave` that never really happened. By the time the
-    // hold is released that stale `peeking = false` would hide the dock out
-    // from under a pointer still sitting on it — so re-derive it from where
-    // the pointer actually is.
+    // controller report a `leave` that never really happened, so peek state
+    // is re-derived from where the pointer actually is when the hold ends.
+    // An "inside" answer is trustworthy at once; an "outside" one is not yet
+    // (see GRAB_SETTLE_MS), so it is checked again once things settle.
     let inside = if take { None } else { Some(pointer_inside(window)) };
+    let mut recheck = None;
 
     {
         let mut s = slide.borrow_mut();
@@ -1561,19 +1578,40 @@ fn hold(
             s.held += 1;
         } else {
             s.held = s.held.saturating_sub(1);
-            if let Some(inside) = inside {
-                if s.held == 0 {
-                    s.peeking = inside;
+            if s.held == 0 {
+                s.settle_gen += 1;
+                match inside {
+                    Some(true) => s.peeking = true,
+                    // Leave peeking as it stood before the grab — the dock is
+                    // out, since it was being used — and decide shortly.
+                    Some(false) => recheck = Some(s.settle_gen),
+                    None => {}
                 }
             }
         }
         let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
-        if (s.spring.target - target).abs() < f64::EPSILON {
-            return;
+        if (s.spring.target - target).abs() >= f64::EPSILON {
+            s.spring.target = target;
+            drop(s);
+            animate_slide_on(slide, window, cfg);
         }
-        s.spring.target = target;
     }
-    animate_slide_on(slide, window, cfg);
+
+    if let Some(generation) = recheck {
+        let (slide, window, cfg) = (slide.clone(), window.clone(), cfg.clone());
+        glib::timeout_add_local_once(std::time::Duration::from_millis(GRAB_SETTLE_MS), move || {
+            {
+                let s = slide.borrow();
+                // A newer hold or release has taken over; its check decides.
+                if s.settle_gen != generation || s.held > 0 {
+                    return;
+                }
+            }
+            let inside = pointer_inside(&window);
+            tracing::debug!(inside, "pointer after grab settled");
+            surface_set_peeking(&slide, &window, &cfg, inside);
+        });
+    }
 }
 
 /// Give an item an upward impulse and make sure the tick loop is running.
