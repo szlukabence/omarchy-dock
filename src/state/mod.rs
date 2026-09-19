@@ -400,6 +400,12 @@ impl DockState {
     }
 
     /// Replace the window set wholesale, as after a snapshot or reconnect.
+    /// Replace the known desktop entries after an application was installed or
+    /// removed.
+    pub fn set_entries(&mut self, entries: Vec<Entry>) {
+        self.matcher = Matcher::build(entries);
+    }
+
     pub fn set_clients(&mut self, clients: Vec<Client>) {
         self.clients = clients;
         // An urgent window that has since closed must not stay urgent.
@@ -560,7 +566,7 @@ impl DockState {
                 }
                 continue;
             }
-            let entry = self.matcher.by_id(id);
+            let entry = self.matcher.resolve_pin(id);
             let expected = self.matcher.expected_classes(id);
 
             let mut windows = Vec::new();

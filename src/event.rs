@@ -12,6 +12,9 @@ use crate::hypr::model::{Client, Monitor, Workspace};
 pub enum AppEvent {
     /// `config.toml` changed. Geometry may differ, so the dock is rebuilt.
     ConfigChanged,
+    /// A `.desktop` file was added, changed or removed, so an application was
+    /// installed or uninstalled.
+    DesktopEntriesChanged,
     /// Something outside the config changed what the dock's hide policy should
     /// decide — a screen recording starting or stopping, say.
     HidePolicyChanged,

@@ -45,6 +45,15 @@ fn run(tx: Sender) -> Result<()> {
     let mut theme_dir = theme::current_theme_dir();
 
     debouncer.watch(&config_dir, RecursiveMode::NonRecursive)?;
+    // Application directories, so installing or removing an app — including
+    // Omarchy's own TUI and web-app installers, which write desktop files into
+    // ~/.local/share/applications — reaches the dock without a restart.
+    // Directories that do not exist yet are skipped; notify cannot watch them.
+    let app_dirs: Vec<PathBuf> =
+        crate::desktop::search_dirs().into_iter().filter(|d| d.is_dir()).collect();
+    for d in &app_dirs {
+        debouncer.watch(d, RecursiveMode::NonRecursive).ok();
+    }
     // The marker's *directory*, because the file itself does not exist most of
     // the time and notify cannot watch a path that is not there yet.
     if let Some(dir) = crate::omarchy::RECORDING_MARKER.parent() {
@@ -118,6 +127,21 @@ fn run(tx: Sender) -> Result<()> {
                 || p.ends_with("theme")
                 || p.ends_with("icons.theme")
         });
+
+        // Only `.desktop` files: update-desktop-database rewrites its caches in
+        // the same directories on every package operation.
+        let desktop_changed = paths.iter().any(|p| {
+            p.extension().is_some_and(|e| e == "desktop")
+                && app_dirs.iter().any(|d| p.starts_with(d))
+        });
+        // Sent on its own rather than folded into the choice below: an app can
+        // be installed in the same burst as a config edit, and both matter.
+        if desktop_changed {
+            tracing::debug!("desktop entries changed");
+            if tx.send_blocking(AppEvent::DesktopEntriesChanged).is_err() {
+                break;
+            }
+        }
 
         let recording_changed =
             paths.iter().any(|p| *p == crate::omarchy::RECORDING_MARKER.as_path());

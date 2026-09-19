@@ -85,7 +85,7 @@ pub fn strip_field_codes(exec: &str) -> String {
 }
 
 /// Directories searched for desktop entries, in precedence order.
-fn search_dirs() -> Vec<PathBuf> {
+pub fn search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = dirs::data_dir() {
         dirs.push(home.join("applications"));

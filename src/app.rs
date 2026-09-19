@@ -397,6 +397,15 @@ pub fn run() -> glib::ExitCode {
                 let Some(app) = guard.as_mut() else { continue };
 
                 match event {
+                    // An application was installed or removed. Rare, and it
+                    // can change icons and labels, which a refresh never
+                    // touches — so rebuild outright.
+                    AppEvent::DesktopEntriesChanged => {
+                        let entries = crate::desktop::scan();
+                        tracing::info!(count = entries.len(), "desktop entries rescanned");
+                        app.state.set_entries(entries);
+                        app.rebuild(&gtk_app);
+                    }
                     // A recording started or stopped; nothing else changed.
                     AppEvent::HidePolicyChanged => app.update_autohide(),
                     AppEvent::Tray(items) => {

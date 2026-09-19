@@ -77,6 +77,24 @@ impl Matcher {
         self.entries.iter().find(|e| e.id.to_lowercase() == id)
     }
 
+    /// Resolve a pinned id to its desktop entry.
+    ///
+    /// Pins are documented as "desktop-entry ids or window classes", so an id
+    /// that names no desktop file is tried as a declared `StartupWMClass` too.
+    /// That is what keeps a pin working when an application's desktop file is
+    /// renamed or replaced: removing Omarchy's Hermes TUI (`Hermes.desktop`)
+    /// left a pin named `Hermes`, and the desktop app that remained ships as
+    /// `hermes-desktop.desktop` with `StartupWMClass=Hermes`.
+    ///
+    /// Exact keys only. `match_class` also falls back to the last dotted
+    /// segment, which suits reported window classes but would let a pin bind to
+    /// an unrelated application that happens to share a word.
+    pub fn resolve_pin(&self, id: &str) -> Option<&Entry> {
+        self.by_id(id).or_else(|| {
+            self.keys.get(&id.to_lowercase()).map(|i| &self.entries[*i])
+        })
+    }
+
     /// Every class a pinned entry's windows might report.
     ///
     /// Returns candidates rather than one answer on purpose. `StartupWMClass`
@@ -92,7 +110,7 @@ impl Matcher {
             }
         };
 
-        if let Some(e) = self.by_id(id) {
+        if let Some(e) = self.resolve_pin(id) {
             if let Some(w) = &e.wm_class {
                 push(w.to_lowercase());
             }
@@ -198,6 +216,50 @@ fn unquote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn entry(id: &str, wm_class: Option<&str>, exec: &str) -> Entry {
+        Entry {
+            id: id.into(),
+            name: id.into(),
+            icon: id.into(),
+            exec: exec.into(),
+            wm_class: wm_class.map(Into::into),
+            actions: Vec::new(),
+            no_display: false,
+            path: Default::default(),
+            terminal: false,
+        }
+    }
+
+    #[test]
+    fn a_pin_falls_back_to_the_declared_window_class() {
+        // The Hermes case: the pin was the TUI's desktop id; the desktop app
+        // that remains has a different id but declares that class.
+        let m = Matcher::build(vec![entry("hermes-desktop", Some("Hermes"), "hermes-desktop %U")]);
+        let e = m.resolve_pin("Hermes").expect("resolves through StartupWMClass");
+        assert_eq!(e.id, "hermes-desktop");
+        assert!(m.expected_classes("Hermes").contains(&"hermes".to_string()));
+    }
+
+    #[test]
+    fn a_desktop_id_still_wins_over_a_class() {
+        let m = Matcher::build(vec![
+            entry("Hermes", None, "hermes-tui"),
+            entry("hermes-desktop", Some("Hermes"), "hermes-desktop"),
+        ]);
+        // Exact desktop id first — the key map would otherwise answer.
+        assert_eq!(m.by_id("Hermes").unwrap().exec, "hermes-tui");
+        assert_eq!(m.resolve_pin("Hermes").unwrap().exec, "hermes-tui");
+    }
+
+    #[test]
+    fn a_pin_never_binds_through_a_partial_name() {
+        // match_class would accept this via the last dotted segment; a pin
+        // must not silently turn into a different application.
+        let m = Matcher::build(vec![entry("app", None, "app")]);
+        assert!(m.match_class("org.example.app").is_some());
+        assert!(m.resolve_pin("org.example.app").is_none());
+    }
+
     #[test]
     fn a_web_app_class_round_trips_back_to_its_url() {
         // The class is derived from the URL, so the URL can be recovered from
