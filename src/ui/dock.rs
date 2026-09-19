@@ -8,7 +8,7 @@
 use gtk4 as gtk;
 
 use gtk::prelude::*;
-use gtk::{gdk, glib, graphene, gsk};
+use gtk::{gdk, gio, glib, graphene, gsk};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 
 use std::cell::{Cell, RefCell};
@@ -418,6 +418,7 @@ impl DockSurface {
             }
         }
         attach_drop(&fixed, &state, &sink, cfg);
+        attach_file_drop(&fixed, &state, &sink, &slide, &window, cfg);
 
         // Test hook: drags cannot be synthesised against a layer surface, so
         // this forces the drop gap open to verify it parts correctly.
@@ -1361,6 +1362,137 @@ fn attach_drop(
 fn indicator_origin(geom: &Geometry, i: usize, cfg: &Config) -> Option<(f64, f64)> {
     let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
     geom.indicator_at(i, cfg.dock.icon_size, len, thick)
+}
+
+/// What a file dragged over slot `i` would do there, if anything.
+enum FileDrop {
+    /// Open the files with this app's `Exec=` line.
+    Open(String),
+    /// Move them to the Trash.
+    Trash,
+}
+
+fn file_drop_at(s: &State, x: f64, y: f64) -> Option<(usize, FileDrop)> {
+    let i = s.geom.slot_at(x, y, s.cfg.dock.icon_size)?;
+    let item = s.data.get(i)?;
+    match item.kind {
+        ItemKind::Trash => Some((i, FileDrop::Trash)),
+        _ => item.open_with.clone().map(|exec| (i, FileDrop::Open(exec))),
+    }
+}
+
+/// Accept files dragged in from a file manager or anywhere else.
+///
+/// Dropped on an app that declares it opens files, they open with it; dropped
+/// on Trash, they are trashed. Everything else refuses the drop outright, so
+/// the cursor says "no" before release rather than the drop silently doing
+/// nothing. A hidden dock reveals itself while a file is dragged over its edge
+/// and stays out for the length of the drag.
+fn attach_file_drop(
+    fixed: &gtk::Fixed,
+    state: &Rc<RefCell<State>>,
+    sink: &ActionSink,
+    slide: &Rc<RefCell<Slide>>,
+    window: &gtk::ApplicationWindow,
+    cfg: &Config,
+) {
+    let target = gtk::DropTarget::new(
+        gdk::FileList::static_type(),
+        gdk::DragAction::COPY | gdk::DragAction::MOVE,
+    );
+    // Whether this drag currently holds the dock out, so enter/leave/drop can
+    // never release a hold they did not take, or take two.
+    let holding = Rc::new(Cell::new(false));
+
+    let release = {
+        let (holding, slide, window, cfg) = (holding.clone(), slide.clone(), window.clone(), cfg.clone());
+        move || {
+            if holding.replace(false) {
+                hold(&slide, &window, &cfg, false);
+            }
+        }
+    };
+
+    {
+        let (holding, slide, window, cfg) = (holding.clone(), slide.clone(), window.clone(), cfg.clone());
+        target.connect_enter(move |_, _, _| {
+            if !holding.replace(true) {
+                hold(&slide, &window, &cfg, true);
+            }
+            // Report nothing yet: the motion handler decides per slot.
+            gdk::DragAction::empty()
+        });
+    }
+    {
+        let state = state.clone();
+        target.connect_motion(move |_, x, y| {
+            let hit = file_drop_at(&state.borrow(), x, y);
+            // The hover plate and the name label are exactly the feedback a
+            // drop target needs: this icon, and what it is called.
+            set_hover(&state, hit.as_ref().map(|(i, _)| *i));
+            match hit {
+                Some((_, FileDrop::Open(_))) => gdk::DragAction::COPY,
+                Some((_, FileDrop::Trash)) => gdk::DragAction::MOVE,
+                None => gdk::DragAction::empty(),
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        let release = release.clone();
+        target.connect_leave(move |_| {
+            set_hover(&state, None);
+            release();
+        });
+    }
+    {
+        let state = state.clone();
+        let sink = sink.clone();
+        target.connect_drop(move |_, value, x, y| {
+            let hit = file_drop_at(&state.borrow(), x, y);
+            set_hover(&state, None);
+            release();
+            let (Some((i, what)), Ok(list)) = (hit, value.get::<gdk::FileList>()) else {
+                return false;
+            };
+            let files = list.files();
+            match what {
+                FileDrop::Open(exec) => {
+                    let pairs: Vec<(String, String)> = files
+                        .iter()
+                        .filter_map(|f| Some((f.path()?.to_string_lossy().into_owned(), f.uri().to_string())))
+                        .collect();
+                    let cmds = crate::desktop::open_command(&exec, &pairs);
+                    if cmds.is_empty() {
+                        return false;
+                    }
+                    kick(&state, i);
+                    for cmd in cmds {
+                        sink(MenuAction::Command(DockCommand::Exec(cmd)));
+                    }
+                }
+                FileDrop::Trash => {
+                    let moved = files
+                        .iter()
+                        .filter(|f| f.trash(None::<&gio::Cancellable>).is_ok())
+                        .count();
+                    if moved == 0 {
+                        return false;
+                    }
+                    crate::omarchy::notify(
+                        "Moved to Trash",
+                        Some(&if moved == 1 { "1 item".to_string() } else { format!("{moved} items") }),
+                        Some("\u{f1f8}"),
+                    );
+                    // The Trash icon switches between empty and full.
+                    sink(MenuAction::Rescan);
+                }
+            }
+            true
+        });
+    }
+
+    fixed.add_controller(target);
 }
 
 /// Which side of an icon a popover should open on, given the dock's edge.

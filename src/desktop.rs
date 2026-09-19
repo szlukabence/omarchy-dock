@@ -84,6 +84,76 @@ pub fn strip_field_codes(exec: &str) -> String {
     out.trim().to_string()
 }
 
+/// Whether an `Exec=` line takes files or URLs, i.e. whether files dropped on
+/// the app can be opened with it.
+pub fn accepts_files(exec: &str) -> bool {
+    file_code(exec).is_some()
+}
+
+/// The file field code an `Exec=` line uses: `F`, `U`, `f` or `u`.
+fn file_code(exec: &str) -> Option<char> {
+    let mut chars = exec.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some(code @ ('f' | 'F' | 'u' | 'U')) => return Some(code),
+                // `%%` is a literal percent sign, not a code.
+                _ => continue,
+            }
+        }
+    }
+    None
+}
+
+/// Single-quote a value for a shell command line.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The command lines that open `files` — each a `(path, uri)` pair — with the
+/// app whose `Exec=` line is `exec`.
+///
+/// Follows the desktop-entry specification: `%F` and `%U` take every file in
+/// one launch; `%f` and `%u` take one, so several files mean several launches.
+/// Every other field code is dropped, and `%%` becomes `%`. Paths are
+/// single-quoted, because the result runs through a shell and file names
+/// contain spaces, quotes and worse. Empty when the app takes no files.
+pub fn open_command(exec: &str, files: &[(String, String)]) -> Vec<String> {
+    let Some(code) = file_code(exec) else { return Vec::new() };
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    // Keep only the chosen code, as a placeholder that cannot occur in the
+    // quoted paths spliced in afterwards.
+    const SLOT: &str = "\u{0}";
+    let mut template = String::with_capacity(exec.len());
+    let mut chars = exec.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            template.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => template.push('%'),
+            Some(x) if x == code => template.push_str(SLOT),
+            _ => {}
+        }
+    }
+
+    let arg = |(path, uri): &(String, String)| {
+        shell_quote(if code.eq_ignore_ascii_case(&'u') { uri } else { path })
+    };
+    let collapse = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if code.is_uppercase() {
+        let all: Vec<String> = files.iter().map(arg).collect();
+        vec![collapse(template.replacen(SLOT, &all.join(" "), 1))]
+    } else {
+        files.iter().map(|f| collapse(template.replacen(SLOT, &arg(f), 1))).collect()
+    }
+}
+
 /// Directories searched for desktop entries, in precedence order.
 pub fn search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -215,6 +285,44 @@ pub fn parse(path: &Path) -> Option<Entry> {
 
 #[cfg(test)]
 mod tests {
+    fn f(path: &str) -> (String, String) {
+        (path.to_string(), format!("file://{}", path.replace(' ', "%20")))
+    }
+
+    #[test]
+    fn list_codes_take_every_file_in_one_launch() {
+        let cmds = open_command("code %F", &[f("/a.rs"), f("/b.rs")]);
+        assert_eq!(cmds, ["code '/a.rs' '/b.rs'"]);
+        let cmds = open_command("firefox %U", &[f("/x y.html")]);
+        assert_eq!(cmds, ["firefox 'file:///x%20y.html'"]);
+    }
+
+    #[test]
+    fn single_codes_launch_once_per_file() {
+        let cmds = open_command("imv %f", &[f("/1.png"), f("/2.png")]);
+        assert_eq!(cmds, ["imv '/1.png'", "imv '/2.png'"]);
+    }
+
+    #[test]
+    fn paths_are_quoted_against_the_shell() {
+        let cmds = open_command("app %f", &[f("/it's $(rm -rf ~).txt")]);
+        assert_eq!(cmds, [r"app '/it'\''s $(rm -rf ~).txt'"]);
+    }
+
+    #[test]
+    fn other_codes_are_dropped_and_percent_percent_survives() {
+        let cmds = open_command("app --name %c %i --pct=100%% %F %k", &[f("/a")]);
+        assert_eq!(cmds, ["app --name --pct=100% '/a'"]);
+    }
+
+    #[test]
+    fn an_app_that_takes_no_files_refuses_the_drop() {
+        assert!(!accepts_files("omarchy-launch-webapp \"https://x.com\""));
+        assert!(!accepts_files("app --literal=%%F"));
+        assert!(open_command("spotify", &[f("/a")]).is_empty());
+        assert!(accepts_files("nautilus --new-window %U"));
+    }
+
     use super::*;
 
     #[test]

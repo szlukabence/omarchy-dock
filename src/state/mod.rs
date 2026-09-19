@@ -103,6 +103,10 @@ pub struct DockItem {
     /// *which* window is which — with an app open on several workspaces,
     /// "Window 1 / Window 2" is no help at all.
     pub window_meta: Vec<WindowMeta>,
+    /// The raw `Exec=` line, when the app declares that it opens files or URLs
+    /// (`%f`, `%F`, `%u`, `%U`). `None` means a file dropped on it is refused
+    /// rather than launching the app and quietly ignoring the file.
+    pub open_with: Option<String>,
 }
 
 impl DockItem {
@@ -188,6 +192,7 @@ fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
             .then(|| GLYPH_TRAY.to_string()),
         pixmap: t.pixmap.clone(),
         window_meta: Vec::new(),
+        open_with: None,
     }
 }
 
@@ -221,6 +226,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
         }),
         pixmap: None,
         window_meta: Vec::new(),
+        open_with: None,
     }
 }
 
@@ -277,6 +283,16 @@ pub fn folder_glyph(path: &std::path::Path) -> &'static str {
             }
         }
     }
+}
+
+/// The `Exec=` line to open dropped files with, if the entry takes files.
+///
+/// Terminal apps are excluded: their command needs a terminal around it, and
+/// launching it bare with a file would fail invisibly.
+fn open_with(entry: Option<&Entry>) -> Option<String> {
+    entry
+        .filter(|e| !e.terminal && crate::desktop::accepts_files(&e.exec))
+        .map(|e| e.exec.clone())
 }
 
 /// The `n`th (0-based) item a "dock app N" keybinding should reach.
@@ -406,6 +422,7 @@ fn separator() -> DockItem {
         glyph: None,
         pixmap: None,
         window_meta: Vec::new(),
+        open_with: None,
     }
 }
 
@@ -569,6 +586,7 @@ impl DockState {
                 glyph: Some(GLYPH_LAUNCHER.into()),
                 pixmap: None,
                 window_meta: Vec::new(),
+                open_with: None,
             });
         }
 
@@ -649,6 +667,7 @@ impl DockState {
                 entry.map(|e| e.actions.clone()).unwrap_or_default(),
             );
             pinned_item.pin_index = Some(pin_index);
+            pinned_item.open_with = open_with(entry);
             items.push(pinned_item);
         }
 
@@ -709,7 +728,9 @@ impl DockState {
                 items.insert(pinned_end, separator());
             }
             for (key, label, icon, windows, exec, actions) in groups {
-                items.push(self.make_item(key, label, icon, windows, false, exec, actions));
+                let mut item = self.make_item(key, label, icon, windows, false, exec, actions);
+                item.open_with = open_with(self.matcher.by_id(&item.key));
+                items.push(item);
             }
         }
 
@@ -751,6 +772,7 @@ impl DockState {
                 glyph: Some(folder_glyph(&path).into()),
                 pixmap: None,
                 window_meta: Vec::new(),
+                open_with: None,
                 path: Some(path),
             });
         }
@@ -776,6 +798,7 @@ impl DockState {
                 glyph: Some(if empty { GLYPH_TRASH.into() } else { GLYPH_TRASH_FULL.into() }),
                 pixmap: None,
                 window_meta: Vec::new(),
+                open_with: None,
             });
         }
 
@@ -843,6 +866,7 @@ impl DockState {
                     glyph: None,
                     pixmap: None,
                     window_meta: Vec::new(),
+                    open_with: None,
                 });
             }
         }
@@ -874,6 +898,7 @@ impl DockState {
                 glyph: Some(GLYPH_SCRATCHPAD.into()),
                 pixmap: None,
                 window_meta: Vec::new(),
+                open_with: None,
             });
         }
 
@@ -930,6 +955,7 @@ impl DockState {
             glyph: None,
             pixmap: None,
             window_meta,
+            open_with: None,
         }
     }
 }
@@ -957,6 +983,7 @@ mod tests {
             glyph: None,
             pixmap: None,
             window_meta: Vec::new(),
+            open_with: None,
         }
     }
 
@@ -1404,6 +1431,7 @@ mod separator_key_tests {
             glyph: None,
             pixmap: None,
             window_meta: Vec::new(),
+            open_with: None,
         }
     }
 
