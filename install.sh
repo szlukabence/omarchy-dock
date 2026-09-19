@@ -3,11 +3,11 @@
 # Build and install omarchy-dock from this checkout.
 #
 # `omarchy plugin add` clones this repository into
-# ~/.config/omarchy/plugins/omarchy-dock/, and that clone is the full source
+# ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/, and that clone is the full source
 # tree — so the plugin you just installed can build the binary it supervises.
 # Run this from wherever the checkout lives:
 #
-#   cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
+#   cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh
 #
 # The build goes through makepkg, so pacman owns the files and upgrading or
 # removing them is a normal package operation rather than tracking down loose

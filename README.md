@@ -7,13 +7,13 @@ active Omarchy theme's own design tokens, so it is drawn with the same
 background, borders, hover fills, corner radius and type scale as the bar and
 the menus — rather than being a dock that merely runs on the same desktop.
 
-![The dock on Omarchy](screenshot.png)
+![The dock on Omarchy](preview.png)
 
 ## Install
 
 ```bash
-curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.0/omarchy-dock-1.2.0-1-x86_64.pkg.tar.zst
-sudo pacman -U omarchy-dock-1.2.0-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.1/omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst
+sudo pacman -U omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
 omarchy-dockctl install
 ```
@@ -31,7 +31,7 @@ URL, but not for local files, and the release is not signed.
 
 ```bash
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
-cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
+cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh
 ```
 
 `omarchy plugin add` only *clones* a repository — it never builds or runs
@@ -71,7 +71,7 @@ version in the install lines above and the checksum in `PKGBUILD-bin`.
 
 ```bash
 omarchy-dockctl uninstall              # hook, menu entries, shell.json entry
-omarchy plugin remove omarchy-dock     # the plugin checkout
+omarchy plugin remove io.github.szlukabence.omarchy-dock   # the plugin checkout
 sudo pacman -Rns omarchy-dock          # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
@@ -120,7 +120,7 @@ ever in response to an explicit action:
 | Path | When | What |
 | --- | --- | --- |
 | `~/.config/omarchy/hooks/theme-set.d/omarchy-dock` | `dockctl install` | A hook that restyles the dock after a theme change |
-| `~/.config/omarchy/plugins/omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout |
+| `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout |
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |

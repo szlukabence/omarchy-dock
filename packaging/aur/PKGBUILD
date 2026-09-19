@@ -13,7 +13,7 @@
 # release, so it is worth adding only once compile time is a complaint.
 
 pkgname=omarchy-dock
-pkgver=1.2.0
+pkgver=1.2.1
 pkgrel=1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
 arch=('x86_64' 'aarch64')

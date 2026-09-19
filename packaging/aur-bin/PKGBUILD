@@ -8,7 +8,7 @@
 
 pkgname=omarchy-dock-bin
 _pkgname=omarchy-dock
-pkgver=1.2.0
+pkgver=1.2.1
 pkgrel=1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — prebuilt binaries"
 arch=('x86_64')

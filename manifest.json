@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "omarchy-dock",
+  "id": "io.github.szlukabence.omarchy-dock",
   "name": "Omarchy Dock",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Bence Szluka",
   "license": "MIT",
   "description": "macOS-style application dock for Omarchy, drawn with the shell's own design tokens.",

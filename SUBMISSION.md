@@ -48,7 +48,7 @@ prebuilt pacman package on the GitHub release (downloaded, then `pacman -U`).
 Alternatively the clone this plugin arrives in is the full source tree, so it
 can build the binary it supervises:
 
-  cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
+  cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh
 
 Either way pacman owns the binaries. If the binary is missing, the plugin sends
 a notification saying where to get it rather than failing with "command not
@@ -102,7 +102,7 @@ by `omarchy-dockctl uninstall`. Nothing is written on start, on poll, or on open
 | Path | What |
 |---|---|
 | `~/.config/omarchy/hooks/theme-set.d/omarchy-dock` | A hook that restyles the dock after a theme change |
-| `~/.config/omarchy/plugins/omarchy-dock/` | The supervisor plugin — **skipped entirely when that directory is a git checkout**, so a marketplace install is never overwritten and `omarchy plugin update` keeps working |
+| `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | The supervisor plugin — **skipped entirely when that directory is a git checkout**, so a marketplace install is never overwritten and `omarchy plugin update` keeps working |
 | `~/.config/omarchy/shell.json` | One entry in `plugins[]`, which is how the shell records a plugin as enabled. No other key is touched |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | A block between markers, spliced in rather than rewriting the file; removed cleanly |
 | `~/.config/hypr/looknfeel.lua` | **Only** under `install --blur`, which is opt-in and never part of a plain install: global blur plus a layer rule, needed solely by `theme.style = "glass"`. Marker-fenced, and validated with `hyprctl configerrors` afterwards |

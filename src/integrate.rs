@@ -23,7 +23,16 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Plugin id, and the directory name under `~/.config/omarchy/plugins/`.
-pub const PLUGIN_ID: &str = "omarchy-dock";
+///
+/// Namespaced, as the plugin marketplace asks: listing ids are permanent and
+/// global, and a bare `omarchy-dock` would read as a first-party component.
+/// `omarchy plugin add` clones into a directory named after this id.
+pub const PLUGIN_ID: &str = "io.github.szlukabence.omarchy-dock";
+
+/// The id the plugin had before it was namespaced. Installs made then left a
+/// plugin directory and a `shell.json` entry under it, which would otherwise
+/// sit alongside the new one as a second supervisor for the same dock.
+const LEGACY_PLUGIN_ID: &str = "omarchy-dock";
 
 /// Basename of the hook we drop into `theme-set.d`.
 const HOOK_NAME: &str = "omarchy-dock";
@@ -42,6 +51,10 @@ fn hook_path() -> PathBuf {
 
 fn plugin_dir() -> PathBuf {
     omarchy_config_dir().join("plugins").join(PLUGIN_ID)
+}
+
+fn legacy_plugin_dir() -> PathBuf {
+    omarchy_config_dir().join("plugins").join(LEGACY_PLUGIN_ID)
 }
 
 fn menu_extension_path() -> PathBuf {
@@ -112,6 +125,10 @@ const PLUGIN_SERVICE_QML: &str = include_str!("../Service.qml");
 /// The file is plain JSON that Omarchy's own commands rewrite, so round-tripping
 /// it through a serializer is how it is already maintained.
 fn set_plugin_enabled(on: bool) -> Result<bool> {
+    set_enabled(PLUGIN_ID, on)
+}
+
+fn set_enabled(id: &str, on: bool) -> Result<bool> {
     let path = shell_json_path();
     let Ok(text) = std::fs::read_to_string(&path) else {
         // No shell config at all: nothing to enable ourselves in, and creating
@@ -129,11 +146,11 @@ fn set_plugin_enabled(on: bool) -> Result<bool> {
 
     let at = list
         .iter()
-        .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(PLUGIN_ID));
+        .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(id));
 
     let changed = match (on, at) {
         (true, None) => {
-            list.push(serde_json::json!({ "id": PLUGIN_ID }));
+            list.push(serde_json::json!({ "id": id }));
             true
         }
         (false, Some(i)) => {
@@ -152,6 +169,21 @@ fn set_plugin_enabled(on: bool) -> Result<bool> {
             .with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(changed)
+}
+
+/// Retire the pre-namespace plugin: its `shell.json` entry, and its directory
+/// unless that is a git checkout, which `omarchy plugin remove` owns.
+///
+/// Returns whether anything was removed, for reporting.
+fn remove_legacy_plugin() -> Result<bool> {
+    let mut removed = set_enabled(LEGACY_PLUGIN_ID, false)?;
+    let dir = legacy_plugin_dir();
+    if dir.exists() && !dir.join(".git").exists() {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("removing {}", dir.display()))?;
+        removed = true;
+    }
+    Ok(removed)
 }
 
 fn shell_json_path() -> PathBuf {
@@ -424,6 +456,7 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
     // files would leave the checkout dirty and break `omarchy plugin update`.
     // Omarchy itself uses the presence of `.git` to tell a cloned plugin from
     // a hand-written one, so the same test is used here.
+    let migrated = remove_legacy_plugin()?;
     let dir = plugin_dir();
     let git_managed = dir.join(".git").exists();
     if !git_managed {
@@ -449,6 +482,14 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
             (false, false) => "already enabled in shell.json".into(),
         }),
     });
+    if migrated {
+        out.push(Report {
+            label: "old plugin id",
+            path: legacy_plugin_dir(),
+            installed: false,
+            note: Some(format!("retired `{LEGACY_PLUGIN_ID}`; the plugin is now `{PLUGIN_ID}`")),
+        });
+    }
 
     // Menu extension.
     let path = menu_extension_path();
@@ -501,6 +542,7 @@ pub fn uninstall() -> Result<Vec<Report>> {
     // Drop the shell.json reference before the files, so the shell is never
     // pointed at a plugin directory that has just been deleted.
     set_plugin_enabled(false)?;
+    remove_legacy_plugin()?;
     let dir = plugin_dir();
     let git_managed = dir.join(".git").exists();
     let removed = if dir.exists() && !git_managed {
@@ -518,7 +560,7 @@ pub fn uninstall() -> Result<Vec<Report>> {
         // shell.json already stops the dock, and `omarchy plugin remove` is
         // the command that owns removing it.
         note: git_managed
-            .then(|| "disabled; remove the checkout with `omarchy plugin remove omarchy-dock`".into()),
+            .then(|| format!("disabled; remove the checkout with `omarchy plugin remove {PLUGIN_ID}`")),
     });
 
     let path = menu_extension_path();
