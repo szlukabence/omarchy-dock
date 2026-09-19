@@ -279,6 +279,20 @@ pub fn folder_glyph(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// The `n`th (0-based) item a "dock app N" keybinding should reach.
+///
+/// Counts applications and pinned command tiles in the order they appear, and
+/// skips the dock's furniture — the launcher, dividers, workspace tiles, the
+/// scratchpad, folder stacks and Trash. Counting every slot made `activate 1`
+/// open the Omarchy menu, and shifted the numbering whenever a divider was
+/// added.
+pub fn nth_app(items: &[DockItem], n: usize) -> Option<&DockItem> {
+    items
+        .iter()
+        .filter(|i| matches!(i.kind, ItemKind::App | ItemKind::Command))
+        .nth(n)
+}
+
 /// Identity used to match this item against an updated item list.
 ///
 /// Normally the key, but separators are deliberately interchangeable: they
@@ -1136,6 +1150,30 @@ mod layout_tests {
 
 #[cfg(test)]
 mod workspace_tests {
+    #[test]
+    fn app_numbering_skips_the_docks_furniture() {
+        let mut launcher = separator();
+        launcher.kind = ItemKind::Launcher;
+        let app = |k: &str| {
+            let mut i = separator();
+            i.kind = ItemKind::App;
+            i.key = k.into();
+            i
+        };
+        let mut tile = separator();
+        tile.kind = ItemKind::Command;
+        tile.key = "cmd:themes".into();
+        let mut trash = separator();
+        trash.kind = ItemKind::Trash;
+
+        let items = vec![launcher, separator(), app("a"), separator(), app("b"), tile, trash];
+        let key = |n| nth_app(&items, n).map(|i| i.key.as_str());
+        assert_eq!(key(0), Some("a"), "the first app, not the launcher");
+        assert_eq!(key(1), Some("b"), "dividers do not shift the count");
+        assert_eq!(key(2), Some("cmd:themes"), "a pinned command tile counts");
+        assert_eq!(key(3), None, "Trash does not");
+    }
+
     use super::*;
     use crate::hypr::model::{Monitor, WorkspaceRef};
 

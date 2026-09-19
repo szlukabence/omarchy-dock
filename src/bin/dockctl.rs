@@ -42,8 +42,10 @@ fn main() -> std::process::ExitCode {
              restyle            re-read the Omarchy theme only\n  \
              settings           open the settings window\n\n\
              omarchy integration:\n  \
-             install [--blur]   theme-set hook, shell plugin, and menu entries;\n                     \
-             --blur also sets up Hyprland blur for `style = glass`\n  \
+             install [--blur] [--keys[=MODS]]\n                     \
+             theme-set hook, shell plugin, and menu entries;\n                     \
+             --blur also sets up Hyprland blur for `style = glass`;\n                     \
+             --keys binds MODS + 1..9 to dock apps (default SUPER+CTRL+ALT)\n  \
              uninstall          remove all three\n  \
              status             show what is installed"
         );
@@ -58,7 +60,13 @@ fn main() -> std::process::ExitCode {
             // `--blur` also turns on Hyprland blur, which only the glass style
             // needs and which Omarchy ships off for the whole desktop.
             let blur = args.iter().any(|a| a == "--blur");
-            return report(integrate::install(blur), "installed");
+            // `--keys` alone takes the default chord; `--keys=SUPER+CTRL+ALT`
+            // names one.
+            let keys = args.iter().find_map(|a| match a.as_str() {
+                "--keys" => Some(integrate::DEFAULT_KEY_MODS.to_string()),
+                a => a.strip_prefix("--keys=").map(str::to_string),
+            });
+            return report(integrate::install(blur, keys.as_deref()), "installed");
         }
         "uninstall" => return report(integrate::uninstall(), "removed"),
         "status" => {

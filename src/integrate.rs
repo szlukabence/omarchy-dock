@@ -798,6 +798,223 @@ fn unterminated_note() -> String {
         .into()
 }
 
+// ── dock-app keybindings ────────────────────────────────────────────────────
+
+/// Fences around the block we own inside the user's `bindings.lua`.
+const KEYS_BEGIN: &str = "-- >>> omarchy-dock keys — managed block, edits are overwritten >>>";
+const KEYS_END: &str = "-- <<< omarchy-dock keys <<<";
+
+/// The default chord for "open dock app N".
+///
+/// Every simpler chord with the number row is already Omarchy's: SUPER,
+/// SUPER+SHIFT and SUPER+SHIFT+ALT move between workspaces, SUPER+ALT
+/// switches group windows and SUPER+CTRL opens bar panels.
+pub const DEFAULT_KEY_MODS: &str = "SUPER + CTRL + ALT";
+
+const MODIFIERS: [&str; 4] = ["SUPER", "SHIFT", "CTRL", "ALT"];
+
+fn bindings_path() -> PathBuf {
+    config_home().join("hypr/bindings.lua")
+}
+
+/// Canonical form of a modifier chord: "super+alt+ctrl" → "SUPER + CTRL + ALT".
+///
+/// Only the four real modifiers are accepted. The chord is written into a Lua
+/// string literal, so anything else is refused rather than escaped.
+pub fn normalize_mods(input: &str) -> Result<String> {
+    let mut seen = Vec::new();
+    for part in input.split('+').map(|p| p.trim().to_uppercase()) {
+        if part.is_empty() {
+            continue;
+        }
+        let part = if part == "CONTROL" { "CTRL".to_string() } else { part };
+        anyhow::ensure!(
+            MODIFIERS.contains(&part.as_str()),
+            "`{part}` is not a modifier; use SUPER, SHIFT, CTRL and ALT"
+        );
+        if !seen.contains(&part) {
+            seen.push(part);
+        }
+    }
+    anyhow::ensure!(!seen.is_empty(), "no modifiers given");
+    let ordered: Vec<&str> =
+        MODIFIERS.iter().copied().filter(|m| seen.iter().any(|s| s == m)).collect();
+    Ok(ordered.join(" + "))
+}
+
+fn mod_set(chord: &str) -> Vec<String> {
+    let mut v: Vec<String> =
+        chord.split('+').map(|p| p.trim().to_uppercase()).filter(|p| !p.is_empty()).collect();
+    v.sort();
+    v
+}
+
+/// Modifier chords that `src` binds together with a number-row key.
+///
+/// Omarchy builds those bindings in loops — `"SUPER + ALT + code:" ..
+/// tostring(i + 9)` or `"SUPER + " .. key` — so the chord is the prefix of a
+/// string literal rather than a whole key, and the call often spans several
+/// lines. Reading string literals finds all three forms, a literal digit
+/// included.
+fn number_row_chords(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        let lit = &after[..close];
+        let tail = after[close + 1..].trim_start();
+        let prefix = if let Some(p) = lit.strip_suffix(" + code:") {
+            Some(p)
+        } else if let Some(p) = lit.strip_suffix(" + ").filter(|_| tail.starts_with("..")) {
+            Some(p)
+        } else if let Some((p, key)) = lit.rsplit_once(" + ") {
+            let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit() && key != "0";
+            let code = key
+                .strip_prefix("code:")
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| (10..=18).contains(&n));
+            (digit || code).then_some(p)
+        } else {
+            None
+        };
+        if let Some(p) = prefix {
+            if p.split('+').all(|m| MODIFIERS.contains(&m.trim())) {
+                out.push(p.to_string());
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+/// Remove our own block from a file's text, so it is not reported as a
+/// conflict with itself on reinstall.
+fn without_keys_block(src: &str) -> String {
+    match find_block(src, KEYS_BEGIN, KEYS_END) {
+        Block::Found(before, after) => format!("{before}{after}"),
+        Block::Absent | Block::Unterminated => src.to_string(),
+    }
+}
+
+fn lua_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            lua_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "lua") {
+            out.push(p);
+        }
+    }
+}
+
+/// Files that already bind `mods` + a number-row key.
+fn keys_conflicts(mods: &str) -> Vec<PathBuf> {
+    let want = mod_set(mods);
+    let mut files = Vec::new();
+    lua_files(Path::new("/usr/share/omarchy/default/hypr"), &mut files);
+    if let Some(hypr) = bindings_path().parent() {
+        lua_files(hypr, &mut files);
+    }
+    files
+        .into_iter()
+        .filter(|f| {
+            std::fs::read_to_string(f)
+                .map(|src| {
+                    number_row_chords(&without_keys_block(&src))
+                        .iter()
+                        .any(|c| mod_set(c) == want)
+                })
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn keys_block(mods: &str) -> String {
+    format!(
+        "{KEYS_BEGIN}\n\
+         -- {mods} + 1…9 focuses, cycles or launches the Nth app on the dock.\n\
+         -- Installed by `omarchy-dockctl install --keys`; removed by `uninstall`.\n\
+         for i = 1, 9 do\n\
+         \x20 o.bind(\"{mods} + code:\" .. tostring(i + 9), \"Dock app \" .. i, \"omarchy-dockctl activate \" .. i)\n\
+         end\n\
+         {KEYS_END}"
+    )
+}
+
+fn install_keys(mods: &str) -> Result<Report> {
+    let mods = normalize_mods(mods)?;
+    let conflicts = keys_conflicts(&mods);
+    anyhow::ensure!(
+        conflicts.is_empty(),
+        "{mods} + 1…9 is already bound in {}. Pick another chord, e.g. --keys=\"{DEFAULT_KEY_MODS}\"",
+        conflicts.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+    );
+
+    let path = bindings_path();
+    let original = read_existing(&path)?;
+    let before = original.as_deref().unwrap_or_default();
+    let next = match find_block(before, KEYS_BEGIN, KEYS_END) {
+        Block::Found(head, tail) => format!("{head}{}{tail}", keys_block(&mods)),
+        Block::Absent => format!("{}\n\n{}\n", before.trim_end(), keys_block(&mods)),
+        Block::Unterminated => anyhow::bail!("{}: {}", path.display(), unterminated_note()),
+    };
+    let errors_before = hyprland_errors();
+    write_file(&path, &next)?;
+
+    // Never leave the user's keybindings broken: if Hyprland objects, put the
+    // file back exactly as it was — unless it has changed since.
+    reload_hyprland();
+    let errors: Vec<String> =
+        hyprland_errors().into_iter().filter(|e| !errors_before.contains(e)).collect();
+    if !errors.is_empty() {
+        let restored = restore(&path, &next, original.as_deref())?;
+        reload_hyprland();
+        anyhow::ensure!(
+            !restored,
+            "Hyprland rejected the bindings, so bindings.lua was put back as it was: {}",
+            errors.join("; ")
+        );
+        anyhow::bail!(
+            "Hyprland reports errors after adding the bindings, and bindings.lua has changed \
+             since, so it was not put back: {}",
+            errors.join("; ")
+        );
+    }
+    Ok(Report {
+        label: "dock-app keys",
+        path,
+        installed: true,
+        note: Some(format!("{mods} + 1…9 now open dock apps 1–9")),
+    })
+}
+
+fn remove_keys() -> Result<Report> {
+    let path = bindings_path();
+    let src = std::fs::read_to_string(&path).unwrap_or_default();
+    match find_block(&src, KEYS_BEGIN, KEYS_END) {
+        Block::Found(head, tail) => {
+            write_file(&path, &format!("{}\n{}", head.trim_end(), tail.trim_start_matches('\n')))?;
+            reload_hyprland();
+        }
+        Block::Unterminated => {
+            return Ok(Report {
+                label: "dock-app keys",
+                path,
+                installed: true,
+                note: Some(unterminated_note()),
+            })
+        }
+        Block::Absent => {}
+    }
+    Ok(Report { label: "dock-app keys", path, installed: false, note: None })
+}
+
+fn keys_installed() -> bool {
+    std::fs::read_to_string(bindings_path()).is_ok_and(|s| s.contains(KEYS_BEGIN))
+}
+
 // ── install / uninstall ─────────────────────────────────────────────────────
 
 /// Refuse to run where the dock's files would land somewhere they should not.
@@ -855,15 +1072,15 @@ fn outcome(run: impl FnOnce(&mut Vec<Report>) -> Result<()>) -> Outcome {
     Outcome { reports, error }
 }
 
-pub fn install(blur: bool) -> Outcome {
-    outcome(|out| install_into(out, blur))
+pub fn install(blur: bool, keys: Option<&str>) -> Outcome {
+    outcome(|out| install_into(out, blur, keys))
 }
 
 pub fn uninstall() -> Outcome {
     outcome(uninstall_into)
 }
 
-fn install_into(out: &mut Vec<Report>, blur: bool) -> Result<()> {
+fn install_into(out: &mut Vec<Report>, blur: bool, keys: Option<&str>) -> Result<()> {
     preflight()?;
 
     // Hook. Written only over the dock's own: a hook of the same name that
@@ -969,6 +1186,20 @@ fn install_into(out: &mut Vec<Report>, blur: bool) -> Result<()> {
 
     out.push(install_menu(menu_extension_path())?);
 
+    // Keybindings are opt-in too: they go into the user's own bindings.lua.
+    match keys {
+        Some(mods) => out.push(install_keys(mods)?),
+        None if !keys_installed() => out.push(Report {
+            label: "dock-app keys",
+            path: bindings_path(),
+            installed: false,
+            note: Some(format!(
+                "not set up; add {DEFAULT_KEY_MODS} + 1…9 with `omarchy-dockctl install --keys`"
+            )),
+        }),
+        None => {}
+    }
+
     // Blur is opt-in: it turns the effect on for the *whole* desktop, which
     // Omarchy deliberately ships off, and only the glass style needs it.
     if blur {
@@ -1043,6 +1274,7 @@ fn uninstall_into(out: &mut Vec<Report>) -> Result<()> {
 
     out.push(remove_menu(menu_extension_path())?);
     out.push(remove_blur(looknfeel_path())?);
+    out.push(remove_keys()?);
 
     // The dock's own state directories, if that left them empty.
     for dir in copies.ancestors().take(2) {
@@ -1078,6 +1310,12 @@ pub fn status() -> Result<Vec<Report>> {
                 .then(|| "installed but not enabled in shell.json".into()),
         },
         Report { label: "menu extension", installed: menu_installed, path: menu, note: None },
+        Report {
+            label: "dock-app keys",
+            installed: keys_installed(),
+            path: bindings_path(),
+            note: None,
+        },
         Report {
             label: "hyprland blur",
             installed: blur_is_enabled(),
@@ -1130,6 +1368,47 @@ fn remove_path(path: &Path) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn modifier_chords_are_normalised_and_validated() {
+        assert_eq!(normalize_mods("super+alt+ctrl").unwrap(), "SUPER + CTRL + ALT");
+        assert_eq!(normalize_mods(" SUPER + Control ").unwrap(), "SUPER + CTRL");
+        // Anything that is not a modifier is refused: it lands in Lua source.
+        assert!(normalize_mods("SUPER + \"); os.execute(\"x").is_err());
+        assert!(normalize_mods("").is_err());
+    }
+
+    #[test]
+    fn omarchys_number_row_loops_are_recognised() {
+        // The three shapes Omarchy's own bindings use, including a call split
+        // over several lines.
+        let src = r#"
+  o.bind("SUPER + " .. key, "Switch to workspace " .. workspace, x)
+  o.bind("SUPER + ALT + code:" .. tostring(index + 9), "Switch to group window " .. index, y)
+  o.bind(
+    "SUPER + CTRL + code:" .. tostring(panel + 9),
+    "Bar panel " .. panel,
+  o.bind("SUPER + SHIFT + R", "SSH", "alacritty")
+  o.bind("CTRL + ALT + 3", "three", "z")
+"#;
+        let mut chords = number_row_chords(src);
+        chords.sort();
+        assert_eq!(chords, ["CTRL + ALT", "SUPER", "SUPER + ALT", "SUPER + CTRL"]);
+        // SUPER + SHIFT + R is a letter, not the number row.
+    }
+
+    #[test]
+    fn chords_compare_regardless_of_order() {
+        assert_eq!(mod_set("ALT + SUPER + CTRL"), mod_set("SUPER + CTRL + ALT"));
+        assert_ne!(mod_set("SUPER + ALT"), mod_set("SUPER + CTRL + ALT"));
+    }
+
+    #[test]
+    fn our_own_block_is_not_a_conflict_with_itself() {
+        let src = format!("-- mine\n{}\n", keys_block(DEFAULT_KEY_MODS));
+        assert_eq!(number_row_chords(&src), [DEFAULT_KEY_MODS]);
+        assert!(number_row_chords(&without_keys_block(&src)).is_empty());
+    }
+
     use super::*;
 
     #[test]

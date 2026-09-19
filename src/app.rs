@@ -200,8 +200,8 @@ impl App {
     /// Activate the nth dock item, exactly as a left-click would.
     fn activate(&mut self, index: usize) {
         let items = self.current_items();
-        let Some(item) = items.get(index) else {
-            tracing::warn!(index, count = items.len(), "no such dock item");
+        let Some(item) = crate::state::nth_app(&items, index) else {
+            tracing::warn!(index, "no such dock app");
             return;
         };
 

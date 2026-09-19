@@ -290,32 +290,31 @@ the same path into the running dock.
 
 ## Hotkeys
 
-A layer-shell surface cannot grab global shortcuts — the compositor owns them.
-So bind keys to `omarchy-dockctl`:
+```bash
+omarchy-dockctl install --keys          # SUPER + CTRL + ALT + 1…9
+omarchy-dockctl install --keys=CTRL+ALT # or a chord of your choosing
+```
+
+That binds a chord plus 1…9 to the first nine apps on the dock — pinned or
+running, plus pinned command tiles, in the order they appear. The launcher,
+dividers, workspace tiles, stacks and Trash are not counted, so adding a divider
+does not renumber anything. A press focuses the app, cycles its windows if it is
+already focused, or launches it.
+
+The default is `SUPER + CTRL + ALT` because every simpler chord with the number
+row is already Omarchy's: `SUPER` switches workspace, `SUPER + SHIFT` and
+`SUPER + SHIFT + ALT` move windows between them, `SUPER + ALT` switches group
+windows and `SUPER + CTRL` opens bar panels. `install --keys` checks Omarchy's
+bindings and yours before writing anything and refuses a chord that is taken. It
+writes a marked block into `~/.config/hypr/bindings.lua`, reloads Hyprland, and
+puts the file back if Hyprland reports an error. `uninstall` removes it.
+
+The same actions are available directly:
 
 ```bash
-omarchy-dockctl activate 3        # focus / cycle / launch dock item 3
+omarchy-dockctl activate 3        # focus / cycle / launch dock app 3
 omarchy-dockctl toggle-autohide
-omarchy-dockctl reveal | hide | reload | restyle
-```
-
-> **`SUPER + 1..9` is already taken.** Omarchy binds it to workspace switching
-> (`/usr/share/omarchy/default/hypr/bindings/tiling.lua`). Using it for the dock
-> means giving that up, so pick a free chord instead — for example:
-
-```lua
--- ~/.config/hypr/bindings.lua
-for i = 1, 9 do
-  o.bind("SUPER + ALT + " .. i, "Dock item " .. i,
-    hl.dsp.exec_cmd("omarchy-dockctl activate " .. i))
-end
-```
-
-To use `SUPER + 1..9` anyway, unbind it first — and accept that workspace
-switching moves elsewhere:
-
-```lua
-for i = 1, 9 do hl.unbind("SUPER + " .. i) end
+omarchy-dockctl reveal | hide | reload | restyle | settings
 ```
 
 ## Development
