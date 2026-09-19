@@ -140,19 +140,44 @@ fn exec_basename(exec: &str) -> Option<String> {
 
 /// Derive the class Chromium will use for `--app=<url>`, if this entry
 /// launches a web app.
+///
+/// Chromium builds it from the URL's *host* and *path* only: no scheme, no
+/// port, no login, no query, no fragment. The port matters in practice —
+/// self-hosted web apps usually have one. `http://100.64.0.11:8080` really
+/// produces `chrome-100.64.0.11__-Default`, verified against a live window;
+/// keeping the port meant the window never matched its own desktop entry, so
+/// the dock showed a bare IP with a generic icon.
 pub fn chromium_app_class(exec: &str) -> Option<String> {
     let url = webapp_url(exec)?;
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(&url);
-    let (host, path) = match rest.split_once('/') {
+    // Query and fragment are not part of the path Chromium uses.
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let (authority, path) = match rest.split_once('/') {
         Some((h, p)) => (h, p),
         None => (rest, ""),
     };
+    let host = host_of(authority);
     if host.is_empty() {
         return None;
     }
     // Leading slash already removed by the split; inner slashes become `_`.
     let path = path.replace('/', "_");
     Some(format!("chrome-{host}__{path}-Default").to_lowercase())
+}
+
+/// The host part of a URL authority: without `user@`, and without `:port`.
+///
+/// An IPv6 literal keeps its brackets, as Chromium's host does, and only a
+/// colon *after* the closing bracket starts a port.
+fn host_of(authority: &str) -> &str {
+    let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    if host.starts_with('[') {
+        return match host.find(']') {
+            Some(end) => &host[..=end],
+            None => host,
+        };
+    }
+    host.split(':').next().unwrap_or(host)
 }
 
 /// The inverse of `chromium_app_class`: recover a launchable web app from the
@@ -216,6 +241,33 @@ fn unquote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_port_is_not_part_of_the_web_app_class() {
+        // Termix: a self-hosted web app on an IP and port. The live window's
+        // class was chrome-100.64.0.11__-Default.
+        let exec = r#"omarchy-launch-webapp "http://100.64.0.11:8080""#;
+        assert_eq!(chromium_app_class(exec).unwrap(), "chrome-100.64.0.11__-default");
+
+        let m = Matcher::build(vec![entry("Termix", None, exec)]);
+        let e = m.match_class("chrome-100.64.0.11__-Default").expect("window matches its entry");
+        assert_eq!(e.id, "Termix");
+    }
+
+    #[test]
+    fn login_query_and_fragment_are_ignored_too() {
+        assert_eq!(
+            chromium_app_class("chromium --app=https://me@example.com:8443/a/b?x=1#top").unwrap(),
+            "chrome-example.com__a_b-default"
+        );
+    }
+
+    #[test]
+    fn an_ipv6_host_keeps_its_brackets() {
+        assert_eq!(host_of("[::1]:8080"), "[::1]");
+        assert_eq!(host_of("[::1]"), "[::1]");
+        assert_eq!(host_of("user@host:1"), "host");
+    }
+
     fn entry(id: &str, wm_class: Option<&str>, exec: &str) -> Entry {
         Entry {
             id: id.into(),
