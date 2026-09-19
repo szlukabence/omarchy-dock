@@ -100,6 +100,33 @@ fn menu_route(route: &str) {
     spawn("omarchy-shell", &["-q", "shell", "summon", "omarchy.menu", &payload]);
 }
 
+// ── do not disturb ──────────────────────────────────────────────────────────
+
+/// Whether the shell's Do Not Disturb is on, or `None` if the shell cannot be
+/// asked.
+///
+/// Queried when a menu opens rather than tracked: DND can be flipped from the
+/// bar or a keybinding too, the shell offers no change signal, and polling a
+/// setting nobody is looking at would be waste. The query takes ~30 ms.
+pub fn dnd_enabled() -> Option<bool> {
+    let out = Command::new("omarchy-shell")
+        .args(["notifications", "isDnd"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "on" | "true" => Some(true),
+        "off" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Flip the shell's Do Not Disturb.
+pub fn toggle_dnd() {
+    spawn("omarchy-shell", &["-q", "notifications", "toggleDnd"]);
+}
+
 // ── notifications ───────────────────────────────────────────────────────────
 
 /// Send a desktop notification through Omarchy's own notification service.

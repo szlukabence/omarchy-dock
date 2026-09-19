@@ -51,6 +51,22 @@ where
         }));
     }
 
+    // Do Not Disturb belongs to the shell's notification service; the dock
+    // only offers the switch. Omitted when the shell cannot be reached, rather
+    // than showing a toggle that silently does nothing.
+    if let Some(on) = crate::omarchy::dnd_enabled() {
+        let pop = popover.clone();
+        let dnd = row("Do Not Disturb", move || {
+            crate::omarchy::toggle_dnd();
+            pop.popdown();
+        });
+        dnd.set_child(Some(&state_row("Do Not Disturb", if on { "On" } else { "Off" })));
+        if on {
+            dnd.add_css_class("dock-menu-checked");
+        }
+        list.append(&dnd);
+    }
+
     list.append(&separator());
     list.append(&heading("Dock"));
 
@@ -406,6 +422,19 @@ fn row<F: Fn() + 'static>(label: &str, on_click: F) -> gtk::Button {
         l.set_xalign(0.0);
     }
     b.connect_clicked(move |_| on_click());
+    b
+}
+
+/// A menu row's content with a current-state label on the right.
+fn state_row(label: &str, state: &str) -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let l = gtk::Label::new(Some(label));
+    l.set_xalign(0.0);
+    l.set_hexpand(true);
+    b.append(&l);
+    let st = gtk::Label::new(Some(state));
+    st.add_css_class("dock-menu-workspace");
+    b.append(&st);
     b
 }
 
