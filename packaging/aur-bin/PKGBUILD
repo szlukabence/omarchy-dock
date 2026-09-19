@@ -1,14 +1,10 @@
 # Maintainer: Bence Szluka <szlukabence@gmail.com>
 #
-# Prebuilt package. NOT PUBLISHED YET: it needs a GitHub release carrying
-# omarchy-dock-$pkgver-x86_64.tar.gz, and real checksums instead of SKIP.
-# Publish PKGBUILD (source, builds from the git tag) first; add this one when
-# compile time becomes a complaint.
+# Prebuilt package: repackages the binaries from the GitHub release, so
+# installing takes seconds instead of compiling a GTK4 Rust project.
 #
-# Prebuilt packages exist because:
-# `omarchy plugin add` only clones a repo, it never builds, so a plugin on its
-# own has no binary behind it — and asking someone to compile a GTK4 Rust
-# project before their dock appears is not an install experience.
+# Lives in its own directory because each AUR package is its own git repository
+# with its own .SRCINFO.
 
 pkgname=omarchy-dock-bin
 _pkgname=omarchy-dock
@@ -30,10 +26,9 @@ optdepends=(
 conflicts=('omarchy-dock')
 provides=('omarchy-dock')
 
+options=('!debug')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
-# TODO: real checksum once a release tarball exists. SKIP on a downloaded
-# tarball is exactly what AUR reviewers object to.
-sha256sums=('SKIP')
+sha256sums=('76b87e883946c00e6534497f6380e5e552bd3b7840e666a76d873c9e76bbc8f7')
 
 package() {
   install -Dm0755 "omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"

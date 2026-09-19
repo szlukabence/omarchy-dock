@@ -9,11 +9,11 @@
 # `makepkg -p` takes a filename in the current directory, not a path, which is
 # why running it from the repo root does not work.
 
-pkgname=omarchy-dock-git
+pkgname=omarchy-dock
 _root="$(cd "$startdir/../.." && pwd)"
 pkgver=1.2.0
 pkgrel=1
-pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — built from a local checkout"
+pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
 arch=('x86_64' 'aarch64')
 url="https://github.com/szlukabence/omarchy-dock"
 license=('MIT')
@@ -27,8 +27,7 @@ optdepends=(
   'ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash'
 )
 
-conflicts=('omarchy-dock' 'omarchy-dock-bin')
-provides=('omarchy-dock')
+conflicts=('omarchy-dock-bin')
 
 # !debug because the release profile carries no debug symbols, so the split
 # debug package makepkg would otherwise build is empty and just noise.

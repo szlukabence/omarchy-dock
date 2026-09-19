@@ -35,9 +35,11 @@ optdepends=(
 
 # Pacman should auto-remove the prebuilt variant when switching to source.
 conflicts=('omarchy-dock-bin')
-provides=('omarchy-dock')
 
 makedepends+=('git')
+# !debug: the release profile carries no symbols, so the split debug package
+# would be empty.
+options=('!debug')
 source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 

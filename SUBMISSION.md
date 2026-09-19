@@ -43,15 +43,17 @@ QML; `Bar` would be wrong, as this does not touch the bar.
 ```
 Supervisor plugin for omarchy-dock, a GTK4 layer-shell dock (MIT, same author).
 The plugin is not the dock: it starts and stops the binary so the dock can be
-enabled and disabled like any other component. The clone this plugin arrives in
-is the full source tree, so it can build the binary it supervises:
+enabled and disabled like any other component. The dock itself ships as a
+prebuilt pacman package on the GitHub release (downloaded, then `pacman -U`).
+Alternatively the clone this plugin arrives in is the full source tree, so it
+can build the binary it supervises:
 
   cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
 
-That runs makepkg, so pacman owns the binaries. If the binary is missing, the
-plugin sends a notification naming that command rather than failing with
-"command not found". An AUR package is prepared in packaging/aur/ and will
-replace this step once it is published.
+Either way pacman owns the binaries. If the binary is missing, the plugin sends
+a notification saying where to get it rather than failing with "command not
+found". AUR packages (source and -bin) are prepared in packaging/ and will be
+published when AUR registration reopens.
 
 The dock reads the active theme's shell.toml and draws itself with the same
 tokens as the bar and menus — background, borders, hover fills, corner radius
@@ -86,7 +88,7 @@ against a fresh clone.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | The repository is public and contains installation and removal instructions | Yes — README has `omarchy plugin add`, the AUR package, and a Removal section covering all four pieces |
+| 1 | The repository is public and contains installation and removal instructions | Yes — README has the release package, `omarchy plugin add`, a build-from-source path, and a Removal section covering all four pieces |
 | 2 | I have documented the plugin license and any external dependencies | Yes — MIT in `LICENSE`; the Requirements table names every dependency and its license |
 | 3 | I own or have permission to submit this plugin and its preview assets | Yes — sole author; the preview image is a screenshot of this dock on the author's own machine |
 | 4 | The plugin does not overwrite user configuration without explicit consent | Yes. **The plugin submitted here writes nothing at all** — it only starts and stops a binary. The dock's own `omarchy-dockctl install` writes the files listed below, and only when a user runs it; it also refuses to touch the plugin directory when that directory is a git checkout, so a marketplace install is never overwritten |

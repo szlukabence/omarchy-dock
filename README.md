@@ -12,23 +12,36 @@ the menus — rather than being a dock that merely runs on the same desktop.
 ## Install
 
 ```bash
+curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.0/omarchy-dock-1.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U omarchy-dock-1.2.0-1-x86_64.pkg.tar.zst
+omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
+omarchy-dockctl install
+```
+
+The first two lines install the dock as an ordinary pacman package from the
+[latest release](https://github.com/szlukabence/omarchy-dock/releases/latest) —
+prebuilt, nothing to compile. The third adds the Omarchy plugin that starts and
+stops it; the fourth adds the theme hook and menu entries.
+
+Download first, then install the file: `pacman -U <url>` does not work here.
+Arch's default `pacman.conf` requires a signature for packages fetched from a
+URL, but not for local files, and the release is not signed.
+
+### Building it yourself
+
+```bash
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
 cd ~/.config/omarchy/plugins/omarchy-dock && ./install.sh
 ```
 
-Two steps, because `omarchy plugin add` only *clones* a repository — it never
-builds or runs anything — so it cannot compile a Rust project on your behalf.
-But the clone it leaves behind is the full source tree, so the plugin can build
-the binary it supervises. That is what `install.sh` does: `makepkg -si`, so
-pacman owns the result and upgrading or removing it is a normal package
-operation, and then `omarchy-dockctl install` for the theme hook and menu
-entries.
-
-It asks for your password once, for the pacman step. Nothing else here is
-privileged, and nothing touches the network beyond the git clone.
+`omarchy plugin add` only *clones* a repository — it never builds or runs
+anything. But the clone it leaves behind is the full source tree, so the plugin
+can build the binary it supervises. That is what `install.sh` does: `makepkg
+-si`, so pacman still owns the result, and then `omarchy-dockctl install`. It
+takes a couple of minutes and asks for your password once.
 
 The plugin on its own is only the supervisor — it starts and stops the dock and
-puts it in `omarchy menu plugin`. Install it without building and it says so,
+puts it in `omarchy menu plugin`. Install it without the dock and it says so,
 rather than failing with "command not found".
 
 ### Already have a checkout
@@ -39,16 +52,27 @@ rather than failing with "command not found".
 
 ### AUR
 
-`packaging/aur/` holds a ready-to-publish package that builds from a git tag,
-with its `.SRCINFO`. It is not on the AUR yet. Once it is, installing becomes
-`omarchy pkg aur add omarchy-dock` and `install.sh` is unnecessary.
+Not yet — AUR registration is closed. `packaging/aur/` holds both packages ready
+to publish: `PKGBUILD` builds from the git tag, and `PKGBUILD-bin` repackages the
+release tarball. Once they are up, installing becomes `omarchy pkg aur add
+omarchy-dock-bin`.
+
+### Releasing
+
+```bash
+cd packaging/aur && makepkg -f          # builds from the pushed tag, runs the tests
+```
+
+Attach the resulting `.pkg.tar.zst`, a tarball of the two binaries plus README
+and LICENSE, and a `SHA256SUMS` to a GitHub release for the tag; then update the
+version in the install lines above and the checksum in `PKGBUILD-bin`.
 
 ### Removal
 
 ```bash
 omarchy-dockctl uninstall              # hook, menu entries, shell.json entry
 omarchy plugin remove omarchy-dock     # the plugin checkout
-sudo pacman -Rns omarchy-dock-git      # the binaries
+sudo pacman -Rns omarchy-dock          # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
