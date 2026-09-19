@@ -343,8 +343,9 @@ pub fn run() -> glib::ExitCode {
     // Read once here rather than reacting to the setting later: hosting the
     // tray means claiming a bus name and registering with the watcher, which
     // is a process-lifetime thing, not something to toggle per frame.
-    let tray = Config::load().tray.enabled;
-    let worker = match crate::runtime::spawn(tx, tray) {
+    let startup = Config::load();
+    let (tray, media) = (startup.tray.enabled, startup.items.media_controls);
+    let worker = match crate::runtime::spawn(tx, tray, media) {
         Ok(handle) => Some(handle),
         Err(e) => {
             tracing::error!(error = %e, "Hyprland IPC unavailable");
@@ -410,6 +411,10 @@ pub fn run() -> glib::ExitCode {
                     }
                     // A recording started or stopped; nothing else changed.
                     AppEvent::HidePolicyChanged => app.update_autohide(),
+                    AppEvent::Media(players) => {
+                        app.state.set_media(players);
+                        app.sync(&gtk_app);
+                    }
                     AppEvent::Tray(items) => {
                         app.state.set_tray(items);
                         app.sync(&gtk_app);

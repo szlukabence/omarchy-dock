@@ -246,6 +246,7 @@ Notable keys:
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
+| `items.media_controls` | Progress ring and play/pause/next on the icon of the app playing media (default: on) |
 | `tray.enabled`, `.show_passive` | Host the system tray in the dock (off by default — the bar already has one) |
 | `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |
 | `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |

@@ -60,6 +60,10 @@ struct State {
     /// as state changes, so a refresh never has to build widgets.
     indicators: Vec<gtk::Widget>,
     badges: Vec<gtk::Label>,
+    /// Per-slot media progress ring and the (progress, playing) it draws.
+    /// Created for every app slot and shown only while a player belongs to
+    /// it, so a track starting never needs new widgets.
+    rings: Vec<Option<MediaRing>>,
     /// The hovered icon's name, drawn in the reserved band at the top of the
     /// surface. GTK's own tooltips follow the pointer, which puts the name
     /// below the icon and over the panel; a dock wants it above the icon.
@@ -227,6 +231,7 @@ impl DockSurface {
         let mut indicators = Vec::with_capacity(items.len());
         let mut badges = Vec::with_capacity(items.len());
         let mut plates = Vec::with_capacity(items.len());
+        let mut rings: Vec<Option<MediaRing>> = Vec::with_capacity(items.len());
 
         for (i, item) in items.iter().enumerate() {
             // Icon and badge share one widget so the badge tracks the icon as
@@ -261,6 +266,7 @@ impl DockSurface {
                 // divider has no hover state, so its plate is never shown.
                 let (px, py) = plate_origin(&geom, i);
                 plates.push(hover_plate(&fixed, px, py, 0.0, 0.0));
+                rings.push(None);
                 let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 dot.set_visible(false);
                 indicators.push(dot.upcast::<gtk::Widget>());
@@ -309,6 +315,13 @@ impl DockSurface {
             slot.add_overlay(&badge);
             badges.push(badge);
 
+            let ring = (item.kind == ItemKind::App).then(|| media_ring(size));
+            if let Some(r) = &ring {
+                slot.add_overlay(&r.area);
+                r.set(item.media.as_ref());
+            }
+            rings.push(ring);
+
             let (x, y) = geom.slots[i];
             fixed.put(&slot, x, y);
             slots.push(slot.clone());
@@ -353,6 +366,7 @@ impl DockSurface {
             data: items.to_vec(),
             indicators,
             badges,
+            rings,
             tip_label: tip_label.clone(),
             tip_generation: 0,
             tooltip_delay: cfg.dock.tooltip_delay_ms,
@@ -513,6 +527,9 @@ impl DockSurface {
             if let Some(slot) = s.items.get(i) {
                 sync_workspace_tile(slot, item);
             }
+            if let Some(Some(ring)) = s.rings.get(i) {
+                ring.set(item.media.as_ref());
+            }
             if let Some(dot) = s.indicators.get(i) {
                 dot.set_visible(item.shows_indicator());
                 // Toggle rather than add: classes persist across refreshes.
@@ -558,6 +575,7 @@ impl DockSurface {
         permute(&mut s.indicators);
         permute(&mut s.plates);
         s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
+        s.rings = from.iter().map(|&i| s.rings[i].clone()).collect();
         s.springs = from.iter().map(|&i| s.springs[i]).collect();
         s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
         s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
@@ -1673,6 +1691,75 @@ fn init_layer_shell(
 fn plate_origin(geom: &Geometry, i: usize) -> (f64, f64) {
     let (x, y) = geom.slots[i];
     (x - PLATE_MARGIN, y - PLATE_MARGIN)
+}
+
+/// A small progress ring in the corner of a playing app's icon.
+#[derive(Clone)]
+struct MediaRing {
+    area: gtk::DrawingArea,
+    /// Fraction played, and whether it is playing (a paused track draws dim).
+    value: Rc<Cell<(f64, bool)>>,
+}
+
+impl MediaRing {
+    /// Show the player's state, or hide the ring when there is none.
+    fn set(&self, player: Option<&crate::media::Player>) {
+        match player {
+            Some(p) => {
+                // A player with no known length still gets a ring, drawn full:
+                // it says "this is what is playing" even without progress.
+                self.value.set((p.progress().unwrap_or(1.0), p.playing));
+                self.area.set_visible(true);
+                self.area.queue_draw();
+            }
+            None => self.area.set_visible(false),
+        }
+    }
+}
+
+fn media_ring(icon: i32) -> MediaRing {
+    let d = (icon as f64 * 0.36).round() as i32;
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("dock-media-ring");
+    area.set_size_request(d, d);
+    area.set_halign(gtk::Align::End);
+    area.set_valign(gtk::Align::End);
+    area.set_can_target(false);
+    area.set_visible(false);
+
+    let value = Rc::new(Cell::new((0.0, false)));
+    {
+        let value = value.clone();
+        area.set_draw_func(move |a, cr, w, h| {
+            let (progress, playing) = value.get();
+            let (w, h) = (w as f64, h as f64);
+            let line = (w * 0.16).max(2.0);
+            let r = w.min(h) / 2.0 - line / 2.0;
+            let (cx, cy) = (w / 2.0, h / 2.0);
+            // The colour comes from CSS (the theme accent), so the ring
+            // follows theme changes like everything else.
+            let c = a.color();
+            let alpha = if playing { 1.0 } else { 0.5 };
+
+            // A dark disc underneath keeps the ring legible on any icon.
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
+            cr.arc(cx, cy, r + line / 2.0, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+
+            cr.set_line_width(line);
+            cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 0.25 * alpha);
+            cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+            let _ = cr.stroke();
+
+            if progress > 0.0 {
+                let start = -std::f64::consts::FRAC_PI_2;
+                cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, alpha);
+                cr.arc(cx, cy, r, start, start + progress * std::f64::consts::TAU);
+                let _ = cr.stroke();
+            }
+        });
+    }
+    MediaRing { area, value }
 }
 
 /// The fill drawn behind a hovered slot, placed and hidden.

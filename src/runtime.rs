@@ -32,6 +32,8 @@ pub enum DockCommand {
     /// Send one window to a workspace without following it — what dropping a
     /// dock icon onto a workspace tile means.
     SendToWorkspace { window: hypr::Address, workspace: String },
+    /// A transport command for one media player, addressed by bus name.
+    Media { bus: String, action: crate::media::Action },
     /// Deliver a click to a system-tray item, addressed by its D-Bus service.
     TrayClick { service: String, click: crate::tray::Click },
 }
@@ -46,7 +48,7 @@ pub struct Handles {
 }
 
 /// Start the worker. The thread owns its runtime and runs until process exit.
-pub fn spawn(tx: Sender, tray: bool) -> std::io::Result<Handles> {
+pub fn spawn(tx: Sender, tray: bool, media: bool) -> std::io::Result<Handles> {
     // Capacity 1: requests are "please resync", so a queued one is as good as
     // ten. `try_send` failing on a full channel is the desired coalescing.
     let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -91,6 +93,15 @@ pub fn spawn(tx: Sender, tray: bool) -> std::io::Result<Handles> {
             // The tray host is optional in every sense: the session bus may
             // not be reachable, and no watcher may be running. Neither is a
             // reason for the dock not to start, so it is logged and dropped.
+            if media {
+                let media_tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::media::serve(media_tx).await {
+                        tracing::warn!(error = %e, "media controls unavailable");
+                    }
+                });
+            }
+
             if tray {
                 let tray_tx = tx.clone();
                 tokio::spawn(async move {
@@ -131,6 +142,10 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
         DockCommand::Exec(cmd) => dispatch::exec(cmd).await,
         DockCommand::ToggleSpecial(name) => dispatch::toggle_special(name).await,
         DockCommand::FocusWorkspace(name) => dispatch::focus_workspace(name).await,
+        DockCommand::Media { bus, action } => {
+            let conn = zbus::Connection::session().await?;
+            crate::media::command(&conn, bus, *action).await
+        }
         DockCommand::TrayClick { service, click } => {
             // A fresh connection per click. Tray clicks are rare and
             // user-driven, and holding a session-bus connection alive purely

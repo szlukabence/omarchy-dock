@@ -31,6 +31,8 @@ pub enum AppEvent {
     },
     /// An incremental Hyprland event.
     Hypr(HyprEvent),
+    /// The current set of media players. Sent whole on every change.
+    Media(Vec<crate::media::Player>),
     /// The current set of system-tray items. Sent whole on every change.
     Tray(Vec<crate::tray::TrayItem>),
     /// A command from `omarchy-dockctl`.

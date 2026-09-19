@@ -260,6 +260,9 @@ pub struct Items {
     /// monochrome glyphs in the theme foreground, the way every Omarchy bar
     /// widget is drawn, so only real application icons carry colour.
     pub glyph_ui: bool,
+    /// Show a progress ring and transport controls on the icon of the app
+    /// that is playing media.
+    pub media_controls: bool,
 }
 
 /// A pinned shell command, drawn as a glyph rather than an application icon.
@@ -379,6 +382,7 @@ impl Default for Items {
             commands: Vec::new(),
             show_running: true,
             glyph_ui: true,
+            media_controls: true,
         }
     }
 }

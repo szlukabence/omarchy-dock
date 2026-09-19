@@ -107,6 +107,8 @@ pub struct DockItem {
     /// (`%f`, `%F`, `%u`, `%U`). `None` means a file dropped on it is refused
     /// rather than launching the app and quietly ignoring the file.
     pub open_with: Option<String>,
+    /// The media player belonging to this app, while one exists.
+    pub media: Option<crate::media::Player>,
 }
 
 impl DockItem {
@@ -193,6 +195,7 @@ fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
         pixmap: t.pixmap.clone(),
         window_meta: Vec::new(),
         open_with: None,
+        media: None,
     }
 }
 
@@ -227,6 +230,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
         pixmap: None,
         window_meta: Vec::new(),
         open_with: None,
+        media: None,
     }
 }
 
@@ -423,6 +427,7 @@ fn separator() -> DockItem {
         pixmap: None,
         window_meta: Vec::new(),
         open_with: None,
+        media: None,
     }
 }
 
@@ -432,6 +437,7 @@ pub struct DockState {
     monitors: Vec<Monitor>,
     workspaces: Vec<Workspace>,
     tray: Vec<crate::tray::TrayItem>,
+    media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
 }
@@ -444,6 +450,7 @@ impl DockState {
             monitors: Vec::new(),
             workspaces: Vec::new(),
             tray: Vec::new(),
+            media: Vec::new(),
             focused: None,
             urgent: Vec::new(),
         }
@@ -468,6 +475,10 @@ impl DockState {
 
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
         self.monitors = monitors;
+    }
+
+    pub fn set_media(&mut self, players: Vec<crate::media::Player>) {
+        self.media = players;
     }
 
     pub fn set_tray(&mut self, items: Vec<crate::tray::TrayItem>) {
@@ -587,6 +598,7 @@ impl DockState {
                 pixmap: None,
                 window_meta: Vec::new(),
                 open_with: None,
+                media: None,
             });
         }
 
@@ -773,6 +785,7 @@ impl DockState {
                 pixmap: None,
                 window_meta: Vec::new(),
                 open_with: None,
+                media: None,
                 path: Some(path),
             });
         }
@@ -799,6 +812,7 @@ impl DockState {
                 pixmap: None,
                 window_meta: Vec::new(),
                 open_with: None,
+                media: None,
             });
         }
 
@@ -810,6 +824,13 @@ impl DockState {
         // whenever a user separator sits where an automatic one is also
         // inserted, e.g. a trailing "---" meeting the folders divider.
         items.dedup_by(|a, b| a.kind == ItemKind::Separator && b.kind == ItemKind::Separator);
+
+        // Attach each media player to the app it belongs to.
+        if cfg.items.media_controls {
+            for item in items.iter_mut().filter(|i| i.kind == ItemKind::App) {
+                item.media = self.media.iter().find(|p| p.belongs_to(&item.key)).cloned();
+            }
+        }
 
         // A separator at either end divides nothing either.
         while items.first().is_some_and(|i| i.kind == ItemKind::Separator) {
@@ -867,6 +888,7 @@ impl DockState {
                     pixmap: None,
                     window_meta: Vec::new(),
                     open_with: None,
+                    media: None,
                 });
             }
         }
@@ -899,6 +921,7 @@ impl DockState {
                 pixmap: None,
                 window_meta: Vec::new(),
                 open_with: None,
+                media: None,
             });
         }
 
@@ -956,6 +979,7 @@ impl DockState {
             pixmap: None,
             window_meta,
             open_with: None,
+            media: None,
         }
     }
 }
@@ -984,6 +1008,7 @@ mod tests {
             pixmap: None,
             window_meta: Vec::new(),
             open_with: None,
+            media: None,
         }
     }
 
@@ -1432,6 +1457,7 @@ mod separator_key_tests {
             pixmap: None,
             window_meta: Vec::new(),
             open_with: None,
+            media: None,
         }
     }
 

@@ -69,6 +69,14 @@ where
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list.add_css_class("dock-menu-list");
 
+    // ── now playing ─────────────────────────────────────────────────────────
+    // Transport controls for the player that belongs to this app — the one
+    // place in Omarchy they sit on the app itself.
+    if let Some(player) = &item.media {
+        list.append(&now_playing(player, &popover, &on_action));
+        list.append(&separator());
+    }
+
     // ── open windows ────────────────────────────────────────────────────────
     // One row per window: its title and workspace, so an app open on several
     // workspaces can be steered directly instead of cycled through blindly.
@@ -133,6 +141,51 @@ where
 
     popover.set_child(Some(&list));
     popover
+}
+
+/// Track title, artist, and previous / play-pause / next.
+fn now_playing<F>(player: &crate::media::Player, popover: &gtk::Popover, on_action: &F) -> gtk::Box
+where
+    F: Fn(MenuAction) + Clone + 'static,
+{
+    use crate::media::Action;
+
+    let block = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let title = if player.title.is_empty() { player.identity.clone() } else { player.title.clone() };
+    let heading_text = if player.artist.is_empty() { title } else { format!("{title} — {}", player.artist) };
+    let h = heading(&heading_text);
+    h.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    h.set_max_width_chars(34);
+    block.append(&h);
+
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    controls.add_css_class("dock-move-grid");
+    controls.set_halign(gtk::Align::Center);
+    let buttons = [
+        ("\u{f048}", "Previous", Action::Previous, player.can_previous),
+        (if player.playing { "\u{f04c}" } else { "\u{f04b}" },
+         if player.playing { "Pause" } else { "Play" }, Action::PlayPause, true),
+        ("\u{f051}", "Next", Action::Next, player.can_next),
+    ];
+    for (glyph, tip, action, enabled) in buttons {
+        let b = gtk::Button::with_label(glyph);
+        b.add_css_class("dock-menu-item");
+        b.add_css_class("dock-glyph");
+        b.add_css_class("dock-move-target");
+        b.set_has_frame(false);
+        b.set_tooltip_text(Some(tip));
+        b.set_sensitive(enabled);
+        let bus = player.bus.clone();
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        b.connect_clicked(move |_| {
+            cb(MenuAction::Command(DockCommand::Media { bus: bus.clone(), action }));
+            pop.popdown();
+        });
+        controls.append(&b);
+    }
+    block.append(&controls);
+    block
 }
 
 /// Workspaces offered as move targets: the nine Omarchy binds to SUPER+1..9.
