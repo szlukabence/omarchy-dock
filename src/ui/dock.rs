@@ -521,7 +521,8 @@ impl DockSurface {
     }
 
     pub fn close(&self) {
-        if let Some(p) = self.state.borrow().previews.clone() {
+        let previews = self.state.borrow().previews.clone();
+        if let Some(p) = previews {
             p.close();
         }
         self.window.close();
@@ -1394,7 +1395,11 @@ fn attach_drop(
             // not "reorder the pins". Checked first because a workspace tile
             // occupies a slot the reorder logic would otherwise read as an
             // insertion point.
-            if let Some(cmd) = send_to_workspace(&state.borrow(), from, x, y) {
+            // Bound first: a borrow in an `if let` condition lives for the
+            // whole block, and set_drop_gap below needs to borrow mutably —
+            // which aborted the dock on every drop onto a workspace.
+            let send = send_to_workspace(&state.borrow(), from, x, y);
+            if let Some(cmd) = send {
                 set_drop_gap(&state, None, icon);
                 sink(MenuAction::Command(cmd));
                 return true;
