@@ -154,18 +154,72 @@ pub fn open_command(exec: &str, files: &[(String, String)]) -> Vec<String> {
     }
 }
 
-/// Directories searched for desktop entries, in precedence order.
-pub fn search_dirs() -> Vec<PathBuf> {
+/// XDG data directories, in precedence order.
+fn data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = dirs::data_dir() {
-        dirs.push(home.join("applications"));
+        dirs.push(home);
     }
     let xdg = std::env::var("XDG_DATA_DIRS")
         .unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
     for d in xdg.split(':').filter(|s| !s.is_empty()) {
-        dirs.push(PathBuf::from(d).join("applications"));
+        dirs.push(PathBuf::from(d));
     }
     dirs
+}
+
+/// Directories searched for desktop entries, in precedence order.
+pub fn search_dirs() -> Vec<PathBuf> {
+    data_dirs().into_iter().map(|d| d.join("applications")).collect()
+}
+
+/// An icon file named `name`, found by looking in the icon folders directly.
+///
+/// The fallback for when the icon theme does not know the name. That happens
+/// when an app installs its icon at a size the theme does not list: AionUi
+/// puts its only one in `hicolor/1024x1024`, which GTK never looks in because
+/// hicolor stops at 512 — yet the launcher, searching by file name, finds it,
+/// so the dock drew a generic icon where the menu drew the right one.
+///
+/// Prefers a scalable icon, then the largest bitmap, then `pixmaps/`.
+pub fn icon_file(name: &str) -> Option<PathBuf> {
+    icon_file_in(&data_dirs(), name)
+}
+
+fn icon_file_in(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    for root in roots {
+        let mut best: Option<(u32, PathBuf)> = None;
+        if let Ok(sizes) = std::fs::read_dir(root.join("icons/hicolor")) {
+            for size in sizes.flatten() {
+                let dir = size.file_name().to_string_lossy().into_owned();
+                // "scalable" beats any bitmap; "48x48" and "48x48@2" rank 48.
+                let rank = if dir == "scalable" {
+                    u32::MAX
+                } else {
+                    dir.split('x').next().and_then(|n| n.parse().ok()).unwrap_or(0)
+                };
+                for ext in ["svg", "png"] {
+                    let path = size.path().join("apps").join(format!("{name}.{ext}"));
+                    if path.is_file() && best.as_ref().is_none_or(|(r, _)| rank > *r) {
+                        best = Some((rank, path));
+                    }
+                }
+            }
+        }
+        if let Some((_, path)) = best {
+            return Some(path);
+        }
+        for ext in ["svg", "png", "xpm"] {
+            let path = root.join("pixmaps").join(format!("{name}.{ext}"));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Scan all entries. Earlier directories win, matching XDG precedence, so a
@@ -285,6 +339,64 @@ pub fn parse(path: &Path) -> Option<Entry> {
 
 #[cfg(test)]
 mod tests {
+    /// A throwaway data dir holding `files`, relative paths under it.
+    fn data_dir(tag: &str, files: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("omarchy-dock-icons-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn an_icon_at_a_size_the_theme_does_not_list_is_still_found() {
+        // AionUi's layout: its only icon, at a size hicolor does not index.
+        let root = data_dir("aion", &["icons/hicolor/1024x1024/apps/AionUi.png"]);
+        assert_eq!(
+            super::icon_file_in(std::slice::from_ref(&root), "AionUi"),
+            Some(root.join("icons/hicolor/1024x1024/apps/AionUi.png"))
+        );
+        assert_eq!(super::icon_file_in(&[root], "Other"), None);
+    }
+
+    #[test]
+    fn scalable_beats_the_largest_bitmap_which_beats_smaller_ones() {
+        let root = data_dir("rank", &[
+            "icons/hicolor/48x48/apps/app.png",
+            "icons/hicolor/256x256/apps/app.png",
+            "icons/hicolor/64x64@2/apps/app.png",
+        ]);
+        assert_eq!(
+            super::icon_file_in(std::slice::from_ref(&root), "app"),
+            Some(root.join("icons/hicolor/256x256/apps/app.png"))
+        );
+        let root = data_dir("svg", &[
+            "icons/hicolor/256x256/apps/app.png",
+            "icons/hicolor/scalable/apps/app.svg",
+        ]);
+        assert_eq!(
+            super::icon_file_in(std::slice::from_ref(&root), "app"),
+            Some(root.join("icons/hicolor/scalable/apps/app.svg"))
+        );
+    }
+
+    #[test]
+    fn pixmaps_are_the_last_resort_and_earlier_dirs_win() {
+        let user = data_dir("user", &["pixmaps/app.png"]);
+        let system = data_dir("system", &["icons/hicolor/128x128/apps/app.png"]);
+        // The user's data dir comes first, even with only a pixmap.
+        assert_eq!(
+            super::icon_file_in(&[user.clone(), system], "app"),
+            Some(user.join("pixmaps/app.png"))
+        );
+        // Names are file names, never paths.
+        assert_eq!(super::icon_file_in(&[user], "../pixmaps/app"), None);
+    }
+
     fn f(path: &str) -> (String, String) {
         (path.to_string(), format!("file://{}", path.replace(' ', "%20")))
     }

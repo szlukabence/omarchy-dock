@@ -240,11 +240,8 @@ impl Panel {
         // lands, so the strip is never a row of blank boxes.
         let stack = gtk::Overlay::new();
         stack.set_size_request(self.tile_width, thumb_h);
-        let icon = if tile.icon.starts_with('/') {
-            gtk::Image::from_file(&tile.icon)
-        } else {
-            gtk::Image::from_icon_name(&tile.icon)
-        };
+        let icon = gtk::Image::new();
+        crate::ui::set_app_icon(&icon, &tile.icon, thumb_h / 2);
         icon.set_pixel_size(thumb_h / 2);
         icon.set_halign(gtk::Align::Center);
         icon.set_valign(gtk::Align::Center);

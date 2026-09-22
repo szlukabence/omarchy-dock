@@ -1219,6 +1219,10 @@ fn attach_drag(
                 src.set_icon(Some(&paintable), 6, size / 2);
                 return;
             }
+            if let Some(file) = crate::ui::app_icon_paintable(&icon_name, size) {
+                src.set_icon(Some(&file), size / 2, size / 2);
+                return;
+            }
             if let Some(display) = gdk::Display::default() {
                 let theme = gtk::IconTheme::for_display(&display);
                 if theme.has_icon(&icon_name) {
@@ -1971,17 +1975,7 @@ fn make_icon(icon: &str, size: i32) -> gtk::Image {
     let img = gtk::Image::new();
     img.set_pixel_size(size);
     img.add_css_class("dock-icon");
-
-    if icon.starts_with('/') {
-        img.set_from_file(Some(icon));
-        return img;
-    }
-
-    let has = gdk::Display::default()
-        .map(|d| gtk::IconTheme::for_display(&d))
-        .is_some_and(|t| t.has_icon(icon));
-
-    img.set_icon_name(Some(if has { icon } else { "application-x-executable" }));
+    crate::ui::set_app_icon(&img, icon, size);
     img
 }
 
