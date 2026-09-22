@@ -19,6 +19,7 @@ use crate::config::{Config, Hover, Position};
 use crate::runtime::DockCommand;
 use crate::state::{DockItem, ItemKind};
 use crate::ui::menu::{self, MenuAction};
+use crate::ui::preview::{self, Panel};
 use crate::ui::Geometry;
 
 /// Actions a dock surface emits. The app owns the worker channels and config,
@@ -50,6 +51,11 @@ const HOVER_DAMPING: f64 = 80.0;
 /// (2*sqrt(900) = 60), precomputed because `sqrt` is not const.
 const SHIFT_STIFFNESS: f64 = 900.0;
 const SHIFT_DAMPING: f64 = 60.0;
+
+/// How long window previews stay up after the pointer leaves their icon. Long
+/// enough to cross the gap between the dock and the strip, short enough that
+/// sweeping past an icon does not leave a strip behind.
+const PREVIEW_LINGER_MS: u64 = 250;
 
 struct State {
     fixed: gtk::Fixed,
@@ -106,6 +112,10 @@ struct State {
     hovered: Option<usize>,
     last_us: i64,
     ticking: bool,
+    /// Window previews, when enabled. Outside the `RefCell`'s reach in
+    /// practice: callers clone the `Rc` out and drop their borrow before using
+    /// it, because showing and hiding the strip calls back into the dock.
+    previews: Option<Rc<Previews>>,
 }
 
 impl State {
@@ -379,6 +389,7 @@ impl DockSurface {
             hovered: None,
             last_us: 0,
             ticking: false,
+            previews: None,
         }));
 
         // Always: hover drives the name label and the shell's hover fill, not
@@ -434,6 +445,10 @@ impl DockSurface {
         }
         attach_drop(&fixed, &state, &sink, cfg);
         attach_file_drop(&fixed, &state, &sink, &slide, &window, cfg);
+        if cfg.preview.enabled {
+            let previews = Previews::new(app, monitor, &state, &sink, &slide, &window, cfg);
+            state.borrow_mut().previews = Some(previews);
+        }
 
         // Test hook: drags cannot be synthesised against a layer surface, so
         // this forces the drop gap open to verify it parts correctly.
@@ -506,6 +521,9 @@ impl DockSurface {
     }
 
     pub fn close(&self) {
+        if let Some(p) = self.state.borrow().previews.clone() {
+            p.close();
+        }
         self.window.close();
     }
 
@@ -516,6 +534,19 @@ impl DockSurface {
     /// change would destroy and recreate the layer surface — losing slide
     /// state and flickering — so only shape changes pay that cost.
     pub fn refresh(&self, items: &[DockItem]) -> bool {
+        let fresh = self.refresh_in_place(items);
+        if fresh {
+            // A window opened, closed or retitled under an open strip would
+            // leave it showing what was, so it is redrawn from the new data.
+            let previews = self.state.borrow().previews.clone();
+            if let Some(p) = previews {
+                p.refresh(&self.state);
+            }
+        }
+        fresh
+    }
+
+    fn refresh_in_place(&self, items: &[DockItem]) -> bool {
         let mut s = self.state.borrow_mut();
         if s.data.len() != items.len()
             || !s.data.iter().zip(items).all(|(a, b)| a.key == b.key)
@@ -559,6 +590,11 @@ impl DockSurface {
     /// flickers and drops the dock for a frame — very visible when it happens
     /// on every drag-and-drop.
     pub fn reorder(&self, items: &[DockItem], cfg: &Config) -> bool {
+        // The strip names a slot by index, which is about to mean another item.
+        let previews = self.state.borrow().previews.clone();
+        if let Some(p) = previews {
+            p.hide();
+        }
         let mut s = self.state.borrow_mut();
 
         // Where each new position's widget currently sits.
@@ -788,6 +824,7 @@ fn attach_clicks(
         let at = at.clone();
         left.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
+            hide_previews(&state);
 
             // Read current data by the slot's live index: focus may have moved,
             // and a reorder may have moved this widget, since the dock was
@@ -920,6 +957,7 @@ fn attach_clicks(
         let at = at.clone();
         right.connect_pressed(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
+            hide_previews(&state);
             let item = {
                 let s = state.borrow();
                 match s.data.get(at.get()) {
@@ -1452,7 +1490,9 @@ fn attach_file_drop(
             let hit = file_drop_at(&state.borrow(), x, y);
             // The hover plate and the name label are exactly the feedback a
             // drop target needs: this icon, and what it is called.
-            set_hover(&state, hit.as_ref().map(|(i, _)| *i));
+            // No previews, though: a strip popping up over the drop target
+            // mid-drag would cover the very thing being aimed at.
+            hover_to(&state, hit.as_ref().map(|(i, _)| *i), false);
             match hit {
                 Some((_, FileDrop::Open(_))) => gdk::DragAction::COPY,
                 Some((_, FileDrop::Trash)) => gdk::DragAction::MOVE,
@@ -1926,6 +1966,350 @@ fn make_icon(icon: &str, size: i32) -> gtk::Image {
 }
 
 
+// ── window previews ─────────────────────────────────────────────────────────
+
+type MakePanel = Box<dyn FnOnce() -> Rc<Panel>>;
+
+/// Window previews for one dock surface: when the strip opens, what it shows,
+/// and holding the dock out while the pointer is over it.
+struct Previews {
+    /// Built on first hover rather than with the surface: the dock is rebuilt
+    /// whenever an unpinned app opens or closes, and every strip opens a
+    /// Wayland connection of its own for capturing.
+    panel: RefCell<Option<Rc<Panel>>>,
+    make: RefCell<Option<MakePanel>>,
+    /// Set once capture turns out to be unavailable, so a compositor without
+    /// it is not asked again on every hover.
+    unavailable: Cell<bool>,
+    /// Slot whose windows the strip was last shown for.
+    showing: Cell<Option<usize>>,
+    /// What those windows were, so an unchanged strip is not rebuilt.
+    shown_tiles: RefCell<Vec<(u64, String, String)>>,
+    /// Bumped on every hover change, so a stale show or hide timer does
+    /// nothing.
+    generation: Cell<u64>,
+    delay_ms: u64,
+    monitor: Option<gdk::Monitor>,
+    /// Usable length along the dock's axis, read from Hyprland on first show.
+    span: Cell<Option<f64>>,
+}
+
+impl Previews {
+    fn new(
+        app: &gtk::Application,
+        monitor: Option<&gdk::Monitor>,
+        state: &Rc<RefCell<State>>,
+        sink: &ActionSink,
+        slide: &Rc<RefCell<Slide>>,
+        window: &gtk::ApplicationWindow,
+        cfg: &Config,
+    ) -> Rc<Self> {
+        let monitor = monitor.cloned().or_else(first_monitor);
+        let previews = Rc::new(Self {
+            panel: RefCell::new(None),
+            make: RefCell::new(None),
+            unavailable: Cell::new(false),
+            showing: Cell::new(None),
+            shown_tiles: RefCell::new(Vec::new()),
+            generation: Cell::new(0),
+            delay_ms: cfg.preview.delay_ms,
+            monitor: monitor.clone(),
+            span: Cell::new(None),
+        });
+
+        // Weak on both sides: the dock's state owns these previews, and the
+        // strip's callbacks must not keep either alive.
+        let (me, st) = (Rc::downgrade(&previews), Rc::downgrade(state));
+        let (app, sink, slide, window, cfg) =
+            (app.clone(), sink.clone(), slide.clone(), window.clone(), cfg.clone());
+        let make = move || {
+            // Whether the strip is holding the dock out, so enter and leave
+            // can never release a hold they did not take, or take two.
+            let holding = Rc::new(Cell::new(false));
+            let on_focus: Rc<dyn Fn(crate::hypr::Address)> =
+                Rc::new(move |address| sink(MenuAction::Command(DockCommand::Focus(address))));
+            let on_enter: Rc<dyn Fn()> = {
+                let (holding, slide, window, cfg, me) =
+                    (holding.clone(), slide.clone(), window.clone(), cfg.clone(), me.clone());
+                Rc::new(move || {
+                    if let Some(p) = me.upgrade() {
+                        p.bump();
+                    }
+                    // Over the strip, the pointer is off the dock's surface;
+                    // without a hold the dock would hide from under it.
+                    if !holding.replace(true) {
+                        hold(&slide, &window, &cfg, true);
+                    }
+                })
+            };
+            let on_leave: Rc<dyn Fn()> = {
+                let (slide, window, cfg) = (slide.clone(), window.clone(), cfg.clone());
+                Rc::new(move || {
+                    if holding.replace(false) {
+                        hold(&slide, &window, &cfg, false);
+                    }
+                    if let (Some(p), Some(st)) = (me.upgrade(), st.upgrade()) {
+                        let generation = p.bump();
+                        p.hide_later(&st, generation);
+                    }
+                })
+            };
+            Panel::new(
+                &app,
+                monitor.as_ref(),
+                cfg.dock.position,
+                cfg.preview.width,
+                on_focus,
+                on_enter,
+                on_leave,
+            )
+        };
+        *previews.make.borrow_mut() = Some(Box::new(make));
+        previews
+    }
+
+    fn bump(&self) -> u64 {
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        generation
+    }
+
+    /// The strip, building it on first use. `None` when windows cannot be
+    /// captured here.
+    fn panel(&self) -> Option<Rc<Panel>> {
+        if let Some(p) = self.current() {
+            return Some(p);
+        }
+        if self.unavailable.get() {
+            return None;
+        }
+        let make = self.make.borrow_mut().take()?;
+        let panel = make();
+        if !panel.available() {
+            panel.close();
+            self.unavailable.set(true);
+            return None;
+        }
+        *self.panel.borrow_mut() = Some(panel.clone());
+        Some(panel)
+    }
+
+    fn current(&self) -> Option<Rc<Panel>> {
+        self.panel.borrow().clone()
+    }
+
+    /// The slot whose windows are on screen right now.
+    fn shown(&self) -> Option<usize> {
+        self.showing.get().filter(|_| self.current().is_some_and(|p| p.is_visible()))
+    }
+
+    /// Show slot `i`'s windows, or hide the strip if it no longer has any.
+    fn show(&self, state: &Rc<RefCell<State>>, i: usize) {
+        let plan = {
+            let s = state.borrow();
+            s.data
+                .get(i)
+                .filter(|d| d.kind == ItemKind::App && !d.windows.is_empty())
+                .map(|item| (tiles_for(item), self.anchor(&s, i)))
+        };
+        let Some((tiles, anchor)) = plan else {
+            self.hide();
+            return;
+        };
+        let Some(anchor) = anchor else { return };
+        let Some(panel) = self.panel() else { return };
+
+        let key: Vec<(u64, String, String)> = tiles
+            .iter()
+            .map(|t| (t.address.as_u64(), t.title.clone(), t.workspace.clone()))
+            .collect();
+        if self.shown() == Some(i) && *self.shown_tiles.borrow() == key {
+            return;
+        }
+        panel.show(&tiles, anchor);
+        *self.shown_tiles.borrow_mut() = key;
+        self.showing.set(Some(i));
+
+        // The strip sits where the name label would, and names every window.
+        let mut s = state.borrow_mut();
+        s.tip_generation += 1;
+        s.tip_label.set_visible(false);
+    }
+
+    /// Where the strip goes for slot `i`.
+    ///
+    /// Layer surfaces are placed within the monitor less whatever other
+    /// surfaces reserve — the bar, mostly. The dock is centred in that area
+    /// and the strip's margins count from its edges, so the icon's position is
+    /// worked out in the same terms.
+    fn anchor(&self, s: &State, i: usize) -> Option<preview::Anchor> {
+        let g = &s.geom;
+        let vertical = s.cfg.dock.position.is_vertical();
+        let span = match self.span.get() {
+            Some(span) => span,
+            None => {
+                let span = usable_span(self.monitor.as_ref(), vertical);
+                self.span.set(Some(span));
+                span
+            }
+        };
+        let (sx, sy) = *g.slots.get(i)?;
+        let extent = g.extents.get(i).copied().unwrap_or(s.cfg.dock.icon_size);
+        let (slot, window_len) = if vertical { (sy, g.window_h) } else { (sx, g.window_w) };
+        let along = (span - window_len) / 2.0 + slot + extent / 2.0;
+
+        let mut from_edge = match s.cfg.dock.position {
+            Position::Bottom => g.window_h - g.panel_y,
+            Position::Top => g.panel_y + g.panel_h,
+            Position::Left => g.panel_x + g.panel_w,
+            Position::Right => g.window_w - g.panel_x,
+        };
+        // A dock that reserves its space has already taken that much off the
+        // area the strip is placed in.
+        if s.cfg.dock.reserve_space {
+            from_edge -= if vertical { g.window_w } else { g.window_h };
+        }
+        Some(preview::Anchor { along, span, from_edge })
+    }
+
+    /// Hide the strip after a moment, unless by then the pointer has reached
+    /// it or come back to its icon.
+    fn hide_later(self: &Rc<Self>, state: &Rc<RefCell<State>>, generation: u64) {
+        let (me, st) = (Rc::downgrade(self), Rc::downgrade(state));
+        glib::timeout_add_local_once(std::time::Duration::from_millis(PREVIEW_LINGER_MS), move || {
+            let (Some(me), Some(st)) = (me.upgrade(), st.upgrade()) else { return };
+            if me.generation.get() != generation {
+                return;
+            }
+            if me.current().is_some_and(|p| p.pointer_inside()) {
+                return;
+            }
+            let hovered = st.borrow().hovered;
+            if hovered.is_some() && hovered == me.showing.get() {
+                return;
+            }
+            me.hide();
+        });
+    }
+
+    /// Redraw an open strip from fresh data.
+    fn refresh(&self, state: &Rc<RefCell<State>>) {
+        if let Some(i) = self.shown() {
+            self.show(state, i);
+        }
+    }
+
+    fn hide(&self) {
+        self.bump();
+        self.showing.set(None);
+        self.shown_tiles.borrow_mut().clear();
+        if let Some(p) = self.current() {
+            p.hide();
+        }
+    }
+
+    fn close(&self) {
+        self.make.borrow_mut().take();
+        let panel = self.panel.borrow_mut().take();
+        if let Some(p) = panel {
+            p.close();
+        }
+    }
+}
+
+/// One preview tile per window, labelled with its title and workspace.
+fn tiles_for(item: &DockItem) -> Vec<preview::Tile> {
+    item.windows
+        .iter()
+        .enumerate()
+        .map(|(k, address)| {
+            let meta = item.window_meta.get(k);
+            preview::Tile {
+                address: address.clone(),
+                title: meta
+                    .map(|m| m.title.clone())
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| item.label.clone()),
+                workspace: meta.map(|m| m.workspace_label().to_string()).unwrap_or_default(),
+                icon: item.icon.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Open, move or hide the preview strip as hover moves to `hit`.
+fn preview_hover(state: &Rc<RefCell<State>>, hit: Option<usize>) {
+    let (previews, target) = {
+        let s = state.borrow();
+        let Some(p) = s.previews.clone() else { return };
+        let target = hit.filter(|&i| {
+            s.data.get(i).is_some_and(|d| d.kind == ItemKind::App && !d.windows.is_empty())
+        });
+        (p, target)
+    };
+    // Any pending show or hide belonged to the previous hover.
+    let generation = previews.bump();
+    match target {
+        // Back on the icon already showing: the bump was all it took.
+        Some(i) if previews.shown() == Some(i) => {}
+        // Sweeping along the dock with the strip open follows at once, the
+        // way a menu bar does once one menu is open.
+        Some(i) if previews.shown().is_some() => previews.show(state, i),
+        Some(i) => {
+            let (me, st) = (Rc::downgrade(&previews), Rc::downgrade(state));
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(previews.delay_ms),
+                move || {
+                    let (Some(me), Some(st)) = (me.upgrade(), st.upgrade()) else { return };
+                    if me.generation.get() != generation || st.borrow().hovered != Some(i) {
+                        return;
+                    }
+                    me.show(&st, i);
+                },
+            );
+        }
+        None if previews.shown().is_some() => previews.hide_later(state, generation),
+        None => {}
+    }
+}
+
+/// Hide the strip at once, e.g. because its icon was clicked.
+fn hide_previews(state: &Rc<RefCell<State>>) {
+    let previews = state.borrow().previews.clone();
+    if let Some(p) = previews {
+        p.hide();
+    }
+}
+
+fn first_monitor() -> Option<gdk::Monitor> {
+    gdk::Display::default()?.monitors().item(0)?.downcast().ok()
+}
+
+/// Logical length of the area layer surfaces are placed in along the dock's
+/// axis: the monitor, less what panels reserve at either end of it.
+fn usable_span(monitor: Option<&gdk::Monitor>, vertical: bool) -> f64 {
+    let Some(m) = monitor else { return if vertical { 1080.0 } else { 1920.0 } };
+    let g = m.geometry();
+    let full = if vertical { g.height() } else { g.width() } as f64;
+    let name = m.connector();
+    let [left, top, right, bottom] = reserved(name.as_deref()).unwrap_or_default();
+    let taken = if vertical { top + bottom } else { left + right };
+    (full - taken).max(0.0)
+}
+
+/// What Hyprland reports as reserved on a monitor: left, top, right, bottom,
+/// in logical pixels.
+fn reserved(monitor: Option<&str>) -> Option<[f64; 4]> {
+    let out = std::process::Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let m = json.as_array()?.iter().find(|m| {
+        monitor.is_none_or(|name| m.get("name").and_then(|n| n.as_str()) == Some(name))
+    })?;
+    let r = m.get("reserved")?.as_array()?;
+    let at = |i: usize| r.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    Some([at(0), at(1), at(2), at(3)])
+}
+
 // ── hover and animation ─────────────────────────────────────────────────────
 
 fn attach_motion(fixed: &gtk::Fixed, state: &Rc<RefCell<State>>, icon: f64) {
@@ -1945,6 +2329,11 @@ fn attach_motion(fixed: &gtk::Fixed, state: &Rc<RefCell<State>>, icon: f64) {
 }
 
 fn set_hover(state: &Rc<RefCell<State>>, hit: Option<usize>) {
+    hover_to(state, hit, true);
+}
+
+/// Move hover to `hit`, opening window previews for it when `previews`.
+fn hover_to(state: &Rc<RefCell<State>>, hit: Option<usize>, previews: bool) {
     let (delay, generation) = {
         let mut s = state.borrow_mut();
         if s.hovered == hit {
@@ -1958,6 +2347,13 @@ fn set_hover(state: &Rc<RefCell<State>>, hit: Option<usize>) {
         (s.tooltip_delay, s.tip_generation)
     };
     ensure_ticking(state);
+    // After the early return above: motion within one icon must not restart
+    // the preview delay on every event.
+    if previews {
+        preview_hover(state, hit);
+    } else {
+        hide_previews(state);
+    }
 
     let Some(index) = hit else { return };
 
@@ -1970,6 +2366,11 @@ fn set_hover(state: &Rc<RefCell<State>>, hit: Option<usize>) {
         }
         let Some(item) = s.data.get(index) else { return };
         if !item.interactive() || item.label.is_empty() {
+            return;
+        }
+        // The strip already names every window, and sits where the label
+        // would.
+        if s.previews.as_ref().is_some_and(|p| p.shown().is_some()) {
             return;
         }
 

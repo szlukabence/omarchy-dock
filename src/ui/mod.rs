@@ -3,6 +3,7 @@
 pub mod dock;
 pub mod geometry;
 pub mod menu;
+pub mod preview;
 pub mod settings;
 pub mod stack;
 

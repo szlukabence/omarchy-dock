@@ -103,6 +103,15 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 - **Pinned and running apps**, with running indicators, window-count badges and
   urgency. Click to focus, click again to cycle windows, click an idle icon to
   launch.
+- **Window previews**: rest the pointer on a running app and its windows appear
+  as live thumbnails, each with its title and workspace — including windows on
+  workspaces that are not on screen. Click one to jump straight to it.
+- **Window menu**: right-click an app to see its windows by title and
+  workspace, and move any of them to another workspace or the scratchpad.
+- **Media**: a progress ring on the app playing music, with play/pause, next
+  and previous in its menu.
+- **File drops**: drop files on an app to open them with it, or on Trash to
+  trash them.
 - **Drag to reorder**, with the icons parting to show where the drop lands.
   User-placed dividers drag too.
 - **Folder stacks and Trash**, drawn as monochrome glyphs so only real
@@ -246,6 +255,7 @@ Notable keys:
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
+| `preview.enabled`, `.delay_ms`, `.width` | Window previews on hover (default: on, after 600 ms, 220 px tiles) |
 | `items.media_controls` | Progress ring and play/pause/next on the icon of the app playing media (default: on) |
 | `tray.enabled`, `.show_passive` | Host the system tray in the dock (off by default — the bar already has one) |
 | `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |
@@ -346,4 +356,5 @@ Sockets live in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`, not
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The vendored Hyprland protocol used for window
+previews is BSD-3-Clause; see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

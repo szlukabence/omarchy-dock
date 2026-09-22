@@ -291,6 +291,23 @@ fn build_window() -> gtk::Window {
     });
     list.append(&field("Name delay (ms)", &delay));
 
+    let preview_delay = gtk::SpinButton::with_range(0.0, 3000.0, 50.0);
+    preview_delay.set_value(cfg.preview.delay_ms as f64);
+    preview_delay.connect_value_changed(|s| {
+        let v = s.value() as u64;
+        edit(move |c| c.preview.delay_ms = v)
+    });
+    let preview_delay_row = field("Preview delay (ms)", &preview_delay);
+    preview_delay_row.set_sensitive(cfg.preview.enabled);
+    {
+        let row = preview_delay_row.clone();
+        list.append(&toggle("Window previews", cfg.preview.enabled, move |v| {
+            row.set_sensitive(v);
+            edit(move |c| c.preview.enabled = v)
+        }));
+    }
+    list.append(&preview_delay_row);
+
     list.append(&separator());
 
     // ── items ───────────────────────────────────────────────────────────────

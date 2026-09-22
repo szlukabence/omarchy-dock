@@ -51,4 +51,5 @@ package() {
   install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/omarchy-dock/README.md"
   install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/omarchy-dock/LICENSE"
+  install -Dm0644 "THIRD_PARTY_NOTICES" "$pkgdir/usr/share/licenses/omarchy-dock/THIRD_PARTY_NOTICES"
 }

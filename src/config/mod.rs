@@ -99,6 +99,7 @@ pub struct Config {
     pub items: Items,
     pub workspaces: Workspaces,
     pub tray: Tray,
+    pub preview: Preview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +201,24 @@ pub struct Monitors {
     pub mode: MonitorMode,
     /// Output name for `MonitorMode::Primary`, e.g. "eDP-1".
     pub primary: String,
+}
+
+/// Window previews: live thumbnails of an app's windows while it is hovered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preview {
+    pub enabled: bool,
+    /// How long the pointer rests on an app before its previews open. Once
+    /// open, moving to another app switches them without the wait.
+    pub delay_ms: u64,
+    /// Width of one thumbnail, in logical pixels.
+    pub width: f64,
+}
+
+impl Default for Preview {
+    fn default() -> Self {
+        Self { enabled: true, delay_ms: 600, width: 220.0 }
+    }
 }
 
 /// The system tray, hosted in the dock rather than the bar.

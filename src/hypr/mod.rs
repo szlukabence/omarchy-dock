@@ -59,6 +59,12 @@ impl Address {
         Address(t.strip_prefix("0x").unwrap_or(t).to_ascii_lowercase())
     }
 
+    /// The address as a number, which is how window capture names a window.
+    /// Zero for an address that is not hex, which no window has.
+    pub fn as_u64(&self) -> u64 {
+        u64::from_str_radix(&self.0, 16).unwrap_or(0)
+    }
+
     /// The `0x`-prefixed form, as dispatchers and JSON expect.
     #[allow(dead_code)]
     pub fn prefixed(&self) -> String {

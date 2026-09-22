@@ -264,6 +264,38 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   margin: {gap}px {pad}px;
   background-color: {divider};
 }}
+
+/* Window previews: a strip of thumbnails above the hovered app. The same card
+   as a menu, because to the eye it is one. */
+.dock-preview-window {{ background: transparent; }}
+
+.dock-preview {{
+  background-color: {menu_bg};
+{menu_border}
+  border-radius: {radius}px;
+  padding: {pad}px;
+}}
+
+.dock-preview-tile {{
+  padding: {pad}px;
+  border-radius: {row_radius}px;
+  color: {menu_fg};
+  background: transparent;
+}}
+
+.dock-preview-tile:hover {{
+  background-color: {sel_fill};
+{sel_border}
+}}
+
+.dock-preview-thumb {{ border-radius: {row_radius}px; }}
+
+.dock-preview-title {{ font-size: {caption}px; }}
+
+.dock-preview-workspace {{
+  opacity: 0.55;
+  font-size: {caption}px;
+}}
 ",
         menu_bg = menu.background_css(),
         menu_fg = menu.text.to_css(),

@@ -51,6 +51,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs               = "6"
 libc               = "0.2"
 zbus = { version = "5.13.2", default-features = false, features = ["tokio"] }
+wayland-client = "0.31"
+wayland-backend = "0.3"
+wayland-scanner = "0.31"
+memmap2 = "0.9"
+bitflags = "2"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [profile.release]
 opt-level     = 3

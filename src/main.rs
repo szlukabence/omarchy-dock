@@ -2,6 +2,7 @@
 
 mod anim;
 mod app;
+mod capture;
 mod autohide;
 mod config;
 mod event;
