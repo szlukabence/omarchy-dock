@@ -32,7 +32,8 @@ check() {
 check Cargo.toml "$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
 check manifest.json "$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' manifest.json | head -1)"
 check packaging/local/PKGBUILD "$(sed -n 's/^pkgver=//p' packaging/local/PKGBUILD)"
-check packaging/aur/PKGBUILD "$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)"
+# packaging/aur/PKGBUILD is left out on purpose: it pins the release commit,
+# which does not exist until the tag does, so it is bumped after the release.
 if (( mismatch )); then
   echo "Bump them all to $version, commit, and move the tag." >&2
   exit 1

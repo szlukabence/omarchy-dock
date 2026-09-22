@@ -64,8 +64,8 @@ omarchy-dock-bin`.
 
 ### Releasing
 
-Bump the version in `Cargo.toml`, `manifest.json` and the PKGBUILDs, commit,
-then tag and push:
+Bump the version in `Cargo.toml`, `manifest.json` and
+`packaging/local/PKGBUILD`, commit, then tag and push:
 
 ```bash
 packaging/release.sh 1.3.0              # optional rehearsal: tests, builds, fills dist/
@@ -76,8 +76,11 @@ The tag starts the release workflow, which builds on Arch with that same
 script and publishes a GitHub release carrying the package, a tarball of the
 binaries, and `SHA256SUMS`. It refuses a tag that disagrees with any of the
 version numbers above. Afterwards, update the version and the package's
-checksum in the install lines above, and the version and tarball checksum in
-`packaging/aur-bin/PKGBUILD` (all shown in the workflow's summary).
+checksum in the install lines above (from `SHA256SUMS`, which the workflow's
+summary shows); in `packaging/aur/PKGBUILD` set `pkgver`, `_commit` to
+`git rev-parse vX.Y.Z^{commit}` and the checksum from `makepkg -g`; in
+`packaging/aur-bin/PKGBUILD` the version and the tarball checksum from the same
+summary. Regenerate each `.SRCINFO` with `makepkg --printsrcinfo`.
 
 ### Removal
 
