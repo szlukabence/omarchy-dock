@@ -56,21 +56,28 @@ rather than failing with "command not found".
 
 ### AUR
 
-Not yet — AUR registration is closed. `packaging/` holds both packages ready
-to publish: `aur/PKGBUILD` builds from a pinned, checksummed commit, and
-`aur-bin/PKGBUILD` repackages the release tarball, checked against its SHA-256. Once they are up, installing becomes `omarchy pkg aur add
+Not yet — AUR registration is closed. Both packages are ready to publish:
+`packaging/aur/PKGBUILD` builds from a pinned, checksummed commit, and
+`packaging/aur-bin/PKGBUILD` repackages the release tarball, checked against
+its SHA-256. Once they are up, installing becomes `omarchy pkg aur add
 omarchy-dock-bin`.
 
 ### Releasing
 
+Bump the version in `Cargo.toml`, `manifest.json` and the PKGBUILDs, commit,
+then tag and push:
+
 ```bash
-cd packaging/aur && makepkg -f          # builds from the pushed tag, runs the tests
+packaging/release.sh 1.3.0              # optional rehearsal: tests, builds, fills dist/
+git tag v1.3.0 && git push origin master v1.3.0
 ```
 
-Attach the resulting `.pkg.tar.zst`, a tarball of the two binaries plus README
-and LICENSE, and a `SHA256SUMS` to a GitHub release for the tag; then update the
-version and the package's checksum in the install lines above, and the tarball's
-checksum in `aur-bin/PKGBUILD`.
+The tag starts the release workflow, which builds on Arch with that same
+script and publishes a GitHub release carrying the package, a tarball of the
+binaries, and `SHA256SUMS`. It refuses a tag that disagrees with any of the
+version numbers above. Afterwards, update the version and the package's
+checksum in the install lines above, and the version and tarball checksum in
+`packaging/aur-bin/PKGBUILD` (all shown in the workflow's summary).
 
 ### Removal
 
