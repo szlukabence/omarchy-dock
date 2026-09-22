@@ -252,6 +252,10 @@ pub struct Workspaces {
     /// Show workspaces with no windows on them. With this off, only occupied
     /// workspaces and the current one get a tile.
     pub show_empty: bool,
+    /// With `show_empty` on, workspaces 1 to this always get a tile, the way
+    /// the Omarchy bar always shows 1–5 — even though Hyprland destroys an
+    /// empty workspace, so there is always somewhere to drop a window.
+    pub persistent: u32,
     /// A tile for Omarchy's `special:scratchpad`, showing how many windows are
     /// stashed in it.
     pub scratchpad: bool,
@@ -259,7 +263,7 @@ pub struct Workspaces {
 
 impl Default for Workspaces {
     fn default() -> Self {
-        Self { enabled: false, show_empty: true, scratchpad: false }
+        Self { enabled: false, show_empty: true, persistent: 5, scratchpad: false }
     }
 }
 

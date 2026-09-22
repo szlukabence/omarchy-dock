@@ -853,29 +853,48 @@ impl DockState {
         let active = self.active_workspace_id();
 
         if cfg.workspaces.enabled {
-            for ws in self.workspaces.iter().filter(|w| !w.is_special()) {
+            // Hyprland destroys a workspace the moment it empties, so it only
+            // ever reports the ones in use. A fixed row to aim at — what the
+            // bar shows, and what a drop needs — has to be filled in here.
+            let mut shown: Vec<(i32, String)> = self
+                .workspaces
+                .iter()
+                .filter(|w| !w.is_special())
+                .map(|w| (w.id, w.name.clone()))
+                .collect();
+            if cfg.workspaces.show_empty {
+                for id in 1..=cfg.workspaces.persistent.min(10) as i32 {
+                    if !shown.iter().any(|(i, _)| *i == id) {
+                        shown.push((id, id.to_string()));
+                    }
+                }
+            }
+            shown.sort_by_key(|(id, _)| *id);
+
+            for (id, name) in shown {
                 let windows: Vec<Address> = self
                     .clients
                     .iter()
-                    .filter(|c| c.workspace.id == ws.id)
+                    .filter(|c| c.workspace.id == id)
                     .map(|c| c.address.clone())
                     .collect();
 
                 // An empty workspace is still worth a tile when the user wants
                 // a fixed row to aim at; otherwise only occupied ones and the
                 // current one are shown.
-                if windows.is_empty() && !cfg.workspaces.show_empty && Some(ws.id) != active {
+                if windows.is_empty() && !cfg.workspaces.show_empty && Some(id) != active {
                     continue;
                 }
 
                 items.push(DockItem {
                     kind: ItemKind::Workspace,
-                    key: format!("{WORKSPACE_KEY}{}", ws.name),
-                    label: ws.name.clone(),
+                    key: format!("{WORKSPACE_KEY}{name}"),
+                    // Workspace 10 sits on the 0 key, and the bar labels it so.
+                    label: if id == 10 { "0".into() } else { name.clone() },
                     icon: String::new(),
                     windows,
                     pinned: false,
-                    active: Some(ws.id) == active,
+                    active: Some(id) == active,
                     urgent: false,
                     scratchpad: false,
                     active_window: None,
@@ -1279,7 +1298,55 @@ mod workspace_tests {
         let mut c = crate::config::Config::default();
         c.workspaces.enabled = enabled;
         c.workspaces.show_empty = show_empty;
+        // Only what Hyprland reports, so each test sees just the workspaces it
+        // set up; the fixed row has tests of its own.
+        c.workspaces.persistent = 0;
         c
+    }
+
+    fn labels(items: &[DockItem]) -> Vec<&str> {
+        items.iter().map(|i| i.label.as_str()).collect()
+    }
+
+    #[test]
+    fn the_first_five_always_have_a_tile_like_the_bar() {
+        // Hyprland has destroyed every empty workspace; 3 is in use.
+        let s = state(vec![client("0x1", 3, "3")], vec![ws(3, "3")], 3);
+        let mut c = cfg(true, true);
+        c.workspaces.persistent = 5;
+        let items = s.workspace_items(&c);
+        assert_eq!(labels(&items), ["1", "2", "3", "4", "5"]);
+        // A filled-in tile still addresses its workspace, so a drop on it
+        // sends the window there and Hyprland creates it.
+        assert_eq!(workspace_of(&items[0].key), Some("1"));
+        assert!(items[0].windows.is_empty());
+        assert_eq!(items[2].windows.len(), 1);
+        assert!(items[2].active);
+    }
+
+    #[test]
+    fn workspaces_past_the_fixed_row_join_it_in_order() {
+        let s = state(vec![client("0x1", 7, "7")], vec![ws(7, "7"), ws(2, "2")], 2);
+        let mut c = cfg(true, true);
+        c.workspaces.persistent = 5;
+        assert_eq!(labels(&s.workspace_items(&c)), ["1", "2", "3", "4", "5", "7"]);
+    }
+
+    #[test]
+    fn workspace_ten_is_labelled_zero_like_its_key() {
+        let s = state(vec![client("0x1", 10, "10")], vec![ws(10, "10")], 10);
+        let items = s.workspace_items(&cfg(true, true));
+        assert_eq!(labels(&items), ["0"]);
+        // The label is only the label: the tile still names workspace 10.
+        assert_eq!(workspace_of(&items[0].key), Some("10"));
+    }
+
+    #[test]
+    fn hiding_empty_workspaces_hides_the_fixed_row_too() {
+        let s = state(vec![client("0x1", 3, "3")], vec![ws(3, "3")], 3);
+        let mut c = cfg(true, false);
+        c.workspaces.persistent = 5;
+        assert_eq!(labels(&s.workspace_items(&c)), ["3"]);
     }
 
     #[test]
