@@ -69,6 +69,10 @@ strip         = true
 # is representative, but keep our own crate cheap to rebuild.
 [profile.dev]
 opt-level = 1
+# Line tables are all a backtrace needs. Full debug info, for every dependency
+# on every rebuild, is what grew target/ past 10 GB.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
