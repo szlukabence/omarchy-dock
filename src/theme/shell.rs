@@ -60,7 +60,7 @@ impl Border {
         )
     }
 
-    /// CSS `linear-gradient(...)`, for use as a `border-image-source`.
+    /// CSS `linear-gradient(...)`, painted under a surface to draw its border.
     pub fn to_css_gradient(&self, alpha: f64) -> String {
         let stops: Vec<String> = self
             .stops

@@ -104,7 +104,12 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   border-radius: {radius}px;
   box-shadow: {shadow};
 }}\n",
-        border = border_rules(&panel.border, panel.border_alpha, panel.border_width, 2),
+        border = border_rules(
+            &panel.border,
+            panel.border_alpha,
+            panel.border_width,
+            Some(&panel.background_css()),
+        ),
     ));
 
     // ── items ───────────────────────────────────────────────────────────────
@@ -190,7 +195,7 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
             &Border::solid(ctl.color),
             ctl.hover_border_alpha,
             if omarchy { ctl.hover_border_width } else { 0.0 },
-            0,
+            None,
         ),
     ));
 
@@ -299,7 +304,12 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 ",
         menu_bg = menu.background_css(),
         menu_fg = menu.text.to_css(),
-        menu_border = border_rules(&menu.border, menu.border_alpha, menu.border_width, 2),
+        menu_border = border_rules(
+            &menu.border,
+            menu.border_alpha,
+            menu.border_width,
+            Some(&menu.background_css()),
+        ),
         menu_w = m.space("dropdown-width", 240.0).max(190.0),
         move_w = m.space("control-height", 28.0).max(24.0),
         pad = m.space("popup-padding", 6.0).max(4.0),
@@ -314,7 +324,7 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
             &shell.menu.selected_border,
             if omarchy { shell.menu.selected_border_alpha } else { 0.0 },
             if omarchy { ctl.normal_border_width } else { 0.0 },
-            0,
+            None,
         ),
         divider = fg.with_alpha(0.18),
     ));
@@ -423,7 +433,12 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
         sep_len = (cfg.dock.icon_size * 0.58).round(),
         tip_bg = tip.background_css(),
         tip_fg = tip.text.to_css(),
-        tip_border = border_rules(&tip.border, tip.border_alpha, tip.border_width, 2),
+        tip_border = border_rules(
+            &tip.border,
+            tip.border_alpha,
+            tip.border_width,
+            Some(&tip.background_css()),
+        ),
         tip_radius = if omarchy { (radius * 0.6).max(2.0) } else { 7.0 },
         tip_x = m.space("control-padding-x", 10.0).max(6.0),
         tip_y = m.space("xxs", 2.0).max(2.0),
@@ -472,15 +487,20 @@ pub fn radius(cfg: &Config, omarchy: bool) -> f64 {
 
 /// Border declarations for a surface, gradient-aware.
 ///
-/// GTK cannot put a gradient in `border-color`, but it does support
-/// `border-image`, which is how Omarchy's active-border gradient survives the
-/// trip into GTK CSS. A flat border takes the plain path so the radius is not
-/// lost: `border-image` ignores `border-radius`, which is fine for a hairline
-/// on a barely-rounded Omarchy surface but wrong for a glass slab.
+/// GTK cannot put a gradient in `border-color`, and `border-image` — the
+/// obvious way round that — ignores `border-radius`, which squared off every
+/// corner on themes whose active border is a gradient (Solitude, for one).
+/// So a gradient border is painted as backgrounds instead: the gradient under
+/// the whole border box, and the surface's own `fill` over the padding box.
+/// What shows is a gradient ring, and backgrounds follow the radius.
 ///
-/// `slice` is the `border-image-slice` value; 0 for widgets whose corners are
-/// too round to fake.
-fn border_rules(border: &Border, alpha: f64, width: f64, slice: u32) -> String {
+/// The fill covers the gradient only as far as it is opaque. Omarchy's
+/// surfaces are opaque or within a few percent of it, so the tint that bleeds
+/// through a translucent one is too faint to see.
+///
+/// `fill` is `None` where there is no surface colour to lay over the gradient
+/// — hover rings and the like — and the gradient is flattened to one colour.
+fn border_rules(border: &Border, alpha: f64, width: f64, fill: Option<&str>) -> String {
     // Test the requested width, not the rounded one: a theme asking for a
     // hairline thinner than a pixel wants a hairline, not nothing. Only an
     // explicit zero means no border.
@@ -489,16 +509,15 @@ fn border_rules(border: &Border, alpha: f64, width: f64, slice: u32) -> String {
     }
     let width = width.max(MIN_BORDER_PX).round();
 
-    if border.is_gradient() && slice > 0 {
-        format!(
+    match fill {
+        Some(fill) if border.is_gradient() => format!(
             "  border: {width}px solid transparent;\n  \
-             border-image-source: {src};\n  \
-             border-image-slice: {slice};\n  \
-             border-image-width: {width}px;",
+             background-image: linear-gradient({fill}, {fill}), {src};\n  \
+             background-origin: border-box;\n  \
+             background-clip: padding-box, border-box;",
             src = border.to_css_gradient(alpha),
-        )
-    } else {
-        format!("  border: {width}px solid {};", border.to_css_solid(alpha))
+        ),
+        _ => format!("  border: {width}px solid {};", border.to_css_solid(alpha)),
     }
 }
 
@@ -527,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gradient_border_becomes_a_border_image() {
+    fn a_gradient_border_is_painted_as_rounded_backgrounds() {
         let border = Border {
             stops: vec![
                 (Rgb { r: 0x79, g: 0x81, b: 0x86 }, 0.93),
@@ -535,15 +554,19 @@ mod tests {
             ],
             angle: 45.0,
         };
-        let css = border_rules(&border, 1.0, 1.0, 2);
-        assert!(css.contains("border-image-source: linear-gradient(45deg"));
-        assert!(css.contains("border-image-slice: 2"));
+        let css = border_rules(&border, 1.0, 1.0, Some("#101315"));
+        // Never border-image: it ignores border-radius and squares the corners.
+        assert!(!css.contains("border-image"), "{css}");
+        // The fill sits over the padding box, the gradient under the whole
+        // border box, so only the ring shows the gradient.
+        assert!(css.contains("background-image: linear-gradient(#101315, #101315), linear-gradient(45deg"), "{css}");
+        assert!(css.contains("background-clip: padding-box, border-box"), "{css}");
         // A gradient cannot go in border-color, so the border itself is clear.
         assert!(css.contains("border: 1px solid transparent"));
     }
 
     #[test]
-    fn a_gradient_flattens_where_border_image_would_lose_the_radius() {
+    fn a_gradient_flattens_where_there_is_no_fill_to_cover_it() {
         let border = Border {
             stops: vec![
                 (Rgb { r: 0, g: 0, b: 0 }, 1.0),
@@ -551,8 +574,8 @@ mod tests {
             ],
             angle: 0.0,
         };
-        // slice 0 means "this widget is too round for border-image".
-        let css = border_rules(&border, 1.0, 1.0, 0);
+        // No fill means there is no surface to lay over the gradient.
+        let css = border_rules(&border, 1.0, 1.0, None);
         assert!(!css.contains("border-image"));
         assert!(css.contains("#808080") || css.contains("128, 128, 128"));
     }
@@ -560,8 +583,8 @@ mod tests {
     #[test]
     fn a_zero_width_or_transparent_border_is_omitted_entirely() {
         let b = Border::solid(Rgb { r: 1, g: 2, b: 3 });
-        assert_eq!(border_rules(&b, 1.0, 0.0, 2), "  border: none;");
-        assert_eq!(border_rules(&b, 0.0, 1.0, 2), "  border: none;");
+        assert_eq!(border_rules(&b, 1.0, 0.0, Some("#000")), "  border: none;");
+        assert_eq!(border_rules(&b, 0.0, 1.0, Some("#000")), "  border: none;");
     }
 
     #[test]
@@ -569,7 +592,7 @@ mod tests {
         // A theme asking for a hairline must not get nothing: GTK renders no
         // border at all below 1px.
         let b = Border::solid(Rgb { r: 1, g: 2, b: 3 });
-        let css = border_rules(&b, 1.0, 0.4, 2);
+        let css = border_rules(&b, 1.0, 0.4, Some("#000"));
         assert!(css.contains("1px solid"), "{css}");
     }
 
