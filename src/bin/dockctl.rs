@@ -18,6 +18,8 @@ use std::path::PathBuf;
 // put it in, and it is not worth becoming one for a single module.
 #[path = "../integrate.rs"]
 mod integrate;
+#[path = "../bar_widgets.rs"]
+mod bar_widgets;
 #[path = "../safe_write.rs"]
 mod safe_write;
 

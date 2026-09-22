@@ -1296,9 +1296,15 @@ fn drop_position(s: &State, pos: f64, icon: f64) -> Option<(usize, usize)> {
     result
 }
 
+/// The slot of the workspace (or scratchpad) tile under a surface point.
+fn workspace_slot(s: &State, x: f64, y: f64) -> Option<usize> {
+    let i = s.geom.slot_at(x, y, s.cfg.dock.icon_size)?;
+    matches!(s.data.get(i)?.kind, ItemKind::Workspace | ItemKind::Scratchpad).then_some(i)
+}
+
 /// The workspace tile under a surface point, if the point is on one.
 fn workspace_under(s: &State, x: f64, y: f64) -> Option<String> {
-    let i = s.geom.slot_at(x, y, s.cfg.dock.icon_size)?;
+    let i = workspace_slot(s, x, y)?;
     let item = s.data.get(i)?;
     match item.kind {
         ItemKind::Workspace => {
@@ -1365,24 +1371,32 @@ fn attach_drop(
     {
         let state = state.clone();
         target.connect_motion(move |_, x, y| {
-            let at = {
+            let (at, tile) = {
                 let s = state.borrow();
                 // Over a workspace tile the drop is a "send there", so the
                 // icons must not part as if something were being inserted.
-                if workspace_under(&s, x, y).is_some() {
-                    None
-                } else {
-                    let pos = if s.geom.horizontal() { x } else { y };
-                    drop_position(&s, pos, icon).map(|(i, _)| i)
+                match workspace_slot(&s, x, y) {
+                    Some(tile) => (None, Some(tile)),
+                    None => {
+                        let pos = if s.geom.horizontal() { x } else { y };
+                        (drop_position(&s, pos, icon).map(|(i, _)| i), None)
+                    }
                 }
             };
             set_drop_gap(&state, at, icon);
+            // A drag carries no pointer motion, so the tile would not light up
+            // the way it does under the mouse; the target says which one the
+            // window would go to. No previews mid-drag.
+            hover_to(&state, tile, false);
             gdk::DragAction::MOVE
         });
     }
     {
         let state = state.clone();
-        target.connect_leave(move |_| set_drop_gap(&state, None, icon));
+        target.connect_leave(move |_| {
+            set_drop_gap(&state, None, icon);
+            hover_to(&state, None, false);
+        });
     }
 
     {
@@ -1399,6 +1413,7 @@ fn attach_drop(
             // whole block, and set_drop_gap below needs to borrow mutably —
             // which aborted the dock on every drop onto a workspace.
             let send = send_to_workspace(&state.borrow(), from, x, y);
+            hover_to(&state, None, false);
             if let Some(cmd) = send {
                 set_drop_gap(&state, None, icon);
                 sink(MenuAction::Command(cmd));

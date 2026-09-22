@@ -1242,6 +1242,13 @@ fn uninstall_into(out: &mut Vec<Report>) -> Result<()> {
         path,
     });
 
+    // Give the bar back its workspaces if the dock took them out. Only a
+    // widget the dock removed is restored; one the user removed stays off.
+    let note = crate::bar_widgets::sync(crate::bar_widgets::WORKSPACES, false)
+        .err()
+        .map(|e| format!("could not put the bar's workspaces back: {e}"));
+    out.push(Report { label: "bar workspaces", path: shell_json_path(), installed: false, note });
+
     // Drop the shell.json reference before the files, so the shell is never
     // pointed at a plugin directory that has just been deleted.
     set_plugin_enabled(false)?;

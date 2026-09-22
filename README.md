@@ -166,26 +166,30 @@ ever in response to an explicit action:
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
+| `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys |
+| The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
 | `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |
 
-`uninstall` removes all of it, except what is no longer as the dock wrote it.
-An older, pre-namespace `plugins/omarchy-dock/` is removed, and its `shell.json`
-entry dropped, only if its files are byte for byte what 1.2.0 wrote; otherwise
-it may be another plugin of that name, and both are left alone. The files
-earlier releases wrote are kept in `resources/released/` for exactly these
-comparisons. Outside its own config directory, nothing is written on start,
-on poll, or on open, apart from the control socket `omarchy-dockctl` talks to,
-in your private `$XDG_RUNTIME_DIR`. The dock saves its own `config.toml` only
-when you change a setting from the dock (pinning, the settings window, the
-auto-hide toggle), and then edits it in place: only the setting you changed is
-rewritten, and your comments, layout and any keys it does not know stay as
-they were. While the file has an error nothing is saved at all: the change is
-refused with a notification rather than saved over what you wrote. The dock
-itself never runs `sudo` — the only privileged step is the `pacman` install
-you run — and `omarchy-dockctl install` and `uninstall` refuse to run as root,
-since everything they touch is in your home. It makes no network requests.
-`/tmp` is never written; the only thing read there is Omarchy's own
-screen-recording marker.
+`uninstall` removes all of it, except what is no longer as the dock wrote it,
+and gives the bar back its workspaces. An older, pre-namespace
+`plugins/omarchy-dock/` is removed, and its `shell.json` entry dropped, only if
+its files are byte for byte what 1.2.0 wrote; otherwise it may be another
+plugin of that name, and both are left alone. The files earlier releases wrote
+are kept in `resources/released/` for exactly these comparisons. Outside its
+own config directory, nothing is written on start, on poll, or on open, apart
+from the control socket `omarchy-dockctl` talks to, in your private
+`$XDG_RUNTIME_DIR` — and, with `hide_bar_workspaces` on, the check at start
+that the bar matches. The dock saves its own `config.toml` only when you change
+a setting from the dock (pinning, the settings window, the auto-hide toggle),
+and then edits it in place: only the setting you changed is rewritten, and your
+comments, layout and any keys it does not know stay as they were. While the
+file has an error nothing is saved at all: the change is refused with a
+notification rather than saved over what you wrote. The dock itself never runs
+`sudo` — the only privileged step is the `pacman` install you run — and
+`omarchy-dockctl install` and `uninstall` refuse to run as root, since
+everything they touch is in your home. It makes no network requests. `/tmp` is
+never written; the only thing read there is Omarchy's own screen-recording
+marker.
 
 ## Looking like Omarchy
 
@@ -265,6 +269,7 @@ Notable keys:
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
+| `workspaces.hide_bar_workspaces` | Hide the bar's own workspace numbers while the dock shows workspaces, and restore them in place when turned off (default: off) |
 | `workspaces.persistent` | Workspaces 1 to N always get a tile, as the bar always shows 1–5, so there is somewhere to drop a window even on an empty workspace (default: 5) |
 | `preview.enabled`, `.delay_ms`, `.width` | Window previews on hover (default: on, after 600 ms, 220 px tiles) |
 | `items.media_controls` | Progress ring and play/pause/next on the icon of the app playing media (default: on) |

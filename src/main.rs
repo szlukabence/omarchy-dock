@@ -2,6 +2,7 @@
 
 mod anim;
 mod app;
+mod bar_widgets;
 mod capture;
 mod autohide;
 mod config;

@@ -322,6 +322,9 @@ fn build_window() -> gtk::Window {
     list.append(&toggle("Empty workspaces", cfg.workspaces.show_empty, |v| {
         edit(move |c| c.workspaces.show_empty = v)
     }));
+    list.append(&toggle("Hide the bar's workspaces", cfg.workspaces.hide_bar_workspaces, |v| {
+        edit(move |c| c.workspaces.hide_bar_workspaces = v)
+    }));
     list.append(&toggle("Scratchpad", cfg.workspaces.scratchpad, |v| {
         edit(move |c| c.workspaces.scratchpad = v)
     }));

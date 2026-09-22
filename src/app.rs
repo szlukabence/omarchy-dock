@@ -362,6 +362,7 @@ pub fn run() -> glib::ExitCode {
         }
 
         let cfg = Config::load();
+        sync_bar_workspaces(&cfg);
         let provider = gtk::CssProvider::new();
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
@@ -445,6 +446,7 @@ pub fn run() -> glib::ExitCode {
                     AppEvent::Control(c) => app.on_control(c, &gtk_app),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
+                        sync_bar_workspaces(&next);
                         // Geometry-affecting changes need new surfaces;
                         // anything else is just a restyle, which is far
                         // cheaper and preserves hover state.
@@ -669,4 +671,15 @@ fn build_docks(
             vec![DockSurface::build(gtk_app, cfg, items, Some(chosen), sink.clone())]
         }
     }
+}
+
+/// Hide the bar's workspace widget while the dock shows workspaces, or put it
+/// back. Off the GTK thread: it talks to the shell, which takes a moment.
+fn sync_bar_workspaces(cfg: &Config) {
+    let hide = cfg.workspaces.enabled && cfg.workspaces.hide_bar_workspaces;
+    std::thread::spawn(move || {
+        if let Err(e) = crate::bar_widgets::sync(crate::bar_widgets::WORKSPACES, hide) {
+            tracing::warn!(error = %e, "cannot sync the bar's workspaces");
+        }
+    });
 }

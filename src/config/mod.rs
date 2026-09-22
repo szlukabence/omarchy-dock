@@ -256,6 +256,9 @@ pub struct Workspaces {
     /// the Omarchy bar always shows 1–5 — even though Hyprland destroys an
     /// empty workspace, so there is always somewhere to drop a window.
     pub persistent: u32,
+    /// Take the bar's own workspace widget out while the dock shows
+    /// workspaces, and put it back where it was when either is turned off.
+    pub hide_bar_workspaces: bool,
     /// A tile for Omarchy's `special:scratchpad`, showing how many windows are
     /// stashed in it.
     pub scratchpad: bool,
@@ -263,7 +266,13 @@ pub struct Workspaces {
 
 impl Default for Workspaces {
     fn default() -> Self {
-        Self { enabled: false, show_empty: true, persistent: 5, scratchpad: false }
+        Self {
+            enabled: false,
+            show_empty: true,
+            persistent: 5,
+            hide_bar_workspaces: false,
+            scratchpad: false,
+        }
     }
 }
 
