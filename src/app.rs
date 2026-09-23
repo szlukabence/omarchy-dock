@@ -147,12 +147,50 @@ impl App {
                 self.request_snapshot();
                 false
             }
+            FocusedMonitor(name) => {
+                self.state.set_focused_monitor(&name);
+                self.follow_focused_monitor(gtk_app);
+                false
+            }
             _ => false,
         };
 
         if dirty {
             self.sync(gtk_app);
         }
+    }
+
+    /// In `focused` mode, move the dock to the focused monitor when it is not
+    /// already there. Moving means a new surface, since a layer surface is
+    /// bound to its output for life. Returns whether it moved.
+    fn follow_focused_monitor(&mut self, gtk_app: &gtk::Application) -> bool {
+        if self.cfg.monitors.mode != crate::config::MonitorMode::Focused {
+            return false;
+        }
+        let Some(focused) = self.state.focused_monitor().map(|m| m.name.clone()) else {
+            return false;
+        };
+        let here = self.docks.first().and_then(|d| d.monitor_name.clone());
+        if here.as_deref() == Some(focused.as_str()) {
+            return false;
+        }
+        // A monitor GTK does not know (yet) would only rebuild onto the
+        // fallback; wait for the snapshot that follows it being added.
+        let known = gdk::Display::default().is_some_and(|d| {
+            let ms = d.monitors();
+            (0..ms.n_items()).any(|i| {
+                ms.item(i)
+                    .and_downcast::<gdk::Monitor>()
+                    .and_then(|m| m.connector())
+                    .is_some_and(|c| c == focused)
+            })
+        });
+        if !known {
+            return false;
+        }
+        tracing::debug!(from = ?here, to = %focused, "following the focused monitor");
+        self.rebuild(gtk_app);
+        true
     }
 
     /// Handle a command from `omarchy-dockctl`.
@@ -326,7 +364,8 @@ impl App {
             d.close();
         }
         let sink = make_sink(self.worker.clone());
-        self.docks = build_docks(gtk_app, &self.cfg, &items, sink);
+        let focused = self.state.focused_monitor().map(|m| m.name.clone());
+        self.docks = build_docks(gtk_app, &self.cfg, &items, focused.as_deref(), sink);
         self.update_autohide();
         if tracing::enabled!(tracing::Level::DEBUG) {
             for i in &items {
@@ -456,7 +495,9 @@ pub fn run() -> glib::ExitCode {
                         app.state.set_monitors(monitors);
                         app.state.set_workspaces(workspaces);
                         app.state.set_focused(focused);
-                        app.sync(&gtk_app);
+                        if !app.follow_focused_monitor(&gtk_app) {
+                            app.sync(&gtk_app);
+                        }
                     }
                     AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),
                     AppEvent::Control(c) => app.on_control(c, &gtk_app),
@@ -654,6 +695,7 @@ fn build_docks(
     gtk_app: &gtk::Application,
     cfg: &Config,
     items: &[DockItem],
+    focused: Option<&str>,
     sink: crate::ui::dock::ActionSink,
 ) -> Vec<DockSurface> {
     use crate::config::MonitorMode;
@@ -674,16 +716,11 @@ fn build_docks(
         MonitorMode::All => {
             all.iter().map(|m| DockSurface::build(gtk_app, cfg, items, Some(m), sink.clone())).collect()
         }
-        // "Focused" follows the active output; until Hyprland IPC lands in
-        // Phase 2 it behaves like "primary".
         MonitorMode::Primary | MonitorMode::Focused => {
-            let chosen = all
-                .iter()
-                .find(|m| {
-                    !cfg.monitors.primary.is_empty()
-                        && m.connector().is_some_and(|c| c == cfg.monitors.primary)
-                })
-                .unwrap_or(&all[0]);
+            let connectors: Vec<Option<String>> =
+                all.iter().map(|m| m.connector().map(|c| c.to_string())).collect();
+            let chosen =
+                &all[choose_monitor(cfg.monitors.mode, &cfg.monitors.primary, focused, &connectors)];
             vec![DockSurface::build(gtk_app, cfg, items, Some(chosen), sink.clone())]
         }
     }
@@ -698,4 +735,53 @@ fn sync_bar_workspaces(cfg: &Config) {
             tracing::warn!(error = %e, "cannot sync the bar's workspaces");
         }
     });
+}
+
+/// Which of `connectors` a single dock goes on.
+///
+/// `focused` follows Hyprland's focused monitor, falling back to the primary
+/// when that monitor is unknown; `primary` is the configured output, falling
+/// back to the first.
+fn choose_monitor(
+    mode: crate::config::MonitorMode,
+    primary: &str,
+    focused: Option<&str>,
+    connectors: &[Option<String>],
+) -> usize {
+    let find = |name: &str| connectors.iter().position(|c| c.as_deref() == Some(name));
+    let primary = (!primary.is_empty()).then(|| find(primary)).flatten();
+    match mode {
+        crate::config::MonitorMode::Focused => focused.and_then(find).or(primary).unwrap_or(0),
+        _ => primary.unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::choose_monitor;
+    use crate::config::MonitorMode::{Focused, Primary};
+
+    fn outputs() -> Vec<Option<String>> {
+        vec![Some("eDP-1".into()), Some("DP-2".into()), Some("HDMI-A-1".into())]
+    }
+
+    #[test]
+    fn focused_mode_goes_where_focus_is() {
+        assert_eq!(choose_monitor(Focused, "", Some("DP-2"), &outputs()), 1);
+        assert_eq!(choose_monitor(Focused, "eDP-1", Some("HDMI-A-1"), &outputs()), 2);
+    }
+
+    #[test]
+    fn focused_mode_falls_back_to_the_primary_then_the_first() {
+        // Focus on a monitor GTK has not seen yet, or none reported at all.
+        assert_eq!(choose_monitor(Focused, "DP-2", Some("DP-9"), &outputs()), 1);
+        assert_eq!(choose_monitor(Focused, "DP-2", None, &outputs()), 1);
+        assert_eq!(choose_monitor(Focused, "", None, &outputs()), 0);
+    }
+
+    #[test]
+    fn primary_mode_ignores_focus() {
+        assert_eq!(choose_monitor(Primary, "HDMI-A-1", Some("DP-2"), &outputs()), 2);
+        assert_eq!(choose_monitor(Primary, "missing", Some("DP-2"), &outputs()), 0);
+    }
 }

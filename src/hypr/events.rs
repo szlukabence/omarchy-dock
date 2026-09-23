@@ -32,6 +32,8 @@ pub enum HyprEvent {
     /// Special (scratchpad) workspace shown or hidden. Empty name = hidden.
     ActiveSpecial { name: String, monitor: String },
     MonitorAdded(String),
+    /// Focus moved to another monitor, named by connector.
+    FocusedMonitor(String),
     MonitorRemoved(String),
     /// Fullscreen state changed; the dock hides for fullscreen windows.
     Fullscreen(bool),
@@ -96,6 +98,8 @@ pub fn parse(line: &str) -> Option<HyprEvent> {
             }
         }
         "monitoradded" => HyprEvent::MonitorAdded(data.to_string()),
+        // `focusedmon>>MONNAME,WORKSPACENAME`.
+        "focusedmon" => HyprEvent::FocusedMonitor(data.split(',').next().unwrap_or("").to_string()),
         "monitorremoved" => HyprEvent::MonitorRemoved(data.to_string()),
         "fullscreen" => HyprEvent::Fullscreen(data.trim() == "1"),
         // `windowtitle` (v1) is superseded by v2, which carries the title too.
@@ -168,6 +172,11 @@ mod tests {
                 title: "Omarchy dock, phase 2 - Visual Studio Code".into(),
             })
         );
+    }
+
+    #[test]
+    fn focus_moving_to_another_monitor_names_it() {
+        assert_eq!(parse("focusedmon>>DP-2,3"), Some(HyprEvent::FocusedMonitor("DP-2".into())));
     }
 
     #[test]

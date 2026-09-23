@@ -268,7 +268,7 @@ Notable keys:
 | `magnify.zoom`, `.lift`, `.stiffness`, `.damping_ratio` | Hover feel for `scale`. Only the hovered icon scales |
 | `autohide.mode` | `never` \| `intelligent` \| `always` (default: `intelligent`) |
 | `launcher.enabled`, `.icon`, `.command` | Omarchy menu button at the head of the dock; empty command runs `omarchy-menu toggle` |
-| `monitors.mode` | `all` \| `primary` \| `focused` |
+| `monitors.mode` | `all` (a dock on every monitor) \| `primary` (only `monitors.primary`) \| `focused` (one dock that moves to whichever monitor has focus) |
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |

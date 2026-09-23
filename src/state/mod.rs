@@ -588,6 +588,13 @@ impl DockState {
         self.monitors.iter().find(|m| m.name == name)
     }
 
+    /// Record that focus moved to monitor `name`, ahead of the next snapshot.
+    pub fn set_focused_monitor(&mut self, name: &str) {
+        for m in &mut self.monitors {
+            m.focused = m.name == name;
+        }
+    }
+
     /// The monitor Hyprland currently considers focused.
     pub fn focused_monitor(&self) -> Option<&Monitor> {
         self.monitors.iter().find(|m| m.focused)
