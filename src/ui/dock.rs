@@ -887,6 +887,10 @@ fn attach_clicks(
                     }
                     return;
                 }
+                ItemKind::Recording => {
+                    sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
+                    return;
+                }
                 ItemKind::Command => {
                     if !item.exec.is_empty() {
                         pulse(&state, index);
@@ -1017,6 +1021,10 @@ fn attach_clicks(
 /// Separate from the click handler so the test hook opens exactly the menu a
 /// real right-click would.
 fn context_menu(item: &DockItem, sink: &ActionSink) -> Option<gtk::Popover> {
+    // The stop button does one thing; a menu would only repeat it.
+    if item.kind == ItemKind::Recording {
+        return None;
+    }
     let sink = sink.clone();
             let popover = if item.kind == ItemKind::Separator {
                 // Only user-placed separators are editable; automatic dividers
@@ -1905,7 +1913,8 @@ fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
     // glyph_ui preference — that setting is about whether the dock's *furniture*
     // is drawn in the bar's monochrome language, not about items that have
     // nothing else to draw.
-    let always_glyph = matches!(item.kind, ItemKind::Command | ItemKind::Scratchpad);
+    let always_glyph =
+        matches!(item.kind, ItemKind::Command | ItemKind::Scratchpad | ItemKind::Recording);
     // A tray item often ships no themed icon, only raw pixels. Uploading them
     // as a texture is the only way to show such an app at all.
     if let Some(pixmap) = &item.pixmap {
@@ -1917,7 +1926,13 @@ fn item_visual(item: &DockItem, size: i32, cfg: &Config) -> gtk::Widget {
     }
 
     match item.glyph.as_deref().filter(|_| cfg.items.glyph_ui || always_glyph) {
-        Some(glyph) => glyph_widget(glyph, size),
+        Some(glyph) => {
+            let w = glyph_widget(glyph, size);
+            if item.kind == ItemKind::Recording {
+                w.add_css_class("dock-recording");
+            }
+            w
+        }
         None => make_icon(&item.icon, size).upcast::<gtk::Widget>(),
     }
 }

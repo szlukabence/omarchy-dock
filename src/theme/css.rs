@@ -166,6 +166,10 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   font-family: \"omarchy\", \"JetBrainsMono Nerd Font\", \"Symbols Nerd Font\", monospace;
 }}
 
+/* The stop button while recording: the urgent colour, as the bar's
+   indicator turns while it records. */
+.dock-recording .dock-glyph {{ color: @dock_urgent; }}
+
 .dock-label {{
   color: @dock_fg;
   font-size: {body}px;

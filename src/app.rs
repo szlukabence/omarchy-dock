@@ -432,6 +432,7 @@ pub fn run() -> glib::ExitCode {
             provider,
             docks: Vec::new(),
         };
+        app.state.set_recording(crate::omarchy::is_recording());
         // Style before building, so surfaces map already themed and the user
         // never sees an unstyled frame.
         app.restyle();
@@ -458,7 +459,10 @@ pub fn run() -> glib::ExitCode {
                         app.rebuild(&gtk_app);
                     }
                     // A recording started or stopped; nothing else changed.
-                    AppEvent::HidePolicyChanged => app.update_autohide(),
+                    AppEvent::HidePolicyChanged => {
+                        app.state.set_recording(crate::omarchy::is_recording());
+                        app.sync(&gtk_app);
+                    }
                     AppEvent::Media(players) => {
                         app.state.set_media(players);
                         app.sync(&gtk_app);

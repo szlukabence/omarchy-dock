@@ -123,6 +123,9 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   Chromium. Focusing the app clears it.
 - **Media**: a progress ring on the app playing music, with play/pause, next
   and previous in its menu.
+- **Stop recording**: while Omarchy is screen-recording, a red stop button
+  sits beside the launcher. With `hide_while_recording` on, the dock is out
+  of the way but reveals it when you reach for the screen edge.
 - **File drops**: drop files on an app to open them with it, or on Trash to
   trash them.
 - **Drag to reorder**, with the icons parting to show where the drop lands.

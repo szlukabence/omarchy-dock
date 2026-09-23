@@ -46,6 +46,8 @@ pub enum ItemKind {
     Scratchpad,
     /// A pinned shell command with a glyph, rather than an application.
     Command,
+    /// Shown only while Omarchy is screen-recording: click to stop.
+    Recording,
 }
 
 /// What the dock shows about one window.
@@ -135,7 +137,6 @@ impl DockItem {
         self.kind != ItemKind::Separator
     }
 
-    /// Count shown as a badge; `None` below two windows.
     /// What a middle-click runs: another window of this app, even when one is
     /// already open.
     ///
@@ -244,6 +245,12 @@ pub const COMMAND_KEY: &str = "cmd:";
 
 /// Generic mark for a command tile whose config gives no glyph.
 const GLYPH_COMMAND: &str = "\u{f120}";
+
+/// The bar's own screen-recording glyph, so the two read as one thing.
+const GLYPH_RECORDING: &str = "\u{f0ec2}";
+
+/// Omarchy's command for stopping a recording — what the bar's indicator runs.
+const STOP_RECORDING: &str = "omarchy-capture-screenrecording --stop-recording";
 
 /// A pinned shell command, as a dock item.
 fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem {
@@ -484,6 +491,8 @@ pub struct DockState {
     urgent: Vec<Address>,
     /// Unread notification counts by item key.
     unread: HashMap<String, usize>,
+    /// Whether Omarchy is screen-recording.
+    recording: bool,
 }
 
 impl DockState {
@@ -498,7 +507,12 @@ impl DockState {
             focused: None,
             urgent: Vec::new(),
             unread: HashMap::new(),
+            recording: false,
         }
+    }
+
+    pub fn set_recording(&mut self, on: bool) {
+        self.recording = on;
     }
 
     /// Count a notification for the app it belongs to, unless that app is
@@ -668,6 +682,33 @@ impl DockState {
                 path: None,
                 pin_index: None,
                 glyph: Some(GLYPH_LAUNCHER.into()),
+                pixmap: None,
+                window_meta: Vec::new(),
+                open_with: None,
+                media: None,
+                unread: 0,
+            });
+        }
+
+        // While recording, a stop button beside the launcher: the bar has one
+        // too, but the bar may be what is being recorded around.
+        if self.recording {
+            items.push(DockItem {
+                kind: ItemKind::Recording,
+                key: "__recording".into(),
+                label: "Stop recording".into(),
+                icon: String::new(),
+                windows: Vec::new(),
+                pinned: false,
+                active: false,
+                urgent: false,
+                scratchpad: false,
+                active_window: None,
+                exec: STOP_RECORDING.into(),
+                actions: Vec::new(),
+                path: None,
+                pin_index: None,
+                glyph: Some(GLYPH_RECORDING.into()),
                 pixmap: None,
                 window_meta: Vec::new(),
                 open_with: None,
@@ -1905,5 +1946,25 @@ mod notice_tests {
         assert_eq!(a.badge(), Some(2));
         a.unread = 5;
         assert_eq!(a.badge(), Some(5));
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_button_sits_beside_the_launcher_only_while_recording() {
+        let cfg = crate::config::Config::default();
+        let mut s = DockState::new(Vec::new());
+        assert!(!s.items(&cfg).iter().any(|i| i.kind == ItemKind::Recording));
+
+        s.set_recording(true);
+        let items = s.items(&cfg);
+        let at = items.iter().position(|i| i.kind == ItemKind::Recording).unwrap();
+        assert_eq!(items[at - 1].kind, ItemKind::Launcher);
+        assert_eq!(items[at].exec, STOP_RECORDING);
+        // Not a pin: it cannot be dragged, and a restart does not remember it.
+        assert_eq!(items[at].pin_index, None);
     }
 }
