@@ -217,7 +217,7 @@ pub fn webapp_command(class: &str, url: &str) -> String {
 }
 
 /// Single-quote a value for a shell command line.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

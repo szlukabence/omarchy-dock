@@ -933,8 +933,8 @@ fn attach_clicks(
     slot.add_controller(left);
 
     // ── middle button ───────────────────────────────────────────────────────
-    // Only tray items use it, for the secondary action the application
-    // defines. Nothing else in the dock has a meaningful third gesture.
+    // A new window of an app, as in most docks; for a tray item, the
+    // secondary action its application defines.
     {
         let middle = gtk::GestureClick::new();
         middle.set_button(gdk::BUTTON_MIDDLE);
@@ -943,8 +943,14 @@ fn attach_clicks(
         let at = at.clone();
         middle.connect_released(move |gesture, _, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
-            let s = state.borrow();
-            let Some(item) = s.data.get(at.get()) else { return };
+            let index = at.get();
+            let Some(item) = state.borrow().data.get(index).cloned() else { return };
+            if let Some(cmd) = item.new_window_command() {
+                hide_previews(&state);
+                pulse(&state, index);
+                sink(MenuAction::Command(DockCommand::Exec(cmd)));
+                return;
+            }
             if item.kind != ItemKind::Tray {
                 return;
             }

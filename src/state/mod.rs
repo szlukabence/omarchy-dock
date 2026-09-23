@@ -136,6 +136,35 @@ impl DockItem {
     }
 
     /// Count shown as a badge; `None` below two windows.
+    /// What a middle-click runs: another window of this app, even when one is
+    /// already open.
+    ///
+    /// The entry's own "New Window" action when it has one (Chromium, Edge,
+    /// VS Code's "New Empty Window"), since launching some apps again only
+    /// raises the window they have. Otherwise the launch command — except for
+    /// a web app pinned by its window class, whose command is "launch or
+    /// focus" and so must be swapped for a plain launch.
+    pub fn new_window_command(&self) -> Option<String> {
+        if self.kind != ItemKind::App {
+            return None;
+        }
+        let action = self.actions.iter().find(|a| {
+            let id = a.id.to_ascii_lowercase().replace(['-', '_'], "");
+            id == "newwindow" || id == "newemptywindow"
+        });
+        if let Some(exec) = action.map(|a| crate::desktop::strip_field_codes(&a.exec)) {
+            if !exec.is_empty() {
+                return Some(exec);
+            }
+        }
+        if self.exec.contains("launch or focus webapp") {
+            if let Some((_, url)) = matcher::webapp_from_class(&self.key) {
+                return Some(format!("omarchy-launch-webapp {}", matcher::shell_quote(&url)));
+            }
+        }
+        (!self.exec.is_empty()).then(|| self.exec.clone())
+    }
+
     /// The number on the icon: unread notifications when there are any —
     /// they are what a badge is for — otherwise how many windows are open.
     pub fn badge(&self) -> Option<usize> {
@@ -1819,6 +1848,47 @@ mod notice_tests {
         assert_eq!(s.unread.get("Gmail"), None);
         // Mail arriving while you are looking at it is never unread.
         assert!(!s.note_notice(&items, &mail));
+    }
+
+    fn action(id: &str, exec: &str) -> crate::desktop::Action {
+        crate::desktop::Action { id: id.into(), name: id.into(), exec: exec.into() }
+    }
+
+    #[test]
+    fn middle_click_prefers_the_entrys_new_window_action() {
+        let mut chromium = app("chromium", "Chromium", "/usr/bin/chromium");
+        chromium.actions = vec![
+            action("new-private-window", "/usr/bin/chromium --incognito"),
+            action("new-window", "/usr/bin/chromium --new-window %U"),
+        ];
+        assert_eq!(chromium.new_window_command().as_deref(), Some("/usr/bin/chromium --new-window"));
+
+        let mut code = app("code", "Code", "code");
+        code.actions = vec![action("new-empty-window", "code --new-window %F")];
+        assert_eq!(code.new_window_command().as_deref(), Some("code --new-window"));
+    }
+
+    #[test]
+    fn middle_click_otherwise_launches_again() {
+        let gmail = app("Gmail", "Gmail", r#"omarchy-launch-webapp "https://gmail.com""#);
+        assert_eq!(gmail.new_window_command(), Some(gmail.exec.clone()));
+        // A class-pinned web app's click command only raises its window.
+        let pinned = app(
+            "chrome-mail.google.com__-Default",
+            "mail.google.com",
+            "omarchy launch or focus webapp 'chrome-mail.google.com__-Default' 'https://mail.google.com'",
+        );
+        assert_eq!(
+            pinned.new_window_command().as_deref(),
+            Some("omarchy-launch-webapp 'https://mail.google.com'")
+        );
+    }
+
+    #[test]
+    fn middle_click_means_nothing_on_furniture() {
+        let mut trash = app("__trash", "Trash", "");
+        trash.kind = ItemKind::Trash;
+        assert_eq!(trash.new_window_command(), None);
     }
 
     #[test]

@@ -112,7 +112,7 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 
 - **Pinned and running apps**, with running indicators, window-count badges and
   urgency. Click to focus, click again to cycle windows, click an idle icon to
-  launch.
+  launch, middle-click for a new window.
 - **Window previews**: rest the pointer on a running app and its windows appear
   as live thumbnails, each with its title and workspace — including windows on
   workspaces that are not on screen. Click one to jump straight to it.
