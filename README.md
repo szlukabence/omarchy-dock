@@ -274,7 +274,7 @@ Notable keys:
 | Key | Meaning |
 | --- | --- |
 | `dock.position` | `bottom` \| `top` \| `left` \| `right` |
-| `dock.icon_size`, `dock.spacing` | Sizing; spacing defaults to whatever keeps magnified icons from overlapping |
+| `dock.icon_size`, `dock.spacing` | Sizing; spacing defaults to whatever keeps magnified icons from overlapping. A dock too long for its screen shrinks to fit, down to 75% of this size |
 | `magnify.hover` | `fill` (default, the shell's own hover treatment) \| `scale` (dock magnification) \| `none` |
 | `magnify.zoom`, `.lift`, `.stiffness`, `.damping_ratio` | Hover feel for `scale`. Only the hovered icon scales |
 | `autohide.mode` | `never` \| `intelligent` \| `always` (default: `intelligent`) |

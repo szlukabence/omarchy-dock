@@ -15,7 +15,7 @@ use crate::hypr::events::HyprEvent;
 use crate::state::DockState;
 use crate::theme::shell::Shell;
 use crate::theme::{css, Palette};
-use crate::state::DockItem;
+use crate::state::{DockItem, ItemKind};
 use crate::ui::menu::MenuAction;
 use crate::ui::DockSurface;
 
@@ -348,7 +348,7 @@ impl App {
         // Recreating the layer surface flickers and drops the dock for a
         // frame, which is very visible after a drag-and-drop.
         let handled = self.docks.iter().all(|d| d.refresh(&items))
-            || self.docks.iter().all(|d| d.reorder(&items, &self.cfg));
+            || self.docks.iter().all(|d| d.reorder(&items));
 
         if handled {
             self.update_autohide();
@@ -567,15 +567,8 @@ fn effective(mut cfg: Config, shell: &crate::theme::shell::Shell) -> Config {
         // Guard against a theme with a nonsensical scale making the dock
         // unusable, and skip the work entirely at the overwhelmingly common 1.
         if f.is_finite() && (0.25..=4.0).contains(&f) && (f - 1.0).abs() >= 0.005 {
-            cfg.dock.icon_size *= f;
-            cfg.dock.padding_x *= f;
-            cfg.dock.padding_y *= f;
-            cfg.dock.spacing = cfg.dock.spacing.map(|s| s * f);
-            cfg.dock.radius *= f;
+            cfg.scale_geometry(f);
             cfg.dock.edge_offset = (cfg.dock.edge_offset as f64 * f).round() as i32;
-            // Magnification lift is a pixel distance too, so it has to track
-            // the icon size or a big dock barely rises and a small one leaps.
-            cfg.magnify.lift *= f;
         }
     }
 
@@ -731,16 +724,29 @@ fn build_docks(
         return vec![DockSurface::build(gtk_app, cfg, items, None, sink.clone())];
     }
 
+    // Each dock fits its own monitor: with a dock on every screen, a laptop
+    // panel and an external display have different room to offer.
+    let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
+    let fitted = |m: &gdk::Monitor| {
+        let vertical = cfg.dock.position.is_vertical();
+        // The same breathing room at the ends as between the dock and its
+        // screen edge, so a full dock still looks placed rather than jammed.
+        let margin = (cfg.dock.edge_offset.max(8)) as f64;
+        let room = crate::ui::dock::usable_span(Some(m), vertical) - 2.0 * margin;
+        fit_to(cfg, &kinds, room)
+    };
+
     match cfg.monitors.mode {
-        MonitorMode::All => {
-            all.iter().map(|m| DockSurface::build(gtk_app, cfg, items, Some(m), sink.clone())).collect()
-        }
+        MonitorMode::All => all
+            .iter()
+            .map(|m| DockSurface::build(gtk_app, &fitted(m), items, Some(m), sink.clone()))
+            .collect(),
         MonitorMode::Primary | MonitorMode::Focused => {
             let connectors: Vec<Option<String>> =
                 all.iter().map(|m| m.connector().map(|c| c.to_string())).collect();
             let chosen =
                 &all[choose_monitor(cfg.monitors.mode, &cfg.monitors.primary, focused, &connectors)];
-            vec![DockSurface::build(gtk_app, cfg, items, Some(chosen), sink.clone())]
+            vec![DockSurface::build(gtk_app, &fitted(chosen), items, Some(chosen), sink.clone())]
         }
     }
 }
@@ -754,6 +760,40 @@ fn sync_bar_workspaces(cfg: &Config) {
             tracing::warn!(error = %e, "cannot sync the bar's workspaces");
         }
     });
+}
+
+/// Smallest the dock shrinks to, as a fraction of its configured size. Below
+/// this, icons get too small to aim at comfortably.
+const MIN_FIT: f64 = 0.75;
+
+/// `cfg` with the dock shrunk just enough to fit `room` logical pixels along
+/// its axis — never below [`MIN_FIT`] of its size, and never grown.
+///
+/// Scaling is not quite proportional, since dividers keep their width, so the
+/// factor is refined against the real geometry a few times rather than
+/// computed once.
+fn fit_to(cfg: &Config, kinds: &[ItemKind], room: f64) -> Config {
+    let length = |c: &Config| {
+        let g = crate::ui::Geometry::compute(c, kinds);
+        if c.dock.position.is_vertical() { g.window_h } else { g.window_w }
+    };
+    let natural = length(cfg);
+    if room <= 0.0 || natural <= room {
+        return cfg.clone();
+    }
+    let mut f = 1.0;
+    let mut fitted = cfg.clone();
+    for _ in 0..4 {
+        let len = length(&fitted);
+        if len <= room || f <= MIN_FIT {
+            break;
+        }
+        f = (f * room / len).max(MIN_FIT);
+        fitted = cfg.clone();
+        fitted.scale_geometry(f);
+    }
+    tracing::info!(natural, room, factor = f, "shrinking the dock to fit");
+    fitted
 }
 
 /// Which of `connectors` a single dock goes on.
@@ -802,5 +842,63 @@ mod monitor_tests {
     fn primary_mode_ignores_focus() {
         assert_eq!(choose_monitor(Primary, "HDMI-A-1", Some("DP-2"), &outputs()), 2);
         assert_eq!(choose_monitor(Primary, "missing", Some("DP-2"), &outputs()), 0);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::{fit_to, MIN_FIT};
+    use crate::config::Config;
+    use crate::state::ItemKind;
+    use crate::ui::Geometry;
+
+    fn width(cfg: &Config, kinds: &[ItemKind]) -> f64 {
+        Geometry::compute(cfg, kinds).window_w
+    }
+
+    fn apps(n: usize) -> Vec<ItemKind> {
+        // A dock like this one: apps in groups with dividers between.
+        (0..n).map(|i| if i % 6 == 5 { ItemKind::Separator } else { ItemKind::App }).collect()
+    }
+
+    #[test]
+    fn a_dock_that_fits_is_left_alone() {
+        let cfg = Config::default();
+        let kinds = apps(8);
+        let fitted = fit_to(&cfg, &kinds, width(&cfg, &kinds) + 50.0);
+        assert_eq!(fitted.dock.icon_size, cfg.dock.icon_size);
+    }
+
+    #[test]
+    fn a_crowded_dock_shrinks_just_enough_to_fit() {
+        let cfg = Config::default();
+        let kinds = apps(30);
+        let room = width(&cfg, &kinds) * 0.9;
+        let fitted = fit_to(&cfg, &kinds, room);
+        let w = width(&fitted, &kinds);
+        assert!(w <= room + 0.5, "{w} > {room}");
+        // "Just enough": not shrunk far past what was needed.
+        assert!(w >= room * 0.97, "{w} is well under {room}");
+        assert!(fitted.dock.icon_size < cfg.dock.icon_size);
+    }
+
+    #[test]
+    fn it_never_shrinks_past_the_floor() {
+        let cfg = Config::default();
+        let kinds = apps(30);
+        let fitted = fit_to(&cfg, &kinds, 100.0);
+        let floor = cfg.dock.icon_size * MIN_FIT;
+        assert!((fitted.dock.icon_size - floor).abs() < 1e-9, "{}", fitted.dock.icon_size);
+    }
+
+    #[test]
+    fn spacing_and_padding_shrink_with_the_icons() {
+        let mut cfg = Config::default();
+        cfg.dock.spacing = Some(16.0);
+        let kinds = apps(30);
+        let fitted = fit_to(&cfg, &kinds, width(&cfg, &kinds) * 0.85);
+        let f = fitted.dock.icon_size / cfg.dock.icon_size;
+        assert!((fitted.dock.spacing.unwrap() - 16.0 * f).abs() < 1e-9);
+        assert!((fitted.dock.padding_x - cfg.dock.padding_x * f).abs() < 1e-9);
     }
 }

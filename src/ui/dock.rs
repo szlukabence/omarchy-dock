@@ -625,7 +625,11 @@ impl DockSurface {
     /// widgets. Rebuilding destroys and recreates the layer surface, which
     /// flickers and drops the dock for a frame — very visible when it happens
     /// on every drag-and-drop.
-    pub fn reorder(&self, items: &[DockItem], cfg: &Config) -> bool {
+    pub fn reorder(&self, items: &[DockItem]) -> bool {
+        // The geometry this surface was built with — fitted to its monitor —
+        // not the configured one, or a reorder would undo the fit.
+        let cfg = self.state.borrow().cfg.clone();
+        let cfg = &cfg;
         // The strip names a slot by index, which is about to mean another item.
         let previews = self.state.borrow().previews.clone();
         if let Some(p) = previews {
@@ -2510,7 +2514,7 @@ fn first_monitor() -> Option<gdk::Monitor> {
 
 /// Logical length of the area layer surfaces are placed in along the dock's
 /// axis: the monitor, less what panels reserve at either end of it.
-fn usable_span(monitor: Option<&gdk::Monitor>, vertical: bool) -> f64 {
+pub(crate) fn usable_span(monitor: Option<&gdk::Monitor>, vertical: bool) -> f64 {
     let Some(m) = monitor else { return if vertical { 1080.0 } else { 1920.0 } };
     let g = m.geometry();
     let full = if vertical { g.height() } else { g.width() } as f64;

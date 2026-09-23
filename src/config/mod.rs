@@ -579,6 +579,20 @@ impl Config {
 
     /// Slot pitch: icon plus gap. Derived from the zoom factor unless pinned,
     /// so a magnified icon never touches its neighbours.
+    /// Scale every size the dock's geometry is built from by `f`: icons,
+    /// padding, spacing, corner radius and magnification lift. Not the offset
+    /// from the screen edge, which callers decide about separately.
+    pub fn scale_geometry(&mut self, f: f64) {
+        self.dock.icon_size *= f;
+        self.dock.padding_x *= f;
+        self.dock.padding_y *= f;
+        self.dock.spacing = self.dock.spacing.map(|s| s * f);
+        self.dock.radius *= f;
+        // Magnification lift is a pixel distance too, so it has to track the
+        // icon size or a big dock barely rises and a small one leaps.
+        self.magnify.lift *= f;
+    }
+
     pub fn spacing(&self) -> f64 {
         self.dock.spacing.unwrap_or_else(|| {
             if self.magnify.enabled {
