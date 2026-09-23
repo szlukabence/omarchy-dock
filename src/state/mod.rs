@@ -137,6 +137,29 @@ impl DockItem {
         self.kind != ItemKind::Separator
     }
 
+    /// The name `omarchy-webapp-remove` knows this app by, if it is an Omarchy
+    /// web app: one whose launcher, in the user's applications folder, runs
+    /// Omarchy's web-app wrapper. That is the test the removal script applies
+    /// itself, and its name for the app is the launcher's file name.
+    pub fn omarchy_webapp(&self) -> Option<String> {
+        self.omarchy_webapp_in(&dirs::data_dir()?.join("applications"))
+    }
+
+    fn omarchy_webapp_in(&self, dir: &std::path::Path) -> Option<String> {
+        let wrapped = self.exec.contains("omarchy-launch-webapp")
+            || self.exec.contains("omarchy-webapp-handler");
+        if self.kind != ItemKind::App || !wrapped || self.key.contains('/') {
+            return None;
+        }
+        dir.join(format!("{}.desktop", self.key)).is_file().then(|| self.key.clone())
+    }
+
+    /// The command that removes this web app, as Omarchy's menu would.
+    pub fn remove_webapp_command(&self) -> Option<String> {
+        self.omarchy_webapp()
+            .map(|name| format!("omarchy-webapp-remove {}", matcher::shell_quote(&name)))
+    }
+
     /// What a middle-click runs: another window of this app, even when one is
     /// already open.
     ///
@@ -1930,6 +1953,30 @@ mod notice_tests {
             pinned.new_window_command().as_deref(),
             Some("omarchy-launch-webapp 'https://mail.google.com'")
         );
+    }
+
+    #[test]
+    fn only_an_omarchy_web_app_with_a_launcher_can_be_removed() {
+        let dir = std::env::temp_dir().join(format!("omarchy-dock-webapps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Gmail.desktop"), "").unwrap();
+        std::fs::write(dir.join("spotify.desktop"), "").unwrap();
+
+        let gmail = app("Gmail", "Gmail", r#"omarchy-launch-webapp "https://gmail.com""#);
+        assert_eq!(gmail.omarchy_webapp_in(&dir).as_deref(), Some("Gmail"));
+        // A regular app is never offered, launcher or not.
+        assert_eq!(app("spotify", "Spotify", "spotify").omarchy_webapp_in(&dir), None);
+        // A web app without a launcher (pinned from its window) has nothing
+        // for the script to remove.
+        let adhoc = app("Outlook", "Outlook", r#"omarchy-launch-webapp "https://outlook.com""#);
+        assert_eq!(adhoc.omarchy_webapp_in(&dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_removal_command_quotes_the_name() {
+        let q = matcher::shell_quote("Bob's App");
+        assert_eq!(format!("omarchy-webapp-remove {q}"), r#"omarchy-webapp-remove 'Bob'\''s App'"#);
     }
 
     #[test]

@@ -270,6 +270,9 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 
 .dock-menu-item:disabled {{ opacity: 0.35; }}
 
+/* A row armed to do something that cannot be undone. */
+.dock-menu-item.dock-menu-danger {{ color: @dock_urgent; }}
+
 .dock-menu-heading {{
   padding: {row_y}px {row_x}px 2px {row_x}px;
   font-size: {caption}px;

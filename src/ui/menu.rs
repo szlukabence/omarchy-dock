@@ -123,6 +123,38 @@ where
         }));
     }
 
+    // ── remove web app ──────────────────────────────────────────────────────
+    // Deletes the launcher and its icon, so it asks first: the first click
+    // arms the row, the second removes. In the menu itself rather than a
+    // dialog, because a dialog for one yes/no is heavier than the action.
+    if let Some(cmd) = item.remove_webapp_command() {
+        let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (key, pinned, label) = (item.key.clone(), item.pinned, item.label.clone());
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        let button = gtk::Button::new();
+        let text = gtk::Label::new(Some("Remove Web App…"));
+        text.set_xalign(0.0);
+        button.set_child(Some(&text));
+        button.add_css_class("dock-menu-item");
+        button.set_has_frame(false);
+        button.connect_clicked(move |b| {
+            if !armed.replace(true) {
+                text.set_text(&format!("Click again to remove {label}"));
+                b.add_css_class("dock-menu-danger");
+                return;
+            }
+            // Unpinned first, so the dock does not keep a tile for an app
+            // whose launcher is about to vanish.
+            if pinned {
+                cb(MenuAction::SetPinned { key: key.clone(), pinned: false });
+            }
+            cb(MenuAction::Command(DockCommand::Exec(cmd.clone())));
+            pop.popdown();
+        });
+        list.append(&button);
+    }
+
     // ── quit ────────────────────────────────────────────────────────────────
     if item.running() {
         let windows = item.windows.clone();
