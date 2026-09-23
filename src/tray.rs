@@ -68,7 +68,8 @@ impl TrayItem {
         }
     }
 
-    /// Whether the item is asking for attention, which the dock bounces for.
+    /// Whether the item is asking for attention, which the dock marks with its
+    /// urgent indicator.
     pub fn needs_attention(&self) -> bool {
         self.status == "NeedsAttention"
     }

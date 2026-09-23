@@ -29,14 +29,21 @@ pub type ActionSink = Rc<dyn Fn(MenuAction)>;
 /// Must match the Hyprland `layerrule` namespace.
 pub const LAYER_NAMESPACE: &str = "omarchy-dock";
 
-/// Bounce spring: deliberately underdamped so the icon overshoots and settles
-/// with a couple of visible swings.
-const BOUNCE_STIFFNESS: f64 = 220.0;
-/// ~0.28 of critical damping (2*sqrt(220) ~= 29.66), precomputed because
-/// `sqrt` is not const.
-const BOUNCE_DAMPING: f64 = 8.3;
-/// Initial upward velocity, in px/s, of a launch or urgency bounce.
-const BOUNCE_IMPULSE: f64 = -320.0;
+/// Launch feedback: the slot's hover fill breathes while the app starts.
+///
+/// Not a bounce. Omarchy's shell never overshoots — everything it animates is
+/// a short ease — so a springy macOS bounce was the one motion in the dock
+/// that did not belong. A fill that breathes on a sine ease-in-out is the
+/// shell's own vocabulary, and it still says "your click worked" during the
+/// seconds an Electron app takes to show a window.
+///
+/// One breath, peak to trough and back.
+const PULSE_PERIOD_S: f64 = 1.1;
+/// The fill's floor mid-breath: dim, but never gone, so it reads as one
+/// continuous state rather than blinking.
+const PULSE_FLOOR: f64 = 0.3;
+/// An app that never shows a window stops breathing after this long.
+const PULSE_TIMEOUT_S: f64 = 10.0;
 
 /// How far the hover plate extends past the icon box on each side. Small: the
 /// shell's own hover fill hugs its content rather than framing it.
@@ -96,13 +103,13 @@ struct State {
     /// another. The cell travels with the widget, so it stays true.
     slot_index: Vec<Rc<Cell<usize>>>,
     springs: Vec<Spring>,
-    /// Displacement away from the screen edge, in pixels, for launch bounce
-    /// and urgency. Separate from the zoom spring so a bounce can play while
-    /// the icon is magnified.
-    bounces: Vec<Spring>,
+    /// Launch feedback per slot, while it lasts, and the fill level it is
+    /// currently drawing.
+    pulses: Vec<Option<Pulse>>,
+    pulse_levels: Vec<f64>,
     /// Sideways displacement along the dock's long axis, used to open a gap at
     /// the drop position while dragging. Its own spring so it composes with
-    /// magnification and bounce rather than fighting them.
+    /// magnification rather than fighting it.
     shifts: Vec<Spring>,
     /// Rendered index the drop would insert before, while a drag is over the
     /// dock.
@@ -131,13 +138,11 @@ impl State {
         let (ax, ay) = self.geom.anchor;
         let (lx, ly) = self.geom.lift_dir;
 
-        let bounce = self.bounces[i].pos;
         let shift = self.shifts[i].pos;
         let zoom = self.cfg.magnify.zoom;
         // 0..1 as the spring travels from rest to full zoom.
         let p = if zoom > 1.0 { ((s.pos - 1.0) / (zoom - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
-        // Bounce rides on top of magnification lift, along the same axis.
-        let lift = self.cfg.magnify.lift * p + bounce;
+        let lift = self.cfg.magnify.lift * p;
         let k = s.pos as f32;
 
         // The gap opens along the dock's long axis, which is the axis the
@@ -160,7 +165,7 @@ impl State {
         self.fixed.set_child_transform(&self.items[i], Some(&self.transform_for(i)));
 
         // The plate follows the slot along the dock's axis so it travels with
-        // a drop gap, but it deliberately does not zoom, lift or bounce: it is
+        // a drop gap, but it deliberately does not zoom or lift: it is
         // the seat the icon sits in, not part of the icon.
         if let Some(plate) = self.plates.get(i) {
             let (px, py) = plate_origin(&self.geom, i);
@@ -173,7 +178,11 @@ impl State {
                     (py + dy) as f32,
                 ))),
             );
-            plate.set_opacity(self.hovers[i].pos.clamp(0.0, 1.0));
+            // A launch pulse takes over the fill while it runs, hovered or
+            // not: the pointer usually still rests on the icon it clicked.
+            let level =
+                if self.pulses[i].is_some() { self.pulse_levels[i] } else { self.hovers[i].pos };
+            plate.set_opacity(level.clamp(0.0, 1.0));
         }
     }
 
@@ -370,7 +379,8 @@ impl DockSurface {
         let state = Rc::new(RefCell::new(State {
             fixed: fixed.clone(),
             springs: vec![Spring::at(1.0); widget_count],
-            bounces: vec![Spring::at(0.0); widget_count],
+            pulses: vec![None; widget_count],
+            pulse_levels: vec![0.0; widget_count],
             shifts: vec![Spring::at(0.0); widget_count],
             drop_at: None,
             data: items.to_vec(),
@@ -432,7 +442,7 @@ impl DockSurface {
             state: state.clone(),
         };
 
-        // Clicks are wired after State exists so a launch can bounce its own
+        // Clicks are wired after State exists so a launch can pulse its own
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
             let at = &slot_index[i];
@@ -502,6 +512,18 @@ impl DockSurface {
             }
         }
 
+        // Test hook: a click cannot be synthesised either, so this starts the
+        // launch pulse on the given slot, as launching it would.
+        if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_PULSE") {
+            if let Ok(i) = n.parse::<usize>() {
+                let st = state.clone();
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || pulse(&st, i),
+                );
+            }
+        }
+
         surface.attach_peek(cfg);
 
         // A rebuild replaces the surface, and the new one never receives an
@@ -511,12 +533,6 @@ impl DockSurface {
         // actually is instead of waiting to be told.
         surface.sync_peek_to_pointer(cfg);
 
-        // Anything already demanding attention should bounce on appear.
-        for (i, item) in items.iter().enumerate() {
-            if item.urgent {
-                surface.bounce(i);
-            }
-        }
         surface
     }
 
@@ -614,7 +630,8 @@ impl DockSurface {
         s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
         s.rings = from.iter().map(|&i| s.rings[i].clone()).collect();
         s.springs = from.iter().map(|&i| s.springs[i]).collect();
-        s.bounces = from.iter().map(|&i| s.bounces[i]).collect();
+        s.pulses = from.iter().map(|&i| s.pulses[i]).collect();
+        s.pulse_levels = from.iter().map(|&i| s.pulse_levels[i]).collect();
         s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
         s.hovers = from.iter().map(|&i| s.hovers[i]).collect();
         s.slot_index = from.iter().map(|&i| s.slot_index[i].clone()).collect();
@@ -793,11 +810,6 @@ impl DockSurface {
     fn animate_slide(&self, cfg: &Config) {
         animate_slide_on(&self.slide, &self.window, cfg);
     }
-
-    /// Kick an item upwards; used for launches and urgency.
-    pub fn bounce(&self, i: usize) {
-        kick(&self.state, i);
-    }
 }
 
 /// Wire left-click (focus / cycle / launch) and right-click (menu).
@@ -875,7 +887,7 @@ fn attach_clicks(
                 }
                 ItemKind::Command => {
                     if !item.exec.is_empty() {
-                        kick(&state, index);
+                        pulse(&state, index);
                         sink(MenuAction::Command(DockCommand::Exec(item.exec.clone())));
                     }
                     return;
@@ -902,7 +914,7 @@ fn attach_clicks(
             let action = if item.windows.is_empty() {
                 // Nothing running: launch, unless this is a pure UI slot.
                 (!item.exec.is_empty()).then(|| {
-                    kick(&state, index);
+                    pulse(&state, index);
                     MenuAction::Command(DockCommand::Exec(item.exec.clone()))
                 })
             } else {
@@ -1553,7 +1565,7 @@ fn attach_file_drop(
                     if cmds.is_empty() {
                         return false;
                     }
-                    kick(&state, i);
+                    pulse(&state, i);
                     for cmd in cmds {
                         sink(MenuAction::Command(DockCommand::Exec(cmd)));
                     }
@@ -1696,15 +1708,34 @@ fn hold(
     }
 }
 
-/// Give an item an upward impulse and make sure the tick loop is running.
-fn kick(state: &Rc<RefCell<State>>, index: usize) {
+/// A launch pulse in progress.
+#[derive(Debug, Clone, Copy)]
+struct Pulse {
+    /// Frame time of its first frame; 0 until the tick loop reaches it.
+    start_us: i64,
+    /// Breathe until the item has a window, rather than for one breath.
+    until_window: bool,
+}
+
+/// The fill level `t` seconds into a pulse: full at the click, easing down to
+/// the floor and back once per period — a sine ease-in-out, like the shell's.
+fn pulse_level(t: f64) -> f64 {
+    let wave = (1.0 + (std::f64::consts::TAU * t / PULSE_PERIOD_S).cos()) / 2.0;
+    PULSE_FLOOR + (1.0 - PULSE_FLOOR) * wave
+}
+
+/// Start launch feedback on slot `index`.
+fn pulse(state: &Rc<RefCell<State>>, index: usize) {
     {
         let mut s = state.borrow_mut();
-        if index >= s.bounces.len() {
-            return;
+        let Some(item) = s.data.get(index) else { return };
+        // An app with nothing open waits for its window. Anything else — a
+        // command tile, files handed to an app already running — has no
+        // window to wait for, so it gets a single breath.
+        let until_window = item.kind == ItemKind::App && item.windows.is_empty();
+        if let Some(p) = s.pulses.get_mut(index) {
+            *p = Some(Pulse { start_us: 0, until_window });
         }
-        s.bounces[index].vel = BOUNCE_IMPULSE;
-        s.bounces[index].target = 0.0;
     }
     ensure_ticking(state);
 }
@@ -2439,11 +2470,37 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
         let cfg = s.cfg.clone();
         let mut moving = false;
         for i in 0..s.springs.len() {
+            if let Some(mut p) = s.pulses[i] {
+                if p.start_us == 0 {
+                    p.start_us = now;
+                }
+                let t = (now - p.start_us) as f64 / 1_000_000.0;
+                let over = t >= PULSE_TIMEOUT_S
+                    || if p.until_window {
+                        s.data.get(i).is_none_or(|d| !d.windows.is_empty())
+                    } else {
+                        t >= PULSE_PERIOD_S
+                    };
+                if over {
+                    // Hand the level to the hover spring, so the fill eases to
+                    // wherever hover wants it instead of snapping there.
+                    s.hovers[i].pos = s.pulse_levels[i];
+                    s.hovers[i].vel = 0.0;
+                    s.pulses[i] = None;
+                } else {
+                    s.pulse_levels[i] = pulse_level(t);
+                    s.pulses[i] = Some(p);
+                }
+                moving = true;
+            }
+
             let zoom_busy = !s.springs[i].settled();
-            let bounce_busy = !s.bounces[i].settled();
             let shift_busy = !s.shifts[i].settled();
             let hover_busy = !s.hovers[i].settled();
-            if !zoom_busy && !bounce_busy && !shift_busy && !hover_busy {
+            if !zoom_busy && !shift_busy && !hover_busy {
+                if s.pulses[i].is_some() {
+                    s.apply(i);
+                }
                 continue;
             }
 
@@ -2460,16 +2517,6 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                 s.springs[i].step_cfg(dt, &cfg);
                 if s.springs[i].settled() {
                     s.springs[i].settle();
-                } else {
-                    moving = true;
-                }
-            }
-            if bounce_busy {
-                // Softer and less damped than the zoom spring, so a launch
-                // reads as a bounce rather than a nudge.
-                s.bounces[i].step(dt, BOUNCE_STIFFNESS, BOUNCE_DAMPING);
-                if s.bounces[i].settled() {
-                    s.bounces[i].settle();
                 } else {
                     moving = true;
                 }
@@ -2494,4 +2541,32 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
             glib::ControlFlow::Break
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn a_pulse_starts_full_so_the_click_is_acknowledged_at_once() {
+        assert!(close(pulse_level(0.0), 1.0));
+    }
+
+    #[test]
+    fn a_pulse_dims_to_its_floor_mid_breath_and_comes_back() {
+        assert!(close(pulse_level(PULSE_PERIOD_S / 2.0), PULSE_FLOOR));
+        assert!(close(pulse_level(PULSE_PERIOD_S), 1.0));
+    }
+
+    #[test]
+    fn a_pulse_never_leaves_its_range() {
+        for k in 0..=1000 {
+            let level = pulse_level(k as f64 * PULSE_TIMEOUT_S / 1000.0);
+            assert!((PULSE_FLOOR - 1e-9..=1.0 + 1e-9).contains(&level), "{level}");
+        }
+    }
 }
