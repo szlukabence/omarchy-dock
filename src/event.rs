@@ -33,6 +33,9 @@ pub enum AppEvent {
     Hypr(HyprEvent),
     /// The current set of media players. Sent whole on every change.
     Media(Vec<crate::media::Player>),
+    /// How many downloads are in progress in the Downloads folder, sent when
+    /// that number changes.
+    Downloads(usize),
     /// A notification was sent, by whom. For unread badges.
     Notified(crate::notices::Notice),
     /// The current set of system-tray items. Sent whole on every change.

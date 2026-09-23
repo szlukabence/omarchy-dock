@@ -64,6 +64,18 @@ fn run(tx: Sender) -> Result<()> {
     if state_dir.exists() {
         debouncer.watch(&state_dir, RecursiveMode::NonRecursive)?;
     }
+    // Downloads, for the activity ring on its stack. A browser rewrites a
+    // download's file continuously, so only a change in how many are running
+    // is passed on — never every write.
+    let downloads_dir = dirs::download_dir().filter(|d| d.is_dir());
+    let mut downloads = 0;
+    if let Some(d) = &downloads_dir {
+        debouncer.watch(d, RecursiveMode::NonRecursive).ok();
+        downloads = crate::stacks::active_downloads(d);
+        if tx.send_blocking(AppEvent::Downloads(downloads)).is_err() {
+            return Ok(());
+        }
+    }
     if let Some(d) = &theme_dir {
         debouncer.watch(d, RecursiveMode::NonRecursive)?;
     }
@@ -140,6 +152,18 @@ fn run(tx: Sender) -> Result<()> {
             tracing::debug!("desktop entries changed");
             if tx.send_blocking(AppEvent::DesktopEntriesChanged).is_err() {
                 break;
+            }
+        }
+
+        if let Some(d) = &downloads_dir {
+            if paths.iter().any(|p| p.starts_with(d)) {
+                let now = crate::stacks::active_downloads(d);
+                if now != downloads {
+                    downloads = now;
+                    if tx.send_blocking(AppEvent::Downloads(now)).is_err() {
+                        break;
+                    }
+                }
             }
         }
 

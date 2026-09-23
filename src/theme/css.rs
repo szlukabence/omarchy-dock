@@ -159,7 +159,7 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 /* The dock's own furniture — launcher, folders, Trash — drawn as monochrome
    glyphs in the theme foreground, the way every bar widget is drawn. Only
    real application icons carry colour. */
-.dock-media-ring {{ color: @dock_accent; }}
+.dock-media-ring, .dock-download-ring {{ color: @dock_accent; }}
 
 .dock-glyph {{
   color: @dock_fg;

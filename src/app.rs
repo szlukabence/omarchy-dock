@@ -467,6 +467,21 @@ pub fn run() -> glib::ExitCode {
                         app.state.set_media(players);
                         app.sync(&gtk_app);
                     }
+                    AppEvent::Downloads(n) => {
+                        let finished = n < app.state.downloads();
+                        app.state.set_downloads(n);
+                        app.sync(&gtk_app);
+                        // A download landing gets one breath on its stack,
+                        // the same "done" the dock gives a launch.
+                        if finished {
+                            if let Some(dir) = dirs::download_dir() {
+                                let key = format!("__folder:{}", dir.display());
+                                for d in &app.docks {
+                                    d.pulse_key(&key);
+                                }
+                            }
+                        }
+                    }
                     AppEvent::Notified(notice) => {
                         if app.cfg.items.notification_badges {
                             let items = app.current_items();

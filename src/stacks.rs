@@ -19,6 +19,26 @@ pub struct StackEntry {
     pub modified: Option<SystemTime>,
 }
 
+/// Suffixes a browser gives a download until it completes: `.crdownload` for
+/// Chromium, Chrome, Edge and friends, `.part` for Firefox.
+const PARTIAL: [&str; 2] = ["crdownload", "part"];
+
+/// Whether `path` is a download still in progress.
+pub fn is_partial(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| PARTIAL.contains(&e))
+}
+
+/// How many downloads are in progress in `dir`.
+///
+/// Counted from the browsers' temporary files. How far along each one is,
+/// nobody says: the file grows, but its final size is known only to the
+/// browser.
+pub fn active_downloads(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().filter(|e| is_partial(&e.path())).count())
+        .unwrap_or(0)
+}
+
 /// The freedesktop trash directory holding trashed files themselves.
 ///
 /// Without a data directory there is no trash: the path then names nothing,
@@ -251,6 +271,21 @@ fn spawn(program: &str, args: &[&std::ffi::OsStr]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn downloads_in_progress_are_counted_by_their_browsers_suffix() {
+        let dir = std::env::temp_dir().join(format!("omarchy-dock-dl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["done.zip", "Unconfirmed 1234.crdownload", "video.mp4.part", "notes.txt"] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        assert_eq!(super::active_downloads(&dir), 2);
+        assert!(super::is_partial(std::path::Path::new("a.crdownload")));
+        assert!(!super::is_partial(std::path::Path::new("partial.zip")));
+        std::fs::remove_dir_all(&dir).ok();
+        // A folder that is not there has nothing downloading.
+        assert_eq!(super::active_downloads(&dir), 0);
+    }
+
     use super::*;
 
     #[test]

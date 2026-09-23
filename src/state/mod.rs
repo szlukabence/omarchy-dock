@@ -116,6 +116,8 @@ pub struct DockItem {
     /// Notifications this app has sent since one of its windows last had
     /// focus. Zero when badges are off.
     pub unread: usize,
+    /// For the Downloads stack, how many downloads are still in progress.
+    pub downloading: usize,
 }
 
 impl DockItem {
@@ -195,6 +197,9 @@ impl DockItem {
         if self.unread > 0 {
             return Some(self.unread);
         }
+        if self.downloading > 0 {
+            return Some(self.downloading);
+        }
         (self.windows.len() > 1).then_some(self.windows.len())
     }
 
@@ -260,6 +265,7 @@ fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
         open_with: None,
         media: None,
         unread: 0,
+        downloading: 0,
     }
 }
 
@@ -302,6 +308,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
         open_with: None,
         media: None,
         unread: 0,
+        downloading: 0,
     }
 }
 
@@ -500,6 +507,7 @@ fn separator() -> DockItem {
         open_with: None,
         media: None,
         unread: 0,
+        downloading: 0,
     }
 }
 
@@ -516,6 +524,8 @@ pub struct DockState {
     unread: HashMap<String, usize>,
     /// Whether Omarchy is screen-recording.
     recording: bool,
+    /// Downloads in progress in the Downloads folder.
+    downloads: usize,
 }
 
 impl DockState {
@@ -531,7 +541,16 @@ impl DockState {
             urgent: Vec::new(),
             unread: HashMap::new(),
             recording: false,
+            downloads: 0,
         }
+    }
+
+    pub fn downloads(&self) -> usize {
+        self.downloads
+    }
+
+    pub fn set_downloads(&mut self, n: usize) {
+        self.downloads = n;
     }
 
     pub fn set_recording(&mut self, on: bool) {
@@ -710,6 +729,7 @@ impl DockState {
                 open_with: None,
                 media: None,
                 unread: 0,
+                downloading: 0,
             });
         }
 
@@ -737,6 +757,7 @@ impl DockState {
                 open_with: None,
                 media: None,
                 unread: 0,
+                downloading: 0,
             });
         }
 
@@ -902,8 +923,11 @@ impl DockState {
             }
         }
 
+        let downloads_dir = dirs::download_dir();
         for folder in cfg.items.folders.iter().filter(|f| f.enabled) {
             let path = crate::config::expand_tilde(&folder.path);
+            let downloading =
+                if downloads_dir.as_ref() == Some(&path) { self.downloads } else { 0 };
             let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
             items.push(DockItem {
                 kind: ItemKind::Folder,
@@ -925,6 +949,7 @@ impl DockState {
                 open_with: None,
                 media: None,
                 unread: 0,
+                downloading,
                 path: Some(path),
             });
         }
@@ -953,6 +978,7 @@ impl DockState {
                 open_with: None,
                 media: None,
                 unread: 0,
+                downloading: 0,
             });
         }
 
@@ -1054,6 +1080,7 @@ impl DockState {
                     open_with: None,
                     media: None,
                     unread: 0,
+                    downloading: 0,
                 });
             }
         }
@@ -1088,6 +1115,7 @@ impl DockState {
                 open_with: None,
                 media: None,
                 unread: 0,
+                downloading: 0,
             });
         }
 
@@ -1147,6 +1175,7 @@ impl DockState {
             open_with: None,
             media: None,
             unread: 0,
+            downloading: 0,
         }
     }
 }
@@ -1242,6 +1271,7 @@ mod tests {
             open_with: None,
             media: None,
             unread: 0,
+            downloading: 0,
         }
     }
 
@@ -1740,6 +1770,7 @@ mod separator_key_tests {
             open_with: None,
             media: None,
             unread: 0,
+            downloading: 0,
         }
     }
 
@@ -1848,6 +1879,7 @@ mod notice_tests {
             open_with: None,
             media: None,
             unread: 0,
+            downloading: 0,
         }
     }
 

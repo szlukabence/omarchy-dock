@@ -77,6 +77,9 @@ struct State {
     /// Created for every app slot and shown only while a player belongs to
     /// it, so a track starting never needs new widgets.
     rings: Vec<Option<MediaRing>>,
+    /// Per-slot download spinner, for folder stacks: turns while the
+    /// Downloads folder has downloads in progress.
+    spinners: Vec<Option<Spinner>>,
     /// The hovered icon's name, drawn in the reserved band at the top of the
     /// surface. GTK's own tooltips follow the pointer, which puts the name
     /// below the icon and over the panel; a dock wants it above the icon.
@@ -251,6 +254,7 @@ impl DockSurface {
         let mut badges = Vec::with_capacity(items.len());
         let mut plates = Vec::with_capacity(items.len());
         let mut rings: Vec<Option<MediaRing>> = Vec::with_capacity(items.len());
+        let mut spinners: Vec<Option<Spinner>> = Vec::with_capacity(items.len());
 
         for (i, item) in items.iter().enumerate() {
             // Icon and badge share one widget so the badge tracks the icon as
@@ -286,6 +290,7 @@ impl DockSurface {
                 let (px, py) = plate_origin(&geom, i);
                 plates.push(hover_plate(&fixed, px, py, 0.0, 0.0));
                 rings.push(None);
+                spinners.push(None);
                 let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 dot.set_visible(false);
                 indicators.push(dot.upcast::<gtk::Widget>());
@@ -342,6 +347,13 @@ impl DockSurface {
             }
             rings.push(ring);
 
+            let spin = (item.kind == ItemKind::Folder).then(|| spinner(size));
+            if let Some(sp) = &spin {
+                slot.add_overlay(&sp.area);
+                sp.set(item.downloading > 0);
+            }
+            spinners.push(spin);
+
             let (x, y) = geom.slots[i];
             fixed.put(&slot, x, y);
             slots.push(slot.clone());
@@ -388,6 +400,7 @@ impl DockSurface {
             indicators,
             badges,
             rings,
+            spinners,
             tip_label: tip_label.clone(),
             tip_generation: 0,
             tooltip_delay: cfg.dock.tooltip_delay_ms,
@@ -579,6 +592,9 @@ impl DockSurface {
             if let Some(Some(ring)) = s.rings.get(i) {
                 ring.set(item.media.as_ref());
             }
+            if let Some(Some(sp)) = s.spinners.get(i) {
+                sp.set(item.downloading > 0);
+            }
             if let Some(dot) = s.indicators.get(i) {
                 dot.set_visible(item.shows_indicator());
                 // Toggle rather than add: classes persist across refreshes.
@@ -631,6 +647,7 @@ impl DockSurface {
         permute(&mut s.plates);
         s.badges = from.iter().map(|&i| s.badges[i].clone()).collect();
         s.rings = from.iter().map(|&i| s.rings[i].clone()).collect();
+        s.spinners = from.iter().map(|&i| s.spinners[i].clone()).collect();
         s.springs = from.iter().map(|&i| s.springs[i]).collect();
         s.pulses = from.iter().map(|&i| s.pulses[i]).collect();
         s.pulse_levels = from.iter().map(|&i| s.pulse_levels[i]).collect();
@@ -690,6 +707,14 @@ impl DockSurface {
         drop(s);
         ensure_ticking(&self.state);
         true
+    }
+
+    /// Give the item with `key` one breath of the launch pulse.
+    pub fn pulse_key(&self, key: &str) {
+        let at = self.state.borrow().data.iter().position(|d| d.key == key);
+        if let Some(i) = at {
+            pulse(&self.state, i);
+        }
     }
 
     /// Slide the surface off-screen, or back on.
@@ -1871,6 +1896,73 @@ fn media_ring(icon: i32) -> MediaRing {
         });
     }
     MediaRing { area, value }
+}
+
+/// A turning arc on the Downloads stack while something downloads.
+///
+/// Turning rather than filling, because no progress is knowable: a browser's
+/// partial file grows, but only the browser knows the size it will reach.
+/// It redraws only while shown, so an idle dock still does nothing per frame.
+#[derive(Clone)]
+struct Spinner {
+    area: gtk::DrawingArea,
+    tick: Rc<RefCell<Option<gtk::TickCallbackId>>>,
+}
+
+/// One turn of the spinner.
+const SPIN_PERIOD_S: f64 = 1.2;
+
+impl Spinner {
+    fn set(&self, active: bool) {
+        let mut tick = self.tick.borrow_mut();
+        if active && tick.is_none() {
+            self.area.set_visible(true);
+            *tick = Some(self.area.add_tick_callback(|a, _| {
+                a.queue_draw();
+                glib::ControlFlow::Continue
+            }));
+        } else if !active {
+            if let Some(id) = tick.take() {
+                id.remove();
+            }
+            self.area.set_visible(false);
+        }
+    }
+}
+
+fn spinner(icon: i32) -> Spinner {
+    let d = (icon as f64 * 0.36).round() as i32;
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("dock-download-ring");
+    area.set_size_request(d, d);
+    area.set_halign(gtk::Align::End);
+    area.set_valign(gtk::Align::End);
+    area.set_can_target(false);
+    area.set_visible(false);
+    area.set_draw_func(|a, cr, w, h| {
+        let t = a.frame_clock().map(|c| c.frame_time()).unwrap_or(0) as f64 / 1_000_000.0;
+        let (w, h) = (w as f64, h as f64);
+        let line = (w * 0.16).max(2.0);
+        let r = w.min(h) / 2.0 - line / 2.0;
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let c = a.color();
+        let (red, green, blue) = (c.red() as f64, c.green() as f64, c.blue() as f64);
+
+        // Drawn like the media ring, so the two read as one family.
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
+        cr.arc(cx, cy, r + line / 2.0, 0.0, std::f64::consts::TAU);
+        let _ = cr.fill();
+        cr.set_line_width(line);
+        cr.set_source_rgba(red, green, blue, 0.25);
+        cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+        let _ = cr.stroke();
+
+        let start = (t / SPIN_PERIOD_S).fract() * std::f64::consts::TAU;
+        cr.set_source_rgba(red, green, blue, 1.0);
+        cr.arc(cx, cy, r, start, start + std::f64::consts::TAU * 0.3);
+        let _ = cr.stroke();
+    });
+    Spinner { area, tick: Rc::new(RefCell::new(None)) }
 }
 
 /// The fill drawn behind a hovered slot, placed and hidden.

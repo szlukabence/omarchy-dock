@@ -126,6 +126,10 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 - **Remove web app**: an Omarchy web app's right-click menu can remove it,
   through Omarchy's own `omarchy-webapp-remove` — after a second click to
   confirm — and unpins it.
+- **Downloads**: while a browser is downloading into your Downloads folder,
+  its stack shows how many and a turning ring — turning rather than filling,
+  since browsers never say how big a download will be — and gives one breath
+  when a download lands.
 - **Stop recording**: while Omarchy is screen-recording, a red stop button
   sits beside the launcher. With `hide_while_recording` on, the dock is out
   of the way but reveals it when you reach for the screen edge.
