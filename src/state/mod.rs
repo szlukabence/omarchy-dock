@@ -13,6 +13,8 @@
 
 pub mod matcher;
 
+use std::collections::HashMap;
+
 use crate::desktop::Entry;
 use crate::hypr::model::{Client, Monitor, Workspace};
 use crate::hypr::Address;
@@ -109,6 +111,9 @@ pub struct DockItem {
     pub open_with: Option<String>,
     /// The media player belonging to this app, while one exists.
     pub media: Option<crate::media::Player>,
+    /// Notifications this app has sent since one of its windows last had
+    /// focus. Zero when badges are off.
+    pub unread: usize,
 }
 
 impl DockItem {
@@ -131,7 +136,12 @@ impl DockItem {
     }
 
     /// Count shown as a badge; `None` below two windows.
+    /// The number on the icon: unread notifications when there are any —
+    /// they are what a badge is for — otherwise how many windows are open.
     pub fn badge(&self) -> Option<usize> {
+        if self.unread > 0 {
+            return Some(self.unread);
+        }
         (self.windows.len() > 1).then_some(self.windows.len())
     }
 
@@ -196,6 +206,7 @@ fn tray_item(t: &crate::tray::TrayItem) -> DockItem {
         window_meta: Vec::new(),
         open_with: None,
         media: None,
+        unread: 0,
     }
 }
 
@@ -231,6 +242,7 @@ fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem 
         window_meta: Vec::new(),
         open_with: None,
         media: None,
+        unread: 0,
     }
 }
 
@@ -428,6 +440,7 @@ fn separator() -> DockItem {
         window_meta: Vec::new(),
         open_with: None,
         media: None,
+        unread: 0,
     }
 }
 
@@ -440,6 +453,8 @@ pub struct DockState {
     media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
+    /// Unread notification counts by item key.
+    unread: HashMap<String, usize>,
 }
 
 impl DockState {
@@ -453,7 +468,29 @@ impl DockState {
             media: Vec::new(),
             focused: None,
             urgent: Vec::new(),
+            unread: HashMap::new(),
         }
+    }
+
+    /// Count a notification for the app it belongs to, unless that app is
+    /// the one in front, where it has been seen as it arrived. Returns
+    /// whether anything changed.
+    pub fn note_notice(&mut self, items: &[DockItem], notice: &crate::notices::Notice) -> bool {
+        let Some(item) = notice_target(items, notice) else { return false };
+        if item.active {
+            return false;
+        }
+        *self.unread.entry(item.key.clone()).or_default() += 1;
+        true
+    }
+
+    /// Clear the count of every app with a focused window: looking at it is
+    /// what reading means here. Returns whether anything changed.
+    pub fn clear_seen(&mut self, items: &[DockItem]) -> bool {
+        let before = self.unread.len();
+        self.unread
+            .retain(|key, _| !items.iter().any(|i| i.active && &i.key == key));
+        self.unread.len() != before
     }
 
     pub fn matcher(&self) -> &Matcher {
@@ -599,6 +636,7 @@ impl DockState {
                 window_meta: Vec::new(),
                 open_with: None,
                 media: None,
+                unread: 0,
             });
         }
 
@@ -786,6 +824,7 @@ impl DockState {
                 window_meta: Vec::new(),
                 open_with: None,
                 media: None,
+                unread: 0,
                 path: Some(path),
             });
         }
@@ -813,6 +852,7 @@ impl DockState {
                 window_meta: Vec::new(),
                 open_with: None,
                 media: None,
+                unread: 0,
             });
         }
 
@@ -840,6 +880,11 @@ impl DockState {
             items.pop();
         }
 
+        if cfg.items.notification_badges {
+            for item in items.iter_mut().filter(|i| i.kind == ItemKind::App) {
+                item.unread = self.unread.get(&item.key).copied().unwrap_or(0);
+            }
+        }
         items
     }
 
@@ -908,6 +953,7 @@ impl DockState {
                     window_meta: Vec::new(),
                     open_with: None,
                     media: None,
+                    unread: 0,
                 });
             }
         }
@@ -941,6 +987,7 @@ impl DockState {
                 window_meta: Vec::new(),
                 open_with: None,
                 media: None,
+                unread: 0,
             });
         }
 
@@ -999,8 +1046,74 @@ impl DockState {
             window_meta,
             open_with: None,
             media: None,
+            unread: 0,
         }
     }
+}
+
+/// The dock icon a notification belongs to.
+///
+/// A browser notification belongs to the web app for its site when there is
+/// one — Gmail's mail badges Gmail, not Chromium — and otherwise to whatever
+/// the sender names: its desktop id, then its app name.
+pub fn notice_target<'a>(
+    items: &'a [DockItem],
+    notice: &crate::notices::Notice,
+) -> Option<&'a DockItem> {
+    let apps = || items.iter().filter(|i| i.kind == ItemKind::App);
+    if let Some(origin) = &notice.origin {
+        let host = |i: &DockItem| {
+            matcher::webapp_host(&i.exec).or_else(|| {
+                let (_, url) = matcher::webapp_from_class(&i.key)?;
+                matcher::webapp_host(&format!("--app={url}"))
+            })
+        };
+        // An exact site beats a loose one, whatever the dock order: with
+        // Facebook and Messenger both pinned, each keeps its own mail.
+        for exact in [true, false] {
+            let site = apps().find(|i| host(i).is_some_and(|h| same_site(&h, origin, exact)));
+            if site.is_some() {
+                return site;
+            }
+        }
+    }
+    let named = |name: &str| {
+        if name.is_empty() {
+            return None;
+        }
+        apps().find(|i| {
+            i.key.eq_ignore_ascii_case(name)
+                || i.key.rsplit('.').next().is_some_and(|k| k.eq_ignore_ascii_case(name))
+        })
+    };
+    named(&notice.desktop_entry)
+        .or_else(|| named(&notice.app_name))
+        .or_else(|| {
+            apps().find(|i| !notice.app_name.is_empty() && i.label.eq_ignore_ascii_case(&notice.app_name))
+        })
+}
+
+/// Whether two hosts are the same site as far as a user is concerned.
+///
+/// `www.` and `m.` never matter. Beyond `exact`, it is loose on purpose: a
+/// web app is opened at one address and notifies from another — Omarchy's
+/// Gmail opens `gmail.com` and mails from `mail.google.com` — so a subdomain
+/// matches its parent, and a few well-known redirects are spelled out.
+fn same_site(a: &str, b: &str, exact: bool) -> bool {
+    fn norm(h: &str) -> &str {
+        let h = h.trim_end_matches('.');
+        h.strip_prefix("www.").or_else(|| h.strip_prefix("m.")).unwrap_or(h)
+    }
+    const ALIASES: [(&str, &str); 2] =
+        [("gmail.com", "mail.google.com"), ("outlook.com", "outlook.live.com")];
+    let (a, b) = (norm(&a.to_ascii_lowercase()).to_string(), norm(&b.to_ascii_lowercase()).to_string());
+    if a == b {
+        return true;
+    }
+    !exact
+        && (a.ends_with(&format!(".{b}"))
+        || b.ends_with(&format!(".{a}"))
+            || ALIASES.iter().any(|(x, y)| (a == *x && b == *y) || (a == *y && b == *x)))
 }
 
 #[cfg(test)]
@@ -1028,6 +1141,7 @@ mod tests {
             window_meta: Vec::new(),
             open_with: None,
             media: None,
+            unread: 0,
         }
     }
 
@@ -1525,6 +1639,7 @@ mod separator_key_tests {
             window_meta: Vec::new(),
             open_with: None,
             media: None,
+            unread: 0,
         }
     }
 
@@ -1603,5 +1718,115 @@ mod separator_key_tests {
             from.iter().map(|&i| old[i].key.as_str()).collect();
         let want: Vec<&str> = new.iter().map(|i| i.key.as_str()).collect();
         assert_eq!(rebuilt, want);
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+    use crate::notices::Notice;
+
+    fn app(key: &str, label: &str, exec: &str) -> DockItem {
+        DockItem {
+            kind: ItemKind::App,
+            key: key.into(),
+            label: label.into(),
+            icon: String::new(),
+            windows: Vec::new(),
+            pinned: true,
+            active: false,
+            urgent: false,
+            scratchpad: false,
+            active_window: None,
+            exec: exec.into(),
+            actions: Vec::new(),
+            path: None,
+            pin_index: None,
+            glyph: None,
+            pixmap: None,
+            window_meta: Vec::new(),
+            open_with: None,
+            media: None,
+            unread: 0,
+        }
+    }
+
+    /// Roughly this machine's dock.
+    fn dock() -> Vec<DockItem> {
+        vec![
+            app("chromium", "Chromium", "chromium"),
+            app("spotify", "Spotify", "spotify"),
+            app("Gmail", "Gmail", r#"omarchy-launch-webapp "https://gmail.com""#),
+            app("Outlook", "Outlook", r#"omarchy-launch-webapp "https://outlook.live.com/mail/""#),
+            app("Facebook", "Facebook", r#"omarchy-launch-webapp "https://facebook.com""#),
+            app("Messenger", "Messenger", r#"omarchy-launch-webapp "https://messenger.com""#),
+        ]
+    }
+
+    fn from_site(host: &str) -> Notice {
+        Notice { app_name: "Chromium".into(), desktop_entry: "chromium".into(), origin: Some(host.into()) }
+    }
+
+    fn target(n: &Notice) -> Option<String> {
+        let items = dock();
+        notice_target(&items, n).map(|i| i.key.clone())
+    }
+
+    #[test]
+    fn a_site_notification_badges_its_web_app_not_the_browser() {
+        // Gmail opens gmail.com and mails from mail.google.com.
+        assert_eq!(target(&from_site("mail.google.com")).as_deref(), Some("Gmail"));
+        assert_eq!(target(&from_site("outlook.live.com")).as_deref(), Some("Outlook"));
+        assert_eq!(target(&from_site("www.messenger.com")).as_deref(), Some("Messenger"));
+    }
+
+    #[test]
+    fn neighbouring_sites_keep_their_own_badges() {
+        // Facebook sits before Messenger; neither may take the other's mail.
+        assert_eq!(target(&from_site("www.facebook.com")).as_deref(), Some("Facebook"));
+        assert_eq!(target(&from_site("messenger.com")).as_deref(), Some("Messenger"));
+    }
+
+    #[test]
+    fn a_site_with_no_web_app_badges_the_browser() {
+        assert_eq!(target(&from_site("github.com")).as_deref(), Some("chromium"));
+    }
+
+    #[test]
+    fn an_app_is_found_by_desktop_id_then_by_name() {
+        let n = Notice { app_name: "Spotify".into(), ..Default::default() };
+        assert_eq!(target(&n).as_deref(), Some("spotify"));
+        let n = Notice { app_name: "x".into(), desktop_entry: "spotify".into(), origin: None };
+        assert_eq!(target(&n).as_deref(), Some("spotify"));
+        let n = Notice { app_name: "sudo".into(), ..Default::default() };
+        assert_eq!(target(&n), None);
+    }
+
+    #[test]
+    fn counts_grow_until_the_app_is_looked_at() {
+        let mut s = DockState::new(Vec::new());
+        let mut items = dock();
+        let mail = from_site("mail.google.com");
+        assert!(s.note_notice(&items, &mail));
+        assert!(s.note_notice(&items, &mail));
+        assert_eq!(s.unread.get("Gmail"), Some(&2));
+
+        // Nothing is cleared while Gmail is in the background...
+        assert!(!s.clear_seen(&items));
+        // ...and focusing it reads them.
+        items[2].active = true;
+        assert!(s.clear_seen(&items));
+        assert_eq!(s.unread.get("Gmail"), None);
+        // Mail arriving while you are looking at it is never unread.
+        assert!(!s.note_notice(&items, &mail));
+    }
+
+    #[test]
+    fn an_unread_count_takes_the_badge_over_the_window_count() {
+        let mut a = app("code", "Code", "code");
+        a.windows = vec![Address("0x1".into()), Address("0x2".into())];
+        assert_eq!(a.badge(), Some(2));
+        a.unread = 5;
+        assert_eq!(a.badge(), Some(5));
     }
 }

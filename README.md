@@ -118,6 +118,9 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   workspaces that are not on screen. Click one to jump straight to it.
 - **Window menu**: right-click an app to see its windows by title and
   workspace, and move any of them to another workspace or the scratchpad.
+- **Notification badges**: an app's icon counts the notifications it sent
+  since you last looked at it — Gmail's mail on the Gmail web app, not on
+  Chromium. Focusing the app clears it.
 - **Media**: a progress ring on the app playing music, with play/pause, next
   and previous in its menu.
 - **File drops**: drop files on an app to open them with it, or on Trash to
@@ -272,6 +275,7 @@ Notable keys:
 | `workspaces.hide_bar_workspaces` | Hide the bar's own workspace numbers while the dock shows workspaces, and restore them in place when turned off (default: off) |
 | `workspaces.persistent` | Workspaces 1 to N always get a tile, as the bar always shows 1–5, so there is somewhere to drop a window even on an empty workspace (default: 5) |
 | `preview.enabled`, `.delay_ms`, `.width` | Window previews on hover (default: on, after 600 ms, 220 px tiles) |
+| `items.notification_badges` | Red badge with how many notifications an app sent since you last focused it; a web app's come from its site, so Gmail's mail badges Gmail (default: on) |
 | `items.media_controls` | Progress ring and play/pause/next on the icon of the app playing media (default: on) |
 | `tray.enabled`, `.show_passive` | Host the system tray in the dock (off by default — the bar already has one) |
 | `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |

@@ -295,6 +295,9 @@ pub struct Items {
     /// Show a progress ring and transport controls on the icon of the app
     /// that is playing media.
     pub media_controls: bool,
+    /// Badge an app with how many notifications it sent since you last had
+    /// one of its windows focused.
+    pub notification_badges: bool,
 }
 
 /// A pinned shell command, drawn as a glyph rather than an application icon.
@@ -415,6 +418,7 @@ impl Default for Items {
             show_running: true,
             glyph_ui: true,
             media_controls: true,
+            notification_badges: true,
         }
     }
 }

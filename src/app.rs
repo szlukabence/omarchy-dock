@@ -281,8 +281,16 @@ impl App {
     }
 
     /// The items currently rendered, in dock order.
-    fn current_items(&self) -> Vec<DockItem> {
-        self.state.items(&self.cfg)
+    ///
+    /// Also where unread counts are cleared: an app whose window has focus
+    /// has been looked at, and this runs after every change that could have
+    /// focused one.
+    fn current_items(&mut self) -> Vec<DockItem> {
+        let items = self.state.items(&self.cfg);
+        if self.state.clear_seen(&items) {
+            return self.state.items(&self.cfg);
+        }
+        items
     }
 
     /// Apply current state to the dock, refreshing in place when possible.
@@ -415,6 +423,14 @@ pub fn run() -> glib::ExitCode {
                     AppEvent::Media(players) => {
                         app.state.set_media(players);
                         app.sync(&gtk_app);
+                    }
+                    AppEvent::Notified(notice) => {
+                        if app.cfg.items.notification_badges {
+                            let items = app.current_items();
+                            if app.state.note_notice(&items, &notice) {
+                                app.sync(&gtk_app);
+                            }
+                        }
                     }
                     AppEvent::Tray(items) => {
                         app.state.set_tray(items);

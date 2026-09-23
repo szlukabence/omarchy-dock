@@ -139,13 +139,21 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   min-width: 10px;
 }}
 
+/* A window count is information; an unread count wants attention, so only it
+   takes the urgent colour — two red numbers could not be told apart. */
 .dock-badge {{
-  background-color: @dock_urgent;
-  color: {badge_fg};
+  /* Solid, not translucent: it sits on a colourful icon. */
+  background-color: mix(@dock_bg, @dock_fg, 0.3);
+  color: @dock_fg;
   border-radius: {badge_radius}px;
   font-size: {caption}px;
   font-weight: bold;
   padding: 0 {badge_pad}px;
+}}
+
+.dock-badge.unread {{
+  background-color: @dock_urgent;
+  color: {badge_fg};
 }}
 
 /* The dock's own furniture — launcher, folders, Trash — drawn as monochrome

@@ -331,6 +331,7 @@ impl DockSurface {
                 Some(n) => badge.set_text(&n.to_string()),
                 None => badge.set_visible(false),
             }
+            set_class(&badge, "unread", item.unread > 0);
             slot.add_overlay(&badge);
             badges.push(badge);
 
@@ -585,6 +586,7 @@ impl DockSurface {
                 set_class(dot, "active", item.active);
             }
             if let Some(badge) = s.badges.get(i) {
+                set_class(badge, "unread", item.unread > 0);
                 match item.badge() {
                     Some(n) => {
                         badge.set_text(&n.to_string());

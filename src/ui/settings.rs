@@ -313,6 +313,9 @@ fn build_window() -> gtk::Window {
     // ── items ───────────────────────────────────────────────────────────────
     list.append(&heading("Items"));
 
+    list.append(&toggle("Notification badges", cfg.items.notification_badges, |v| {
+        edit(move |c| c.items.notification_badges = v)
+    }));
     list.append(&toggle("Show running apps", cfg.items.show_running, |v| {
         edit(move |c| c.items.show_running = v)
     }));

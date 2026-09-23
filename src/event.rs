@@ -33,6 +33,8 @@ pub enum AppEvent {
     Hypr(HyprEvent),
     /// The current set of media players. Sent whole on every change.
     Media(Vec<crate::media::Player>),
+    /// A notification was sent, by whom. For unread badges.
+    Notified(crate::notices::Notice),
     /// The current set of system-tray items. Sent whole on every change.
     Tray(Vec<crate::tray::TrayItem>),
     /// A command from `omarchy-dockctl`.

@@ -102,6 +102,17 @@ pub fn spawn(tx: Sender, tray: bool, media: bool) -> std::io::Result<Handles> {
                 });
             }
 
+            // Always watched: whether badges show is a live setting, and the
+            // watcher costs nothing while nobody sends a notification.
+            {
+                let notices_tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::notices::serve(notices_tx).await {
+                        tracing::warn!(error = %e, "notification badges unavailable");
+                    }
+                });
+            }
+
             if tray {
                 let tray_tx = tx.clone();
                 tokio::spawn(async move {

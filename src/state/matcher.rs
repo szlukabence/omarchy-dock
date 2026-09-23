@@ -221,6 +221,15 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// The host of the site a web-app `Exec=` line opens, lowercased.
+pub fn webapp_host(exec: &str) -> Option<String> {
+    let url = webapp_url(exec)?;
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(&url);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = host_of(authority).to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
 /// Extract the web-app URL from an `Exec=` line, covering both Omarchy's
 /// wrapper and a direct `--app=` invocation.
 fn webapp_url(exec: &str) -> Option<String> {
