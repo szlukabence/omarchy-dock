@@ -144,7 +144,8 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   then only a trashed item goes — one with the `.trashinfo` record every trash
   keeps — and never through a `Trash`, `files` or `info` that is a symlink.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
-  tile to switch; drop an app icon on one to send that window there.
+  tile to switch, or scroll over the strip to step through them; drop an app
+  icon on one to send that window there.
 - **Command tiles** — a glyph, a label and a shell command, exactly how Omarchy
   menu rows are defined, so anything reachable from `omarchy` can be a tile.
 - **The system tray**, hosted in the dock instead of the bar if you prefer.

@@ -469,6 +469,7 @@ impl DockSurface {
         }
         attach_drop(&fixed, &state, &sink, cfg);
         attach_file_drop(&fixed, &state, &sink, &slide, &window, cfg);
+        attach_workspace_scroll(&fixed, &state, &sink);
         if cfg.preview.enabled {
             let previews = Previews::new(app, monitor, &state, &sink, &slide, &window, cfg);
             state.borrow_mut().previews = Some(previews);
@@ -1635,6 +1636,68 @@ fn attach_file_drop(
     fixed.add_controller(target);
 }
 
+/// How far a touchpad must scroll, in pixels, to move one workspace. A wheel
+/// moves one per notch; a touchpad reports a stream of small deltas, and
+/// taking each as a step would fling through every workspace in one swipe.
+const SCROLL_STEP_PX: f64 = 40.0;
+
+/// The workspace `step` tiles away from the current one, wrapping around, as
+/// Omarchy's own SUPER + scroll does. `names` are the strip's workspaces in
+/// order, `current` the index of the one in front (if it is on the strip).
+fn scrolled_workspace(names: &[String], current: Option<usize>, step: i32) -> Option<String> {
+    if names.is_empty() || step == 0 {
+        return None;
+    }
+    let n = names.len() as i32;
+    let from = match current {
+        Some(i) => i as i32,
+        // Somewhere off the strip: stepping forward starts at the first tile,
+        // stepping back at the last.
+        None if step > 0 => -1,
+        None => n,
+    };
+    Some(names[(from + step).rem_euclid(n) as usize].clone())
+}
+
+/// Scrolling over the workspace strip switches workspace: down for the next,
+/// up for the previous, the direction Omarchy's SUPER + scroll uses.
+fn attach_workspace_scroll(fixed: &gtk::Fixed, state: &Rc<RefCell<State>>, sink: &ActionSink) {
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    let pending = Rc::new(Cell::new(0.0_f64));
+    let state = state.clone();
+    let sink = sink.clone();
+    scroll.connect_scroll(move |c, _, dy| {
+        let (names, current) = {
+            let s = state.borrow();
+            // Only over the strip itself; elsewhere a scroll means nothing.
+            let on_strip = s.hovered.and_then(|i| s.data.get(i)).is_some_and(|d| {
+                matches!(d.kind, ItemKind::Workspace | ItemKind::Scratchpad)
+            });
+            if !on_strip {
+                pending.set(0.0);
+                return glib::Propagation::Proceed;
+            }
+            let tiles: Vec<&DockItem> =
+                s.data.iter().filter(|d| d.kind == ItemKind::Workspace).collect();
+            let names: Vec<String> = tiles
+                .iter()
+                .filter_map(|d| crate::state::workspace_of(&d.key).map(str::to_string))
+                .collect();
+            (names, tiles.iter().position(|d| d.active))
+        };
+
+        let per_step = if c.unit() == gdk::ScrollUnit::Wheel { 1.0 } else { SCROLL_STEP_PX };
+        let total = pending.get() + dy;
+        let steps = (total / per_step).trunc();
+        pending.set(total - steps * per_step);
+        if let Some(name) = scrolled_workspace(&names, current, steps as i32) {
+            sink(MenuAction::Command(DockCommand::FocusWorkspace(name)));
+        }
+        glib::Propagation::Stop
+    });
+    fixed.add_controller(scroll);
+}
+
 /// Which side of an icon a popover should open on, given the dock's edge.
 fn popover_side(cfg: &Config) -> gtk::PositionType {
     match cfg.dock.position {
@@ -2664,6 +2727,35 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    fn ws(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn scrolling_steps_through_the_strip_and_wraps() {
+        let names = ws(&["1", "2", "3", "4", "5"]);
+        assert_eq!(scrolled_workspace(&names, Some(1), 1).as_deref(), Some("3"));
+        assert_eq!(scrolled_workspace(&names, Some(1), -1).as_deref(), Some("1"));
+        assert_eq!(scrolled_workspace(&names, Some(4), 1).as_deref(), Some("1"));
+        assert_eq!(scrolled_workspace(&names, Some(0), -1).as_deref(), Some("5"));
+        // A fast flick moves several.
+        assert_eq!(scrolled_workspace(&names, Some(0), 2).as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn scrolling_from_off_the_strip_starts_at_an_end() {
+        // The scratchpad, or a workspace past the fixed row, is in front.
+        let names = ws(&["1", "2", "3"]);
+        assert_eq!(scrolled_workspace(&names, None, 1).as_deref(), Some("1"));
+        assert_eq!(scrolled_workspace(&names, None, -1).as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn less_than_a_step_does_nothing() {
+        assert_eq!(scrolled_workspace(&ws(&["1", "2"]), Some(0), 0), None);
+        assert_eq!(scrolled_workspace(&[], Some(0), 1), None);
     }
 
     #[test]
