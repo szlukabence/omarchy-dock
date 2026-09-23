@@ -366,6 +366,9 @@ cargo test
 cargo clippy --all-targets
 ```
 
+CI runs clippy (warnings are errors) and the tests on Arch for every push to
+`master` and every pull request; see `.github/workflows/ci.yml`.
+
 `cargo build` alone does not change what runs if you installed the package —
 rebuild it with `cd packaging/local && makepkg -f` and reinstall.
 
