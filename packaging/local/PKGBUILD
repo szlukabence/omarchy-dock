@@ -13,6 +13,8 @@ pkgname=omarchy-dock
 _root="$(cd "$startdir/../.." && pwd)"
 pkgver=1.2.1
 pkgrel=1
+# The exact Rust release to build with, matching rust-toolchain.toml.
+_rustver=1.98.1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
 arch=('x86_64' 'aarch64')
 url="https://github.com/szlukabence/omarchy-dock"
@@ -37,7 +39,7 @@ sha256sums=()
 
 build() {
   cd "$_root"
-  export RUSTUP_TOOLCHAIN=stable
+  export RUSTUP_TOOLCHAIN=$_rustver
   export CARGO_TARGET_DIR="$_root/target"
   # The magnification spike is a development artefact and is not shipped.
   cargo build --release --bin omarchy-dock --bin omarchy-dockctl

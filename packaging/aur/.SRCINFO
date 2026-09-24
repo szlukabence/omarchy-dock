@@ -1,7 +1,7 @@
 pkgbase = omarchy-dock
 	pkgdesc = A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4
 	pkgver = 1.2.1
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/szlukabence/omarchy-dock
 	arch = x86_64
 	arch = aarch64

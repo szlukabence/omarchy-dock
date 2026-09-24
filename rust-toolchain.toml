@@ -1,2 +1,5 @@
+# One exact release, not a channel: `stable` moves, so the same commit could
+# later be built by a different compiler. The package recipes pin the same
+# version (`_rustver` in packaging/*/PKGBUILD); change them together.
 [toolchain]
-channel = "stable"
+channel = "1.98.1"
