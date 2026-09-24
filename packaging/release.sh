@@ -39,7 +39,18 @@ if (( mismatch )); then
   exit 1
 fi
 
-export RUSTUP_TOOLCHAIN=stable
+# The compiler is pinned like the source: the release is built by exactly the
+# Rust release rust-toolchain.toml names, or not at all.
+rustver="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+if [[ $(sed -n 's/^_rustver=//p' packaging/local/PKGBUILD) != "$rustver" ]]; then
+  echo "error: packaging/local/PKGBUILD and rust-toolchain.toml name different Rust releases" >&2
+  exit 1
+fi
+export RUSTUP_TOOLCHAIN="$rustver"
+if [[ $(rustc --version) != "rustc $rustver "* ]]; then
+  echo "error: this is $(rustc --version), the release needs Rust $rustver" >&2
+  exit 1
+fi
 cargo test --locked --release --bin omarchy-dock --bin omarchy-dockctl
 
 # The package is built by the same PKGBUILD that installs a checkout locally,

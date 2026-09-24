@@ -25,11 +25,15 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed git rust gtk4 gtk4-layer-shell
+        run: pacman -Syu --noconfirm --needed git rustup gtk4 gtk4-layer-shell
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+
+      # The exact Rust release rust-toolchain.toml pins, never whatever is current.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)" --profile minimal --component clippy
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings

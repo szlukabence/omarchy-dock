@@ -21,17 +21,21 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed git rust gtk4 gtk4-layer-shell github-cli
+        run: pacman -Syu --noconfirm --needed git rustup gtk4 gtk4-layer-shell github-cli
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       # makepkg refuses to run as root, which is what the container runs as.
+      # The toolchain is installed for that user: the exact Rust release
+      # rust-toolchain.toml pins, never whatever is current.
       - name: Build
         run: |
           useradd --create-home builder
           chown -R builder "$GITHUB_WORKSPACE"
+          rustver="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+          runuser -u builder -- env HOME=/home/builder rustup toolchain install "$rustver" --profile minimal
           runuser -u builder -- env HOME=/home/builder packaging/release.sh "$GITHUB_REF_NAME"
 
       - name: Publish
