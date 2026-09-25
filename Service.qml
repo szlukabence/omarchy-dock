@@ -27,7 +27,7 @@ Item {
       "if ! command -v omarchy-dock >/dev/null 2>&1; then " +
         "omarchy notification send --app-name Dock -u critical " +
         "'Dock is not installed' " +
-        "'This plugin is only the supervisor. Get the package from github.com/szlukabence/omarchy-dock/releases, or build it: cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh'; " +
+        "'This plugin is only the supervisor. Install it as described at github.com/szlukabence/omarchy-dock#install (the package is checked against a SHA-256), or build it: cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh'; " +
         "exit 0; " +
       "fi; " +
       "pgrep -x omarchy-dock >/dev/null || setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"]

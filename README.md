@@ -13,19 +13,23 @@ the menus — rather than being a dock that merely runs on the same desktop.
 
 ```bash
 curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.1/omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst
-sudo pacman -U omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst
+echo "f02bc920d4c3f6130a7b28850bf8657cefe143117d7aa4ba2dbdd5fb17c6557c  omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst" | sha256sum -c - &&
+  sudo pacman -U omarchy-dock-1.2.1-1-x86_64.pkg.tar.zst
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
 omarchy-dockctl install
 ```
 
-The first two lines install the dock as an ordinary pacman package from the
-[latest release](https://github.com/szlukabence/omarchy-dock/releases/latest) —
-prebuilt, nothing to compile. The third adds the Omarchy plugin that starts and
-stops it; the fourth adds the theme hook and menu entries.
+The first lines install the dock as an ordinary pacman package from the
+[v1.2.1 release](https://github.com/szlukabence/omarchy-dock/releases/tag/v1.2.1) —
+prebuilt, nothing to compile. The next adds the Omarchy plugin that starts and
+stops it; the last adds the theme hook and menu entries.
 
-Download first, then install the file: `pacman -U <url>` does not work here.
-Arch's default `pacman.conf` requires a signature for packages fetched from a
-URL, but not for local files, and the release is not signed.
+The release is not signed, so the package is checked against the SHA-256 written
+above before pacman sees it. That checksum is part of this repository, so it is
+reviewed along with the code: if the file on the release is ever replaced,
+`sha256sum -c` reports `FAILED` and nothing is installed. Download first, then
+install the file: `pacman -U <url>` does not work here, because Arch's default
+`pacman.conf` requires a signature for packages fetched from a URL.
 
 ### Building it yourself
 
@@ -52,9 +56,9 @@ rather than failing with "command not found".
 
 ### AUR
 
-Not yet — AUR registration is closed. `packaging/aur/` holds both packages ready
-to publish: `PKGBUILD` builds from the git tag, and `PKGBUILD-bin` repackages the
-release tarball. Once they are up, installing becomes `omarchy pkg aur add
+Not yet — AUR registration is closed. `packaging/` holds both packages ready
+to publish: `aur/PKGBUILD` builds from a pinned, checksummed commit, and
+`aur-bin/PKGBUILD` repackages the release tarball, checked against its SHA-256. Once they are up, installing becomes `omarchy pkg aur add
 omarchy-dock-bin`.
 
 ### Releasing
@@ -65,7 +69,8 @@ cd packaging/aur && makepkg -f          # builds from the pushed tag, runs the t
 
 Attach the resulting `.pkg.tar.zst`, a tarball of the two binaries plus README
 and LICENSE, and a `SHA256SUMS` to a GitHub release for the tag; then update the
-version in the install lines above and the checksum in `PKGBUILD-bin`.
+version and the package's checksum in the install lines above, and the tarball's
+checksum in `aur-bin/PKGBUILD`.
 
 ### Removal
 
