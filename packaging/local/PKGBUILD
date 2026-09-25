@@ -42,7 +42,7 @@ build() {
   export RUSTUP_TOOLCHAIN=$_rustver
   export CARGO_TARGET_DIR="$_root/target"
   # The magnification spike is a development artefact and is not shipped.
-  cargo build --release --bin omarchy-dock --bin omarchy-dockctl
+  cargo build --locked --release --bin omarchy-dock --bin omarchy-dockctl
 }
 
 package() {

@@ -748,6 +748,15 @@ mod tests {
     }
 
     #[test]
+    fn shell_json_keeps_its_key_order() {
+        // shell.json is the user's file; enabling the plugin must add one
+        // entry, not re-sort every object in it.
+        let text = r#"{"bar":{"layout":{"center":[{"id":"omarchy.clock","format":"HH:mm"}]}},"plugins":[]}"#;
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(serde_json::to_string(&json).unwrap(), text);
+    }
+
+    #[test]
     fn the_dock_removes_its_own_plugin_directory() {
         let (dir, copies) = scratch("own");
         write_plugin_files(&dir, &copies).unwrap();

@@ -138,9 +138,10 @@ ever in response to an explicit action:
 
 `uninstall` removes all of it, except what is no longer as the dock wrote it.
 An older, pre-namespace `plugins/omarchy-dock/` is only disabled, never deleted:
-nothing proves what is in it is the dock's. Nothing is written on start, on poll, or on
-open. There is no `sudo` anywhere, and no network access. `/tmp` is read once —
-Omarchy's own screen-recording marker — and never written.
+nothing proves what is in it is the dock's. Nothing is written on start, on
+poll, or on open. The dock itself never runs `sudo` — the only privileged step
+is the `pacman` install you run — and it makes no network requests. `/tmp` is
+read once — Omarchy's own screen-recording marker — and never written.
 
 ## Looking like Omarchy
 

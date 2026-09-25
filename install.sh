@@ -33,9 +33,10 @@ done
 echo "==> Building omarchy-dock (this compiles a GTK4 Rust project; give it a minute)"
 cd "$root/packaging/local"
 
-# -si builds and installs. The pacman step asks for your password; that is the
-# only privileged thing here.
-makepkg -si --noconfirm
+# -si builds and installs. The pacman step shows what it is about to install and
+# asks you to confirm it, then for your password; that is the only privileged
+# thing here.
+makepkg -si
 
 command -v omarchy-dock >/dev/null 2>&1 ||
   die "the package installed but omarchy-dock is not on PATH.
