@@ -40,21 +40,25 @@ pub enum DockCommand {
 
 pub type CommandSender = tokio::sync::mpsc::Sender<DockCommand>;
 
-/// Both handles the UI needs to drive the worker.
+/// The handles the UI needs to drive the worker.
 #[derive(Clone)]
 pub struct Handles {
     pub snapshot: SnapshotRequest,
     pub commands: CommandSender,
+    /// Whether notification badges are on, which is whether notifications
+    /// are watched at all.
+    pub badges: tokio::sync::watch::Sender<bool>,
 }
 
 /// Start the worker. The thread owns its runtime and runs until process exit.
-pub fn spawn(tx: Sender, tray: bool, media: bool) -> std::io::Result<Handles> {
+pub fn spawn(tx: Sender, tray: bool, media: bool, badges: bool) -> std::io::Result<Handles> {
     // Capacity 1: requests are "please resync", so a queued one is as good as
     // ten. `try_send` failing on a full channel is the desired coalescing.
     let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<()>(1);
     // Commands are user actions; a small queue absorbs fast clicking without
     // ever dropping one silently.
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<DockCommand>(32);
+    let (badges_tx, badges_rx) = tokio::sync::watch::channel(badges);
 
     std::thread::Builder::new().name("omarchy-dock-async".into()).spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -102,12 +106,12 @@ pub fn spawn(tx: Sender, tray: bool, media: bool) -> std::io::Result<Handles> {
                 });
             }
 
-            // Always watched: whether badges show is a live setting, and the
-            // watcher costs nothing while nobody sends a notification.
+            // Notifications are watched only while badges are on; the
+            // setting is live, so the watcher starts and stops with it.
             {
                 let notices_tx = tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = crate::notices::serve(notices_tx).await {
+                    if let Err(e) = crate::notices::serve(notices_tx, badges_rx).await {
                         tracing::warn!(error = %e, "notification badges unavailable");
                     }
                 });
@@ -142,7 +146,7 @@ pub fn spawn(tx: Sender, tray: bool, media: bool) -> std::io::Result<Handles> {
         });
     })?;
 
-    Ok(Handles { snapshot: req_tx, commands: cmd_tx })
+    Ok(Handles { snapshot: req_tx, commands: cmd_tx, badges: badges_tx })
 }
 
 async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {

@@ -7,6 +7,10 @@
 //! only who sent each one: the app's name, its desktop id, and for a browser
 //! the site it came from. The text of a notification is never kept.
 //!
+//! It watches only while badges are on (`items.notification_badges`, off by
+//! default): turning them off drops the bus connection, and with it the
+//! monitor.
+//!
 //! The shell's own history was the other candidate, but it holds only the
 //! last few notifications that left the screen and has no notion of "read",
 //! so it cannot answer "how many has Gmail sent since I last looked".
@@ -103,8 +107,42 @@ fn notice(
     Some(n)
 }
 
-/// Watch for notifications until the process exits.
-pub async fn serve(tx: Sender) -> Result<()> {
+/// Watch for notifications while `enabled` says badges are on, until the
+/// process exits.
+pub async fn serve(tx: Sender, mut enabled: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+    loop {
+        // Wait for badges to be turned on. A closed channel means the UI is
+        // gone, and so is anyone to show a badge to.
+        while !*enabled.borrow_and_update() {
+            if enabled.changed().await.is_err() {
+                return Ok(());
+            }
+        }
+        tracing::info!("watching notifications for unread badges");
+        tokio::select! {
+            done = watch(&tx) => return done,
+            () = turned_off(&mut enabled) => {
+                // Leaving `watch` drops its connection, which ends the monitor.
+                tracing::info!("notification badges off; stopped watching notifications");
+            }
+        }
+    }
+}
+
+/// Resolves once `enabled` goes false; never, if its sender is dropped.
+async fn turned_off(enabled: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if enabled.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+        if !*enabled.borrow_and_update() {
+            return;
+        }
+    }
+}
+
+/// Monitor `Notify` calls on a connection of its own until `tx` closes.
+async fn watch(tx: &Sender) -> Result<()> {
     let conn = zbus::Connection::session().await.context("connecting to the session bus")?;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::MethodCall)
@@ -181,6 +219,23 @@ mod tests {
     fn a_first_line_that_looks_like_a_host_means_nothing_from_a_non_browser() {
         let n = notice("Spotify".into(), 0, "feat.artist\nsong", &hints(&[])).unwrap();
         assert_eq!(n.origin, None);
+    }
+
+    #[tokio::test]
+    async fn watching_stops_when_badges_are_turned_off() {
+        let (tx, mut rx) = tokio::sync::watch::channel(true);
+        let off = tokio::spawn(async move { turned_off(&mut rx).await });
+        // Still on, even if the setting is saved again: keep watching.
+        tx.send_replace(true);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!off.is_finished());
+        tx.send_replace(false);
+        tokio::time::timeout(std::time::Duration::from_secs(1), off).await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn badges_are_off_unless_asked_for() {
+        assert!(!crate::config::Config::default().items.notification_badges);
     }
 
     #[test]

@@ -296,7 +296,8 @@ pub struct Items {
     /// that is playing media.
     pub media_controls: bool,
     /// Badge an app with how many notifications it sent since you last had
-    /// one of its windows focused.
+    /// one of its windows focused. Off by default: it means watching every
+    /// notification on the session bus, which should be the user's choice.
     pub notification_badges: bool,
 }
 
@@ -418,7 +419,7 @@ impl Default for Items {
             show_running: true,
             glyph_ui: true,
             media_controls: true,
-            notification_badges: true,
+            notification_badges: false,
         }
     }
 }

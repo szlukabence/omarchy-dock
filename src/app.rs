@@ -392,7 +392,8 @@ pub fn run() -> glib::ExitCode {
     // is a process-lifetime thing, not something to toggle per frame.
     let startup = Config::load();
     let (tray, media) = (startup.tray.enabled, startup.items.media_controls);
-    let worker = match crate::runtime::spawn(tx, tray, media) {
+    let badges = startup.items.notification_badges;
+    let worker = match crate::runtime::spawn(tx, tray, media, badges) {
         Ok(handle) => Some(handle),
         Err(e) => {
             tracing::error!(error = %e, "Hyprland IPC unavailable");
@@ -523,6 +524,11 @@ pub fn run() -> glib::ExitCode {
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
                         sync_bar_workspaces(&next);
+                        // Starts or stops watching notifications with it.
+                        if let Some(w) = &app.worker {
+                            let on = next.items.notification_badges;
+                            w.badges.send_if_modified(|v| std::mem::replace(v, on) != on);
+                        }
                         // Geometry-affecting changes need new surfaces;
                         // anything else is just a restyle, which is far
                         // cheaper and preserves hover state.
