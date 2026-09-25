@@ -330,6 +330,12 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   background-color: {sel_fill};
 }}
 
+/* A permanent delete waiting for its confirming second click. */
+.dock-stack-action.dock-armed, .dock-menu-item.dock-armed {{
+  color: @dock_urgent;
+  opacity: 1;
+}}
+
 .dock-settings {{ min-width: {settings_w}px; }}
 
 /* The settings window is a real toplevel, not a layer surface, so unlike the

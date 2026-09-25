@@ -101,13 +101,42 @@ pub fn trash(path: &Path) -> bool {
     }
 }
 
+/// Permanently delete one item in the trash, and its `.trashinfo` record with
+/// it so no file manager shows a phantom entry. Refuses anything outside the
+/// trash.
+pub fn delete_from_trash(path: &Path) -> bool {
+    trash_dirs().is_some_and(|(files, info)| delete_from_trash_in(&files, &info, path))
+}
+
+fn delete_from_trash_in(files: &Path, info: &Path, path: &Path) -> bool {
+    let Some(name) = path.file_name() else { return false };
+    if path.parent() != Some(files) {
+        tracing::warn!(path = %path.display(), "not in the trash; not deleting");
+        return false;
+    }
+    let ok = if path.is_dir() && !path.is_symlink() {
+        std::fs::remove_dir_all(path).is_ok()
+    } else {
+        std::fs::remove_file(path).is_ok()
+    };
+    if ok {
+        let mut record = name.to_os_string();
+        record.push(".trashinfo");
+        std::fs::remove_file(info.join(record)).ok();
+    } else {
+        tracing::warn!(path = %path.display(), "cannot delete from trash");
+    }
+    ok
+}
+
 /// Permanently delete everything in the trash.
 ///
 /// Deletes the trashed files and their `.trashinfo` records together; leaving
 /// the records behind would show phantom entries in every file manager.
 pub fn empty_trash() -> usize {
+    let Some((files, info)) = trash_dirs() else { return 0 };
     let mut removed = 0;
-    for dir in [trash_files_dir(), trash_info_dir()] {
+    for dir in [files, info] {
         let Ok(read) = std::fs::read_dir(&dir) else { continue };
         for entry in read.flatten() {
             let path = entry.path();
@@ -126,11 +155,12 @@ pub fn empty_trash() -> usize {
     removed
 }
 
-fn trash_info_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("Trash")
-        .join("info")
+/// The trash's `files` and `info` directories, for deleting from. Unlike
+/// [`trash_files_dir`], which only reads, there is no fallback: without a
+/// data directory there is no trash, and nothing to delete.
+fn trash_dirs() -> Option<(PathBuf, PathBuf)> {
+    let trash = dirs::data_dir()?.join("Trash");
+    Some((trash.join("files"), trash.join("info")))
 }
 
 fn spawn(program: &str, args: &[&std::ffi::OsStr]) {
@@ -160,6 +190,29 @@ mod tests {
 
         assert_eq!(recent(&dir, 1).len(), 1, "limit honoured");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deleting_from_the_trash_takes_the_record_and_nothing_outside() {
+        let root = std::env::temp_dir().join(format!("omarchy-dock-trash-{}", std::process::id()));
+        let (files, info) = (root.join("files"), root.join("info"));
+        std::fs::create_dir_all(files.join("folder/inner")).unwrap();
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(files.join("a.txt"), b"x").unwrap();
+        std::fs::write(info.join("a.txt.trashinfo"), b"x").unwrap();
+        std::fs::write(info.join("folder.trashinfo"), b"x").unwrap();
+        std::fs::write(root.join("outside.txt"), b"x").unwrap();
+
+        assert!(delete_from_trash_in(&files, &info, &files.join("a.txt")));
+        assert!(!files.join("a.txt").exists() && !info.join("a.txt.trashinfo").exists());
+        assert!(delete_from_trash_in(&files, &info, &files.join("folder")));
+        assert!(!files.join("folder").exists() && !info.join("folder.trashinfo").exists());
+
+        // Only direct children of the trash's files directory.
+        assert!(!delete_from_trash_in(&files, &info, &root.join("outside.txt")));
+        assert!(!delete_from_trash_in(&files, &info, &files));
+        assert!(root.join("outside.txt").exists() && files.exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

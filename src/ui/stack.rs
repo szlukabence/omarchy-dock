@@ -10,7 +10,13 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 
 use crate::stacks::{self, StackEntry};
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
+use std::time::Duration;
+
+/// How long a permanent-delete button stays armed after its first click.
+const CONFIRM_MS: u64 = 4000;
 
 /// Build the popover for a folder stack.
 pub fn build_folder<R: Fn() + Clone + 'static>(
@@ -82,7 +88,8 @@ pub fn build_trash<R: Fn() + Clone + 'static>(on_change: R) -> gtk::Popover {
         list.append(&separator());
         let pop = popover.clone();
         let cb = on_change.clone();
-        list.append(&action_row("Empty Trash", move || {
+        // Emptying the Trash cannot be undone, so it takes a second click.
+        list.append(&confirmed_action_row("Empty Trash", "Click again to empty the Trash", move || {
             let n = stacks::empty_trash();
             tracing::info!(removed = n, "trash emptied");
             // Emptying the Trash destroys files and the popover closes right
@@ -178,22 +185,34 @@ fn file_row<R: Fn() + Clone + 'static>(
             }
         }));
     } else {
-        row.append(&icon_button("edit-delete-symbolic", "Delete permanently", {
-            let path = entry.path.clone();
-            let pop = popover.clone();
-            let cb = on_change.clone();
-            move || {
-                let ok = if path.is_dir() && !path.is_symlink() {
-                    std::fs::remove_dir_all(&path).is_ok()
+        // Only ever offered for what is already in the Trash, and like
+        // emptying it, it cannot be undone, so it takes a second click.
+        let b = gtk::Button::from_icon_name("edit-delete-symbolic");
+        b.add_css_class("dock-stack-action");
+        b.set_has_frame(false);
+        b.set_tooltip_text(Some("Delete permanently"));
+        on_second_click(
+            &b,
+            |b, armed| {
+                b.set_tooltip_text(Some(if armed {
+                    "Click again to delete permanently"
                 } else {
-                    std::fs::remove_file(&path).is_ok()
-                };
-                if ok {
-                    cb();
+                    "Delete permanently"
+                }));
+            },
+            {
+                let path = entry.path.clone();
+                let pop = popover.clone();
+                let cb = on_change.clone();
+                move || {
+                    if stacks::delete_from_trash(&path) {
+                        cb();
+                    }
+                    pop.popdown();
                 }
-                pop.popdown();
-            }
-        }));
+            },
+        );
+        row.append(&b);
     }
 
     row
@@ -205,6 +224,62 @@ fn icon_button<F: Fn() + 'static>(icon: &str, tip: &str, on_click: F) -> gtk::Bu
     b.set_has_frame(false);
     b.set_tooltip_text(Some(tip));
     b.connect_clicked(move |_| on_click());
+    b
+}
+
+/// Run `act` only on a second click of `b` within [`CONFIRM_MS`].
+///
+/// The first click arms the button — `show(b, true)` says what the next click
+/// will do, and the `dock-armed` class colours it as a warning — and it
+/// disarms itself if the second click does not come. For actions that
+/// permanently delete, where one stray click must not be enough.
+fn on_second_click<S, F>(b: &gtk::Button, show: S, act: F)
+where
+    S: Fn(&gtk::Button, bool) + 'static,
+    F: Fn() + 'static,
+{
+    let armed: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let show = Rc::new(show);
+    b.connect_clicked(move |b| {
+        let pending = armed.borrow_mut().take();
+        if let Some(timeout) = pending {
+            timeout.remove();
+            b.remove_css_class("dock-armed");
+            show(b, false);
+            act();
+            return;
+        }
+        b.add_css_class("dock-armed");
+        show(b, true);
+        let (slot, show, weak) = (armed.clone(), show.clone(), b.downgrade());
+        let timeout = glib::timeout_add_local_once(Duration::from_millis(CONFIRM_MS), move || {
+            // This source is finishing on its own; forget it rather than
+            // remove it a second time.
+            slot.borrow_mut().take();
+            if let Some(b) = weak.upgrade() {
+                b.remove_css_class("dock-armed");
+                show(&b, false);
+            }
+        });
+        *armed.borrow_mut() = Some(timeout);
+    });
+}
+
+/// A menu row that needs a second click, showing `armed_label` in between.
+fn confirmed_action_row<F: Fn() + 'static>(label: &str, armed_label: &str, act: F) -> gtk::Button {
+    let b = action_row(label, || {});
+    let (label, armed_label) = (label.to_string(), armed_label.to_string());
+    on_second_click(
+        &b,
+        move |b, armed| b.set_label(if armed { &armed_label } else { &label }),
+        act,
+    );
+    // set_label replaces the child label, so the alignment is set again.
+    b.connect_label_notify(|b| {
+        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+            l.set_xalign(0.0);
+        }
+    });
     b
 }
 

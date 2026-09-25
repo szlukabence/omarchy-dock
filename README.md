@@ -95,7 +95,9 @@ the report names it. It will not delete a git-managed plugin checkout — that i
 - **Drag to reorder**, with the icons parting to show where the drop lands.
   User-placed dividers drag too.
 - **Folder stacks and Trash**, drawn as monochrome glyphs so only real
-  applications carry colour — the way the bar draws its widgets.
+  applications carry colour — the way the bar draws its widgets. A stack's
+  delete button moves the file to the Trash. Only in the Trash can anything be
+  deleted for good, and both that and "Empty Trash" take a second click.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
   tile to switch; drop an app icon on one to send that window there.
 - **Command tiles** — a glyph, a label and a shell command, exactly how Omarchy
