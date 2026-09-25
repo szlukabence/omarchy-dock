@@ -11,7 +11,7 @@
 
 pkgname=omarchy-dock
 _root="$(cd "$startdir/../.." && pwd)"
-pkgver=1.2.1
+pkgver=1.2.2
 pkgrel=1
 # The exact Rust release to build with, matching rust-toolchain.toml.
 _rustver=1.98.1
