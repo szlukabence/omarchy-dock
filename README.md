@@ -205,6 +205,18 @@ everything they touch is in your home. It makes no network requests. `/tmp` is
 never written; the only thing read there is Omarchy's own screen-recording
 marker.
 
+## What it reads
+
+A few features look at what other programs are doing. All of it stays in the
+dock's memory: nothing is saved to disk or sent anywhere.
+
+| What | For | Kept | Off with |
+| --- | --- | --- | --- |
+| Window images, through Hyprland's `hyprland_toplevel_export_v1` | Hover previews, captured only while you rest on an app | Small thumbnails of the last 48 windows, in memory | `preview.enabled = false` |
+| Notifications, by watching `Notify` calls on the session bus (it listens, never answers) | Unread badges | Who sent each one — app name, desktop id, and a browser notification's site — as a count per app. Titles and text are never kept | `items.notification_badges = false` |
+| Media players, over MPRIS | The progress ring and play controls | Title, artist and position of what is playing | — |
+| Your Downloads folder | The download ring | How many partial `.crdownload`/`.part` files are in it | — |
+
 ## Looking like Omarchy
 
 By default the dock draws itself the way the Omarchy shell draws the bar, the

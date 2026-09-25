@@ -171,11 +171,17 @@ impl Session {
         );
 
         // Shared memory the compositor copies into: an unlinked file in the
-        // runtime dir, so it lives only as long as this mapping.
+        // runtime dir, so it lives only as long as this mapping. Created fresh
+        // and readable by this user alone — it holds a window's pixels — and
+        // never opened through whatever might already sit at that path.
         let size = (stride * h) as usize;
         let path = std::env::var("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)?
             .join(format!("omarchy-dock-capture-{}", std::process::id()));
-        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+        std::fs::remove_file(&path).ok();
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?
+        };
         std::fs::remove_file(&path).ok();
         file.set_len(size as u64)?;
 

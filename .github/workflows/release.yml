@@ -18,7 +18,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    container: archlinux:base-devel
+    # Pinned by digest: a tag can be moved to a different image. Bump both
+    # together when updating it.
+    container: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     steps:
       - name: Install build dependencies
         run: pacman -Syu --noconfirm --needed git rustup gtk4 gtk4-layer-shell github-cli
