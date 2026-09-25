@@ -81,8 +81,11 @@ sudo pacman -Rns omarchy-dock          # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
-`uninstall` reverses everything `install` did and nothing else. It will not
-delete a git-managed plugin checkout — that is `omarchy plugin remove`'s job.
+`uninstall` reverses everything `install` did and nothing else. It deletes a
+file only if it is byte for byte what the dock wrote, and the plugin directory
+only once that leaves it empty: anything you added or edited there stays, and
+the report names it. It will not delete a git-managed plugin checkout — that is
+`omarchy plugin remove`'s job.
 
 ## What it does
 
@@ -129,8 +132,11 @@ ever in response to an explicit action:
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
+| `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `uninstall` can tell them from anything else |
 
-`uninstall` removes all of it. Nothing is written on start, on poll, or on
+`uninstall` removes all of it, except what is no longer as the dock wrote it.
+An older, pre-namespace `plugins/omarchy-dock/` is only disabled, never deleted:
+nothing proves what is in it is the dock's. Nothing is written on start, on poll, or on
 open. There is no `sudo` anywhere, and no network access. `/tmp` is read once —
 Omarchy's own screen-recording marker — and never written.
 

@@ -97,8 +97,16 @@ fn report(
         Ok(items) => {
             for r in &items {
                 // Not everything reported was acted on: install also reports
-                // the optional pieces it deliberately left alone.
-                let verb = if r.installed { verb } else { "skipped" };
+                // the optional pieces it deliberately left alone, and
+                // uninstall what it had to leave because it is not the dock's.
+                // `installed` is the state afterwards, so for uninstall it is
+                // the piece that stayed.
+                let verb = match (verb, r.installed) {
+                    ("removed", false) => "removed",
+                    ("removed", true) => "kept",
+                    (verb, true) => verb,
+                    (_, false) => "skipped",
+                };
                 println!("{verb}: {} — {}", r.label, r.path.display());
                 if let Some(note) = &r.note {
                     println!("          {note}");
