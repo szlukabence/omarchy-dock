@@ -43,6 +43,26 @@ const HOOK_NAME: &str = "omarchy-dock";
 const MENU_BEGIN: &str = "  // >>> omarchy-dock — managed block, edits are overwritten >>>";
 const MENU_END: &str = "  // <<< omarchy-dock <<<";
 
+/// Where the dock's marker-fenced block sits in a file it shares with the user.
+enum Block<'a> {
+    /// No block: the text holds no start marker.
+    Absent,
+    /// The text before the block and after it.
+    Found(&'a str, &'a str),
+    /// A start marker with no end marker after it. Everything that follows
+    /// would otherwise be taken for the block and lost, so the file is left
+    /// alone.
+    Unterminated,
+}
+
+fn find_block<'a>(text: &'a str, begin: &str, end: &str) -> Block<'a> {
+    let Some((before, rest)) = text.split_once(begin) else { return Block::Absent };
+    match rest.split_once(end) {
+        Some((_, after)) => Block::Found(before, after),
+        None => Block::Unterminated,
+    }
+}
+
 pub fn omarchy_config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("omarchy")
 }
@@ -392,13 +412,14 @@ fn menu_block() -> String {
 /// never rewritten: an existing block is replaced in place, and a new one is
 /// inserted just before the closing brace. Returns `None` when the file has no
 /// closing brace to insert before, which means it is not something we should
-/// be editing.
+/// be editing — or when our start marker is there without its end marker.
 pub fn splice_menu_block(existing: &str, block: &str) -> Option<String> {
-    if let Some((before, rest)) = existing.split_once(MENU_BEGIN) {
+    match find_block(existing, MENU_BEGIN, MENU_END) {
         // Replace whatever is currently between the markers, so reinstalling
         // after an upgrade picks up new rows instead of duplicating old ones.
-        let after = rest.split_once(MENU_END).map(|(_, a)| a).unwrap_or("");
-        return Some(format!("{before}{block}{after}"));
+        Block::Found(before, after) => return Some(format!("{before}{block}{after}")),
+        Block::Unterminated => return None,
+        Block::Absent => {}
     }
 
     // Insert before the final closing brace of the JSONC object.
@@ -471,10 +492,10 @@ fn last_significant_char(s: &str) -> Option<char> {
 
 /// Remove our block, leaving the rest of the file untouched.
 pub fn remove_menu_block(existing: &str) -> String {
-    let Some((before, rest)) = existing.split_once(MENU_BEGIN) else {
+    // No block, or one whose end marker is gone: nothing we can safely cut.
+    let Block::Found(before, after) = find_block(existing, MENU_BEGIN, MENU_END) else {
         return existing.to_string();
     };
-    let after = rest.split_once(MENU_END).map(|(_, a)| a).unwrap_or("");
     // The separator we inserted goes with it, or the file accumulates blank
     // lines and stray commas across install/uninstall cycles.
     let before = before.trim_end();
@@ -545,13 +566,18 @@ fn install_blur() -> Result<Report> {
     let path = looknfeel_path();
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
 
-    let next = if existing.contains(HYPR_BEGIN) {
+    let next = match find_block(&existing, HYPR_BEGIN, HYPR_END) {
         // Replace in place, so an upgrade picks up a changed rule.
-        let (before, rest) = existing.split_once(HYPR_BEGIN).unwrap();
-        let after = rest.split_once(HYPR_END).map(|(_, a)| a).unwrap_or("");
-        format!("{before}{}{after}", hypr_block())
-    } else {
-        format!("{}\n\n{}\n", existing.trim_end(), hypr_block())
+        Block::Found(before, after) => format!("{before}{}{after}", hypr_block()),
+        Block::Absent => format!("{}\n\n{}\n", existing.trim_end(), hypr_block()),
+        Block::Unterminated => {
+            return Ok(Report {
+                label: "hyprland blur",
+                path,
+                installed: false,
+                note: Some(unterminated_note()),
+            })
+        }
     };
     write_file(&path, &next)?;
 
@@ -574,14 +600,30 @@ fn install_blur() -> Result<Report> {
 
 fn remove_blur() -> Result<Report> {
     let path = looknfeel_path();
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        if let Some((before, rest)) = existing.split_once(HYPR_BEGIN) {
-            let after = rest.split_once(HYPR_END).map(|(_, a)| a).unwrap_or("");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    match find_block(&existing, HYPR_BEGIN, HYPR_END) {
+        Block::Found(before, after) => {
             let next = format!("{}\n{}", before.trim_end(), after.trim_start_matches('\n'));
             write_file(&path, &next)?;
         }
+        Block::Unterminated => {
+            return Ok(Report {
+                label: "hyprland blur",
+                path,
+                installed: true,
+                note: Some(unterminated_note()),
+            })
+        }
+        Block::Absent => {}
     }
     Ok(Report { label: "hyprland blur", path, installed: false, note: None })
+}
+
+/// Why a file with a start marker but no end marker was not touched.
+fn unterminated_note() -> String {
+    "left alone: the dock's start marker is there but its end marker is not, so where \
+     its block ends is unknown. Remove the block by hand"
+        .into()
 }
 
 // ── install / uninstall ─────────────────────────────────────────────────────
@@ -707,7 +749,11 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
             label: "menu extension",
             path,
             installed: false,
-            note: Some("could not find where to insert; leave it and add the rows by hand".into()),
+            note: Some(if matches!(find_block(&existing, MENU_BEGIN, MENU_END), Block::Unterminated) {
+                unterminated_note()
+            } else {
+                "could not find where to insert; leave it and add the rows by hand".into()
+            }),
         }),
     }
 
@@ -784,13 +830,18 @@ pub fn uninstall() -> Result<Vec<Report>> {
     });
 
     let path = menu_extension_path();
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let next = remove_menu_block(&existing);
-        if next != existing {
-            write_file(&path, &next)?;
-        }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let next = remove_menu_block(&existing);
+    if next != existing {
+        write_file(&path, &next)?;
     }
-    out.push(Report { label: "menu extension", path, installed: false, note: None });
+    let kept = next.contains(MENU_BEGIN);
+    out.push(Report {
+        label: "menu extension",
+        installed: kept,
+        note: kept.then(unterminated_note),
+        path,
+    });
     out.push(remove_blur()?);
 
     Ok(out)
@@ -1006,6 +1057,16 @@ mod tests {
         write_file(&dir.join("manifest.json"), "{\"id\":\"omarchy-dock\"}").unwrap();
         write_file(&dir.join("Service.qml"), "// another plugin\n").unwrap();
         assert_eq!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap(), ["Service.qml", "manifest.json"]);
+    }
+
+    #[test]
+    fn a_start_marker_without_its_end_leaves_the_file_alone() {
+        // Everything after the start marker would otherwise be taken for the
+        // dock's block: the user's own rows below it would be lost.
+        let existing = format!("{{\n{MENU_BEGIN}\n  \"mine\": {{\"label\":\"Mine\"}},\n}}\n");
+        assert_eq!(splice_menu_block(&existing, "BLOCK"), None);
+        assert_eq!(remove_menu_block(&existing), existing);
+        assert!(matches!(find_block(&existing, MENU_BEGIN, MENU_END), Block::Unterminated));
     }
 
     #[test]
