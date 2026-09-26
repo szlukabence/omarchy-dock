@@ -161,12 +161,18 @@ const PLUGIN_FILES: [DockFile<'static>; 2] = [
     DockFile {
         name: "manifest.json",
         current: Some(PLUGIN_MANIFEST),
-        released: &[include_str!("../resources/released/1.2.1/manifest.json.txt")],
+        released: &[
+            include_str!("../resources/released/1.2.2/manifest.json.txt"),
+            include_str!("../resources/released/1.2.1/manifest.json.txt"),
+        ],
     },
     DockFile {
         name: "Service.qml",
         current: Some(PLUGIN_SERVICE_QML),
-        released: &[include_str!("../resources/released/1.2.1/Service.qml.txt")],
+        released: &[
+            include_str!("../resources/released/1.2.2/Service.qml.txt"),
+            include_str!("../resources/released/1.2.1/Service.qml.txt"),
+        ],
     },
 ];
 
@@ -1010,13 +1016,15 @@ mod tests {
 
     #[test]
     fn install_upgrades_what_a_release_wrote() {
-        // 1.2.1 kept no copies, but its files are known byte for byte.
-        let (dir, copies) = scratch("install-upgrade");
-        for file in &PLUGIN_FILES {
-            write_file(&dir.join(file.name), file.released[0]).unwrap();
+        // Even with no copies kept, every release's files are known.
+        for release in 0..PLUGIN_FILES[0].released.len() {
+            let (dir, copies) = scratch(&format!("install-upgrade-{release}"));
+            for file in &PLUGIN_FILES {
+                write_file(&dir.join(file.name), file.released[release]).unwrap();
+            }
+            assert!(write_plugin_files(&dir, &copies).unwrap().is_empty());
+            assert_eq!(std::fs::read_to_string(dir.join("Service.qml")).unwrap(), PLUGIN_SERVICE_QML);
         }
-        assert!(write_plugin_files(&dir, &copies).unwrap().is_empty());
-        assert_eq!(std::fs::read_to_string(dir.join("Service.qml")).unwrap(), PLUGIN_SERVICE_QML);
     }
 
     #[test]
@@ -1046,7 +1054,9 @@ mod tests {
         let id = |text: &str| {
             serde_json::from_str::<serde_json::Value>(text).unwrap()["id"].as_str().unwrap().to_string()
         };
-        assert_eq!(id(PLUGIN_FILES[0].released[0]), PLUGIN_ID);
+        for released in PLUGIN_FILES[0].released {
+            assert_eq!(id(released), PLUGIN_ID);
+        }
         assert_eq!(id(LEGACY_PLUGIN_FILES[0].released[0]), LEGACY_PLUGIN_ID);
     }
 
