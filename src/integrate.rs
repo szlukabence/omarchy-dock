@@ -128,53 +128,123 @@ fn hook_script() -> String {
 const PLUGIN_MANIFEST: &str = include_str!("../manifest.json");
 const PLUGIN_SERVICE_QML: &str = include_str!("../Service.qml");
 
-/// Every file the dock writes into the plugin directory, with its contents.
-const PLUGIN_FILES: [(&str, &str); 2] =
-    [("manifest.json", PLUGIN_MANIFEST), ("Service.qml", PLUGIN_SERVICE_QML)];
-
-/// Write the plugin files into `dir`, keeping a copy of each in `copies`.
-fn write_plugin_files(dir: &Path, copies: &Path) -> Result<()> {
-    for (name, contents) in PLUGIN_FILES {
-        write_file(&dir.join(name), contents)?;
-        write_file(&copies.join(name), contents)?;
-    }
-    Ok(())
+/// A file the dock writes: its name, what this build writes, and what earlier
+/// releases wrote there before the dock kept copies of its own files.
+struct DockFile<'a> {
+    name: &'a str,
+    current: Option<&'a str>,
+    released: &'a [&'a str],
 }
 
-/// Whether `path` holds the dock's own `name`: what this build writes, or what
-/// an earlier build wrote and kept a copy of in `copies`. A file anyone has
-/// changed since is neither, and is theirs.
-fn is_dock_file(path: &Path, name: &str, contents: &str, copies: &Path) -> bool {
+/// The plugin directory's files.
+const PLUGIN_FILES: [DockFile<'static>; 2] = [
+    DockFile {
+        name: "manifest.json",
+        current: Some(PLUGIN_MANIFEST),
+        released: &[include_str!("../resources/released/1.2.1/manifest.json.txt")],
+    },
+    DockFile {
+        name: "Service.qml",
+        current: Some(PLUGIN_SERVICE_QML),
+        released: &[include_str!("../resources/released/1.2.1/Service.qml.txt")],
+    },
+];
+
+/// The pre-namespace plugin directory's files, as the last release under that
+/// id wrote them. Nothing writes them any more.
+const LEGACY_PLUGIN_FILES: [DockFile<'static>; 2] = [
+    DockFile {
+        name: "manifest.json",
+        current: None,
+        released: &[include_str!("../resources/released/1.2.0/manifest.json.txt")],
+    },
+    DockFile {
+        name: "Service.qml",
+        current: None,
+        released: &[include_str!("../resources/released/1.2.0/Service.qml.txt")],
+    },
+];
+
+/// Whether `path` holds the dock's own copy of `file`: what this build
+/// writes, what a release wrote, or what an earlier build wrote and kept a
+/// copy of in `copies`. A file anyone has changed since is none of these, and
+/// is theirs.
+fn is_dock_file(path: &Path, file: &DockFile, copies: Option<&Path>) -> bool {
     let Ok(now) = std::fs::read(path) else { return false };
-    now == contents.as_bytes() || std::fs::read(copies.join(name)).is_ok_and(|kept| kept == now)
+    file.current.is_some_and(|c| c.as_bytes() == now)
+        || file.released.iter().any(|r| r.as_bytes() == now)
+        || copies.is_some_and(|c| std::fs::read(c.join(file.name)).is_ok_and(|kept| kept == now))
 }
 
-/// Remove the dock's plugin files from `dir`, then `dir` itself if that left it
+/// What in `dir` is not the dock's: every entry other than `files`, and each
+/// of `files` that is there but is not the dock's. Empty when `dir` is absent.
+fn foreign_entries(dir: &Path, files: &[DockFile], copies: Option<&Path>) -> Result<Vec<String>> {
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    let mut foreign: Vec<String> = read
+        .filter_map(|e| e.ok())
+        .filter(|e| match files.iter().find(|f| e.file_name() == f.name) {
+            Some(f) => !is_dock_file(&e.path(), f, copies),
+            None => true,
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    foreign.sort();
+    Ok(foreign)
+}
+
+/// Write the plugin files into `dir`, keeping a copy of each in `copies` —
+/// unless `dir` holds anything that is not the dock's, in which case nothing
+/// is written and what was found is returned. Overwriting is only ever
+/// replacing the dock's own files with their current version.
+fn write_plugin_files(dir: &Path, copies: &Path) -> Result<Vec<String>> {
+    let foreign = foreign_entries(dir, &PLUGIN_FILES, Some(copies))?;
+    if !foreign.is_empty() {
+        return Ok(foreign);
+    }
+    for file in &PLUGIN_FILES {
+        let contents = file.current.expect("the plugin files are current");
+        write_file(&dir.join(file.name), contents)?;
+        write_file(&copies.join(file.name), contents)?;
+    }
+    Ok(Vec::new())
+}
+
+/// Remove the dock's `files` from `dir`, then `dir` itself if that left it
 /// empty. Returns the names of whatever is still there, which is not the
 /// dock's to delete.
-fn remove_plugin_files(dir: &Path, copies: &Path) -> Result<Vec<String>> {
-    for (name, contents) in PLUGIN_FILES {
-        let path = dir.join(name);
-        if is_dock_file(&path, name, contents, copies) {
+fn remove_plugin_files(dir: &Path, files: &[DockFile], copies: Option<&Path>) -> Result<Vec<String>> {
+    for file in files {
+        let path = dir.join(file.name);
+        if is_dock_file(&path, file, copies) {
             remove_path(&path)?;
         }
-        remove_path(&copies.join(name))?;
+        if let Some(copies) = copies {
+            remove_path(&copies.join(file.name))?;
+        }
     }
     // Not remove_dir_all: this only succeeds on an empty directory.
     match std::fs::remove_dir(dir) {
         Ok(()) => Ok(Vec::new()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-            let mut left: Vec<String> = std::fs::read_dir(dir)
-                .with_context(|| format!("reading {}", dir.display()))?
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            left.sort();
-            Ok(left)
+            foreign_entries(dir, &[], None)
         }
         Err(e) => Err(e).with_context(|| format!("removing {}", dir.display())),
     }
+}
+
+/// Whether a git checkout at `dir` is this plugin: its manifest names our id.
+/// `omarchy plugin add` clones into a directory named after the id, so any
+/// other answer means someone else's repository sits at our path.
+fn checkout_is_ours(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("manifest.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|m| m.get("id").and_then(|v| v.as_str()) == Some(PLUGIN_ID))
 }
 
 /// Enable or disable the plugin in `shell.json`.
@@ -233,15 +303,38 @@ fn set_enabled(id: &str, on: bool) -> Result<bool> {
     Ok(changed)
 }
 
-/// Retire the pre-namespace plugin by dropping its `shell.json` entry, which
-/// is what stops it supervising a second copy of the dock.
+/// What became of the pre-namespace plugin.
+enum Legacy {
+    /// Never installed, or already gone.
+    Absent,
+    /// Its files were the dock's: they are removed and its entry disabled.
+    Retired,
+    /// Its directory holds something the dock did not write, so it is
+    /// someone else's `omarchy-dock` plugin, or the user's edit: directory
+    /// and `shell.json` entry are both left as they are.
+    Foreign(Vec<String>),
+}
+
+/// Retire the pre-namespace plugin, which would otherwise supervise a second
+/// copy of the dock — but only when it is provably the dock's.
 ///
-/// Its directory is left alone. `omarchy-dock` is a plain name that another
-/// plugin could have, and the builds that wrote the old directory kept no
-/// record of what they put there, so nothing proves its contents are the
-/// dock's. Returns whether the entry was removed, for reporting.
-fn retire_legacy_plugin() -> Result<bool> {
-    set_enabled(LEGACY_PLUGIN_ID, false)
+/// `omarchy-dock` is a plain name another plugin could have. So its files go
+/// only if they are byte for byte what the last release under that id wrote,
+/// and its `shell.json` entry only once its directory is gone: an entry for a
+/// directory the dock just emptied, or one that points at nothing.
+fn retire_legacy_plugin() -> Result<Legacy> {
+    let dir = legacy_plugin_dir();
+    let existed = dir.exists();
+    if dir.join(".git").exists() {
+        // A checkout is `omarchy plugin remove`'s, whoever's it is.
+        return Ok(Legacy::Foreign(vec![".git".into()]));
+    }
+    let left = remove_plugin_files(&dir, &LEGACY_PLUGIN_FILES, None)?;
+    if !left.is_empty() {
+        return Ok(Legacy::Foreign(left));
+    }
+    let disabled = set_enabled(LEGACY_PLUGIN_ID, false)?;
+    Ok(if existed || disabled { Legacy::Retired } else { Legacy::Absent })
 }
 
 fn shell_json_path() -> PathBuf {
@@ -496,62 +589,105 @@ fn remove_blur() -> Result<Report> {
 pub fn install(blur: bool) -> Result<Vec<Report>> {
     let mut out = Vec::new();
 
-    // Hook.
+    // Hook. Written only over the dock's own: a hook of the same name that
+    // someone wrote or edited is left as it is.
     let path = hook_path();
-    write_executable(&path, &hook_script())
-        .with_context(|| format!("installing the theme-set hook at {}", path.display()))?;
-    write_file(&written_copies_dir().join(HOOK_NAME), &hook_script())?;
-    out.push(Report {
-        label: "theme-set hook",
-        path,
-        installed: true,
-        note: Some("theme changes now reach the dock the moment Omarchy finishes applying them".into()),
-    });
+    let copies = written_copies_dir();
+    let script = hook_script();
+    let hook = DockFile { name: HOOK_NAME, current: Some(&script), released: &[] };
+    if path.exists() && !is_dock_file(&path, &hook, Some(&copies)) {
+        out.push(Report {
+            label: "theme-set hook",
+            path,
+            installed: false,
+            note: Some(
+                "left alone: a hook by that name is there that the dock did not write. \
+                 Move it aside and run install again"
+                    .into(),
+            ),
+        });
+    } else {
+        write_executable(&path, &script)
+            .with_context(|| format!("installing the theme-set hook at {}", path.display()))?;
+        write_file(&copies.join(HOOK_NAME), &script)?;
+        out.push(Report {
+            label: "theme-set hook",
+            path,
+            installed: true,
+            note: Some("theme changes now reach the dock the moment Omarchy finishes applying them".into()),
+        });
+    }
 
     // Plugin.
     //
-    // Unless it is a git checkout: `omarchy plugin add` clones this repository
-    // into exactly this directory, and writing our own copies over its tracked
-    // files would leave the checkout dirty and break `omarchy plugin update`.
-    // Omarchy itself uses the presence of `.git` to tell a cloned plugin from
-    // a hand-written one, so the same test is used here.
-    let migrated = retire_legacy_plugin()?;
+    // A git checkout is left alone: `omarchy plugin add` clones this
+    // repository into exactly this directory, and writing our own copies over
+    // its tracked files would leave the checkout dirty and break `omarchy
+    // plugin update`. Omarchy itself uses the presence of `.git` to tell a
+    // cloned plugin from a hand-written one, so the same test is used here.
+    // Anything else is written only if the directory holds nothing but the
+    // dock's own files, so an edit or another plugin is never overwritten.
+    let legacy = retire_legacy_plugin()?;
     let dir = plugin_dir();
     let git_managed = dir.join(".git").exists();
-    if !git_managed {
-        write_plugin_files(&dir, &written_copies_dir())?;
-    }
-    // Enabling happens either way. A clone made by `omarchy plugin add` without
-    // `--enable` is present but inert, and skipping this because the files were
-    // already there would leave it that way with nothing saying so.
-    let enabled = set_plugin_enabled(true)?;
-    out.push(Report {
-        label: "shell plugin",
-        path: dir,
-        installed: true,
-        note: Some(match (git_managed, enabled) {
-            (true, true) => "git checkout left alone; enabled in shell.json".into(),
-            (true, false) => "git checkout left alone; already enabled".into(),
-            (false, true) => {
-                "enabled in shell.json; the shell now starts and stops the dock".into()
-            }
-            (false, false) => "already enabled in shell.json".into(),
-        }),
-    });
-    if migrated {
+    let refused = if git_managed {
+        if checkout_is_ours(&dir) { Vec::new() } else { vec!["manifest.json".into()] }
+    } else {
+        write_plugin_files(&dir, &copies)?
+    };
+    if refused.is_empty() {
+        // Enabling happens either way. A clone made by `omarchy plugin add`
+        // without `--enable` is present but inert, and skipping this because
+        // the files were already there would leave it that way with nothing
+        // saying so.
+        let enabled = set_plugin_enabled(true)?;
         out.push(Report {
+            label: "shell plugin",
+            path: dir,
+            installed: true,
+            note: Some(match (git_managed, enabled) {
+                (true, true) => "git checkout left alone; enabled in shell.json".into(),
+                (true, false) => "git checkout left alone; already enabled".into(),
+                (false, true) => {
+                    "enabled in shell.json; the shell now starts and stops the dock".into()
+                }
+                (false, false) => "already enabled in shell.json".into(),
+            }),
+        });
+    } else {
+        out.push(Report {
+            label: "shell plugin",
+            path: dir,
+            installed: false,
+            note: Some(format!(
+                "left alone, and not enabled: {} {} not what the dock wrote (edited, or \
+                 another plugin's). Move {} aside and run install again",
+                refused.join(", "),
+                if refused.len() == 1 { "is" } else { "are" },
+                if refused.len() == 1 { "it" } else { "them" },
+            )),
+        });
+    }
+    match legacy {
+        Legacy::Absent => {}
+        Legacy::Retired => out.push(Report {
+            label: "old plugin id",
+            path: legacy_plugin_dir(),
+            installed: false,
+            note: Some(format!("retired `{LEGACY_PLUGIN_ID}`; the plugin is now `{PLUGIN_ID}`")),
+        }),
+        Legacy::Foreign(left) => out.push(Report {
             label: "old plugin id",
             path: legacy_plugin_dir(),
             installed: false,
             note: Some(format!(
-                "disabled `{LEGACY_PLUGIN_ID}`; the plugin is now `{PLUGIN_ID}`{}",
-                if legacy_plugin_dir().exists() {
-                    ". Its directory is left in place: delete it yourself if it only held the dock"
-                } else {
-                    ""
-                }
+                "left alone: {} {} not what the dock wrote, so `{LEGACY_PLUGIN_ID}` may be \
+                 another plugin. If it is only the old dock, run `omarchy plugin remove \
+                 {LEGACY_PLUGIN_ID}`",
+                left.join(", "),
+                if left.len() == 1 { "is" } else { "are" },
             )),
-        });
+        }),
     }
 
     // Menu extension.
@@ -602,7 +738,9 @@ pub fn uninstall() -> Result<Vec<Report>> {
     // own under the same name, stays.
     let path = hook_path();
     let copies = written_copies_dir();
-    let ours = is_dock_file(&path, HOOK_NAME, &hook_script(), &copies);
+    let script = hook_script();
+    let hook = DockFile { name: HOOK_NAME, current: Some(&script), released: &[] };
+    let ours = is_dock_file(&path, &hook, Some(&copies));
     if ours {
         remove_path(&path)?;
     }
@@ -624,7 +762,11 @@ pub fn uninstall() -> Result<Vec<Report>> {
     // Deleting someone's git checkout is not ours to do; disabling it in
     // shell.json already stops the dock, and `omarchy plugin remove` is the
     // command that owns removing it.
-    let left = if git_managed { Vec::new() } else { remove_plugin_files(&dir, &written_copies_dir())? };
+    let left = if git_managed {
+        Vec::new()
+    } else {
+        remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies))?
+    };
     out.push(Report {
         label: "shell plugin",
         installed: dir.exists(),
@@ -760,7 +902,7 @@ mod tests {
     fn the_dock_removes_its_own_plugin_directory() {
         let (dir, copies) = scratch("own");
         write_plugin_files(&dir, &copies).unwrap();
-        assert!(remove_plugin_files(&dir, &copies).unwrap().is_empty());
+        assert!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap().is_empty());
         assert!(!dir.exists());
         assert!(!copies.join("Service.qml").exists());
     }
@@ -770,7 +912,7 @@ mod tests {
         let (dir, copies) = scratch("foreign");
         write_plugin_files(&dir, &copies).unwrap();
         write_file(&dir.join("notes.txt"), "mine").unwrap();
-        assert_eq!(remove_plugin_files(&dir, &copies).unwrap(), ["notes.txt"]);
+        assert_eq!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap(), ["notes.txt"]);
         assert!(dir.join("notes.txt").exists());
         assert!(!dir.join("manifest.json").exists());
     }
@@ -780,7 +922,7 @@ mod tests {
         let (dir, copies) = scratch("edited");
         write_plugin_files(&dir, &copies).unwrap();
         write_file(&dir.join("Service.qml"), "// changed by hand\n").unwrap();
-        assert_eq!(remove_plugin_files(&dir, &copies).unwrap(), ["Service.qml"]);
+        assert_eq!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap(), ["Service.qml"]);
         assert_eq!(std::fs::read_to_string(dir.join("Service.qml")).unwrap(), "// changed by hand\n");
     }
 
@@ -789,8 +931,72 @@ mod tests {
         let (dir, copies) = scratch("earlier");
         write_file(&dir.join("Service.qml"), "// an older Service.qml\n").unwrap();
         write_file(&copies.join("Service.qml"), "// an older Service.qml\n").unwrap();
-        assert!(remove_plugin_files(&dir, &copies).unwrap().is_empty());
+        assert!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap().is_empty());
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn install_never_overwrites_an_edited_file() {
+        let (dir, copies) = scratch("install-edited");
+        write_plugin_files(&dir, &copies).unwrap();
+        write_file(&dir.join("Service.qml"), "// changed by hand\n").unwrap();
+        assert_eq!(write_plugin_files(&dir, &copies).unwrap(), ["Service.qml"]);
+        assert_eq!(std::fs::read_to_string(dir.join("Service.qml")).unwrap(), "// changed by hand\n");
+    }
+
+    #[test]
+    fn install_never_writes_into_another_plugin() {
+        let (dir, copies) = scratch("install-other");
+        write_file(&dir.join("main.qml"), "// another plugin\n").unwrap();
+        assert_eq!(write_plugin_files(&dir, &copies).unwrap(), ["main.qml"]);
+        assert!(!dir.join("manifest.json").exists());
+
+        let (dir, copies) = scratch("install-other-manifest");
+        write_file(&dir.join("manifest.json"), "{\"id\":\"someone.else\"}").unwrap();
+        assert_eq!(write_plugin_files(&dir, &copies).unwrap(), ["manifest.json"]);
+        assert_eq!(std::fs::read_to_string(dir.join("manifest.json")).unwrap(), "{\"id\":\"someone.else\"}");
+    }
+
+    #[test]
+    fn install_upgrades_what_a_release_wrote() {
+        // 1.2.1 kept no copies, but its files are known byte for byte.
+        let (dir, copies) = scratch("install-upgrade");
+        for file in &PLUGIN_FILES {
+            write_file(&dir.join(file.name), file.released[0]).unwrap();
+        }
+        assert!(write_plugin_files(&dir, &copies).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("Service.qml")).unwrap(), PLUGIN_SERVICE_QML);
+    }
+
+    #[test]
+    fn an_empty_or_missing_directory_is_installed_into() {
+        let (dir, copies) = scratch("install-fresh");
+        assert!(write_plugin_files(&dir, &copies).unwrap().is_empty());
+        assert!(dir.join("manifest.json").exists() && copies.join("manifest.json").exists());
+    }
+
+    #[test]
+    fn the_old_plugin_goes_only_if_it_is_what_1_2_0_wrote() {
+        let (dir, _) = scratch("legacy-ours");
+        for file in &LEGACY_PLUGIN_FILES {
+            write_file(&dir.join(file.name), file.released[0]).unwrap();
+        }
+        assert!(remove_plugin_files(&dir, &LEGACY_PLUGIN_FILES, None).unwrap().is_empty());
+        assert!(!dir.exists());
+
+        let (dir, _) = scratch("legacy-other");
+        write_file(&dir.join("manifest.json"), "{\"id\":\"omarchy-dock\",\"name\":\"not ours\"}").unwrap();
+        assert_eq!(remove_plugin_files(&dir, &LEGACY_PLUGIN_FILES, None).unwrap(), ["manifest.json"]);
+    }
+
+    #[test]
+    fn the_released_files_are_the_releases() {
+        // Each release's files name the id that release used.
+        let id = |text: &str| {
+            serde_json::from_str::<serde_json::Value>(text).unwrap()["id"].as_str().unwrap().to_string()
+        };
+        assert_eq!(id(PLUGIN_FILES[0].released[0]), PLUGIN_ID);
+        assert_eq!(id(LEGACY_PLUGIN_FILES[0].released[0]), LEGACY_PLUGIN_ID);
     }
 
     #[test]
@@ -799,7 +1005,7 @@ mod tests {
         let (dir, copies) = scratch("other");
         write_file(&dir.join("manifest.json"), "{\"id\":\"omarchy-dock\"}").unwrap();
         write_file(&dir.join("Service.qml"), "// another plugin\n").unwrap();
-        assert_eq!(remove_plugin_files(&dir, &copies).unwrap(), ["Service.qml", "manifest.json"]);
+        assert_eq!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap(), ["Service.qml", "manifest.json"]);
     }
 
     #[test]

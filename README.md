@@ -81,11 +81,14 @@ sudo pacman -Rns omarchy-dock          # the binaries
 rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 ```
 
-`uninstall` reverses everything `install` did and nothing else. It deletes a
-file only if it is byte for byte what the dock wrote, and the plugin directory
-only once that leaves it empty: anything you added or edited there stays, and
-the report names it. It will not delete a git-managed plugin checkout — that is
-`omarchy plugin remove`'s job.
+`uninstall` reverses everything `install` did and nothing else. Neither ever
+overwrites or deletes a file that is not byte for byte what the dock wrote —
+this build, an earlier release, or the copy it kept when it last wrote it.
+Running `install` again only refreshes the dock's own files: if the plugin
+directory or the hook holds anything else (your edit, or another plugin), it is
+left alone, the plugin is not enabled, and the report says what was found.
+`uninstall` removes the plugin directory only once that leaves it empty, and
+never a git-managed plugin checkout — that is `omarchy plugin remove`'s job.
 
 ## What it does
 
@@ -130,15 +133,18 @@ ever in response to an explicit action:
 | Path | When | What |
 | --- | --- | --- |
 | `~/.config/omarchy/hooks/theme-set.d/omarchy-dock` | `dockctl install` | A hook that restyles the dock after a theme change |
-| `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout |
+| `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout, or holds anything the dock did not write |
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
-| `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `uninstall` can tell them from anything else |
+| `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |
 
 `uninstall` removes all of it, except what is no longer as the dock wrote it.
-An older, pre-namespace `plugins/omarchy-dock/` is only disabled, never deleted:
-nothing proves what is in it is the dock's. Nothing is written on start, on
+An older, pre-namespace `plugins/omarchy-dock/` is removed, and its `shell.json`
+entry dropped, only if its files are byte for byte what 1.2.0 wrote; otherwise
+it may be another plugin of that name, and both are left alone. The files
+earlier releases wrote are kept in `resources/released/` for exactly these
+comparisons. Nothing is written on start, on
 poll, or on open. The dock itself never runs `sudo` — the only privileged step
 is the `pacman` install you run — and it makes no network requests. `/tmp` is
 read once — Omarchy's own screen-recording marker — and never written.

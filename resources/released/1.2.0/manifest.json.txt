@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-dock",
+  "name": "Omarchy Dock",
+  "version": "1.2.0",
+  "author": "Bence Szluka",
+  "license": "MIT",
+  "description": "macOS-style application dock for Omarchy, drawn with the shell's own design tokens.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  },
+  "tags": [
+    "dock",
+    "launcher",
+    "hyprland"
+  ]
+}
