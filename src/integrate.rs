@@ -171,6 +171,7 @@ const PLUGIN_FILES: [DockFile<'static>; 2] = [
         name: "manifest.json",
         current: Some(PLUGIN_MANIFEST),
         released: &[
+            include_str!("../resources/released/1.2.5/manifest.json.txt"),
             include_str!("../resources/released/1.2.4/manifest.json.txt"),
             include_str!("../resources/released/1.2.3/manifest.json.txt"),
             include_str!("../resources/released/1.2.2/manifest.json.txt"),
@@ -181,6 +182,7 @@ const PLUGIN_FILES: [DockFile<'static>; 2] = [
         name: "Service.qml",
         current: Some(PLUGIN_SERVICE_QML),
         released: &[
+            include_str!("../resources/released/1.2.5/Service.qml.txt"),
             include_str!("../resources/released/1.2.4/Service.qml.txt"),
             include_str!("../resources/released/1.2.3/Service.qml.txt"),
             include_str!("../resources/released/1.2.2/Service.qml.txt"),
