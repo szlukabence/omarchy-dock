@@ -15,10 +15,10 @@
 # release tarball.
 
 pkgname=omarchy-dock
-pkgver=1.2.6
+pkgver=1.3.0
 pkgrel=1
 # The commit tag v$pkgver points at: `git rev-parse v$pkgver^{commit}`.
-_commit=1cf78fb1daa1850a6f531b9db5de09d2bf2f530f
+_commit=0ca99e3a662751e849d182f622a46f2e26446a2f
 # The exact Rust release to build with, matching rust-toolchain.toml.
 _rustver=1.98.1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
@@ -47,7 +47,7 @@ makedepends+=('git')
 # would be empty.
 options=('!debug')
 source=("$pkgname::git+$url.git#commit=$_commit")
-sha256sums=('0f65cf02557fa73650b439d52c20155d49b4e7c988f443974a835d230b7ec0ac')
+sha256sums=('25d77c1dc13b6f2de2298b93a910c6c8889ab9ca17f6d7286f1fa4037283dd7c')
 
 prepare() {
   cd "$pkgname"
@@ -75,4 +75,5 @@ package() {
   install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 "THIRD_PARTY_NOTICES" "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY_NOTICES"
 }

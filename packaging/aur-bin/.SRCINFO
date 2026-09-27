@@ -1,6 +1,6 @@
 pkgbase = omarchy-dock-bin
 	pkgdesc = A fast, modern dock for Omarchy (Hyprland / Arch) — prebuilt binaries
-	pkgver = 1.2.6
+	pkgver = 1.3.0
 	pkgrel = 1
 	url = https://github.com/szlukabence/omarchy-dock
 	arch = x86_64
@@ -17,7 +17,7 @@ pkgbase = omarchy-dock-bin
 	provides = omarchy-dock
 	conflicts = omarchy-dock
 	options = !debug
-	source = omarchy-dock-1.2.6-x86_64.tar.gz::https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.6/omarchy-dock-1.2.6-x86_64.tar.gz
-	sha256sums = b526a29529cbdfab84efc5a0dc0a80eaf21f541daad8e091027ae58cb2e8d36c
+	source = omarchy-dock-1.3.0-x86_64.tar.gz::https://github.com/szlukabence/omarchy-dock/releases/download/v1.3.0/omarchy-dock-1.3.0-x86_64.tar.gz
+	sha256sums = 76d3e27f1525f9b3c8cd92997a108cc58a086571c24c3e2637fc85f31cf039a0
 
 pkgname = omarchy-dock-bin
