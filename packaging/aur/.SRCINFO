@@ -1,6 +1,6 @@
 pkgbase = omarchy-dock
 	pkgdesc = A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4
-	pkgver = 1.2.5
+	pkgver = 1.2.6
 	pkgrel = 1
 	url = https://github.com/szlukabence/omarchy-dock
 	arch = x86_64
@@ -19,7 +19,7 @@ pkgbase = omarchy-dock
 	optdepends = ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash
 	conflicts = omarchy-dock-bin
 	options = !debug
-	source = omarchy-dock::git+https://github.com/szlukabence/omarchy-dock.git#commit=d034bd03f5d0a790be463f4a1338fce0182f9bab
-	sha256sums = 962faff64b6d57337f221232c11630bd8c8f492fe89c71e315a9dce2288b0ee9
+	source = omarchy-dock::git+https://github.com/szlukabence/omarchy-dock.git#commit=1cf78fb1daa1850a6f531b9db5de09d2bf2f530f
+	sha256sums = 0f65cf02557fa73650b439d52c20155d49b4e7c988f443974a835d230b7ec0ac
 
 pkgname = omarchy-dock
