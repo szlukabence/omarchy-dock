@@ -108,7 +108,9 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 - **Folder stacks and Trash**, drawn as monochrome glyphs so only real
   applications carry colour — the way the bar draws its widgets. A stack's
   delete button moves the file to the Trash. Only in the Trash can anything be
-  deleted for good, and both that and "Empty Trash" take a second click.
+  deleted for good, and both that and "Empty Trash" take a second click. Even
+  then only a trashed item goes — one with the `.trashinfo` record every trash
+  keeps — and never through a `Trash`, `files` or `info` that is a symlink.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
   tile to switch; drop an app icon on one to send that window there.
 - **Command tiles** — a glyph, a label and a shell command, exactly how Omarchy

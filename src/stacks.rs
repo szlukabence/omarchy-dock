@@ -105,8 +105,12 @@ pub fn trash(path: &Path) -> bool {
 }
 
 /// Permanently delete one item in the trash, and its `.trashinfo` record with
-/// it so no file manager shows a phantom entry. Refuses anything outside the
-/// trash.
+/// it so no file manager shows a phantom entry.
+///
+/// Only a trashed item is deleted: a direct child of the trash's `files`
+/// directory with a valid `.trashinfo` record in `info` — the record every
+/// trash implementation writes when it trashes something. Anything else is
+/// refused, wherever the trash directory turns out to live.
 pub fn delete_from_trash(path: &Path) -> bool {
     trash_dirs().is_some_and(|(files, info)| delete_from_trash_in(&files, &info, path))
 }
@@ -117,58 +121,123 @@ fn delete_from_trash_in(files: &Path, info: &Path, path: &Path) -> bool {
         tracing::warn!(path = %path.display(), "not in the trash; not deleting");
         return false;
     }
-    let ok = if path.is_dir() && !path.is_symlink() {
-        std::fs::remove_dir_all(path).is_ok()
-    } else {
-        std::fs::remove_file(path).is_ok()
-    };
+    let record = record_for(info, name);
+    if !is_trash_record(&record) {
+        tracing::warn!(path = %path.display(), "no trash record for it; not deleting");
+        return false;
+    }
+    let ok = remove_entry(path);
     if ok {
-        let mut record = name.to_os_string();
-        record.push(".trashinfo");
-        std::fs::remove_file(info.join(record)).ok();
+        std::fs::remove_file(&record).ok();
     } else {
         tracing::warn!(path = %path.display(), "cannot delete from trash");
     }
     ok
 }
 
+/// What emptying the trash did.
+pub struct Emptied {
+    /// Trashed items deleted, each with its record.
+    pub deleted: usize,
+    /// Entries left because nothing proves they are trash: a file in `files`
+    /// with no record, or something in `info` that is not a record.
+    pub kept: usize,
+}
+
 /// Permanently delete everything in the trash.
 ///
-/// Deletes the trashed files and their `.trashinfo` records together; leaving
-/// the records behind would show phantom entries in every file manager.
-pub fn empty_trash() -> usize {
-    let Some((files, info)) = trash_dirs() else { return 0 };
-    let mut removed = 0;
-    for dir in [files, info] {
-        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+/// Walks the records, not the files: each valid `.trashinfo` names one
+/// trashed item, which goes together with its record (a record whose item is
+/// already gone goes too, or file managers would show a phantom entry).
+/// Whatever has no record is left, since nothing says it is trash.
+pub fn empty_trash() -> Emptied {
+    let Some((files, info)) = trash_dirs() else { return Emptied { deleted: 0, kept: 0 } };
+    empty_trash_in(&files, &info)
+}
+
+fn empty_trash_in(files: &Path, info: &Path) -> Emptied {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = Emptied { deleted: 0, kept: 0 };
+    if let Ok(read) = std::fs::read_dir(info) {
         for entry in read.flatten() {
-            let path = entry.path();
-            let ok = if path.is_dir() && !path.is_symlink() {
-                std::fs::remove_dir_all(&path).is_ok()
+            let record = entry.path();
+            let name = entry.file_name();
+            let Some(item) = name.as_bytes().strip_suffix(b".trashinfo") else { continue };
+            if item.is_empty() || !is_trash_record(&record) {
+                continue;
+            }
+            let item = files.join(std::ffi::OsStr::from_bytes(item));
+            let gone = std::fs::symlink_metadata(&item).is_err() || remove_entry(&item);
+            if gone && std::fs::remove_file(&record).is_ok() {
+                out.deleted += 1;
             } else {
-                std::fs::remove_file(&path).is_ok()
-            };
-            if ok {
-                removed += 1;
-            } else {
-                tracing::warn!(path = %path.display(), "cannot remove from trash");
+                tracing::warn!(path = %item.display(), "cannot remove from trash");
             }
         }
     }
-    removed
+    let left = |dir: &Path| std::fs::read_dir(dir).map(|r| r.flatten().count()).unwrap_or(0);
+    out.kept = left(files) + left(info);
+    if out.kept > 0 {
+        tracing::warn!(kept = out.kept, "left entries in the trash that have no trash record");
+    }
+    out
+}
+
+/// Delete a trash entry: a directory with everything in it, anything else
+/// (a symlink included, never what it points at) on its own.
+fn remove_entry(path: &Path) -> bool {
+    let real_dir = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir());
+    if real_dir { std::fs::remove_dir_all(path).is_ok() } else { std::fs::remove_file(path).is_ok() }
+}
+
+fn record_for(info: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let mut record = name.to_os_string();
+    record.push(".trashinfo");
+    info.join(record)
+}
+
+/// Whether `path` is a `.trashinfo` record as the freedesktop trash spec
+/// defines it: a regular file (not a symlink) opening with `[Trash Info]`
+/// and giving the item's original `Path=` and its `DeletionDate=`.
+fn is_trash_record(path: &Path) -> bool {
+    use std::io::Read;
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()) {
+        return false;
+    }
+    // A record is a few lines; read no more than a record could be.
+    let mut head = Vec::new();
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    if file.take(64 * 1024).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&head);
+    let mut lines = text.lines().map(str::trim);
+    lines.next() == Some("[Trash Info]")
+        && text.lines().any(|l| l.starts_with("Path="))
+        && text.lines().any(|l| l.starts_with("DeletionDate="))
 }
 
 /// The trash's `files` and `info` directories, for deleting from. Unlike
 /// [`trash_files_dir`], which only reads, there is no fallback: without a
-/// data directory there is no trash, and nothing to delete. Nor is there one
-/// when either is a symlink: that points somewhere other than the trash, and
-/// emptying it would delete whatever is there.
+/// data directory there is no trash, and nothing to delete.
+///
+/// `Trash`, `files` and `info` must each be a real directory. A symlink at
+/// any of them points somewhere other than the trash, and "emptying the
+/// trash" would then mean deleting from wherever it points. (Every entry is
+/// also checked against its record before it goes, so even a data directory
+/// that is itself linked elsewhere loses nothing but trashed items.)
 fn trash_dirs() -> Option<(PathBuf, PathBuf)> {
-    let trash = dirs::data_dir()?.join("Trash");
+    trash_dirs_in(&dirs::data_dir()?)
+}
+
+fn trash_dirs_in(data: &Path) -> Option<(PathBuf, PathBuf)> {
+    let trash = data.join("Trash");
     let (files, info) = (trash.join("files"), trash.join("info"));
-    if files.is_symlink() || info.is_symlink() {
-        tracing::warn!(trash = %trash.display(), "the trash is a symlink; not deleting from it");
-        return None;
+    for dir in [&trash, &files, &info] {
+        if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir()) {
+            tracing::warn!(path = %dir.display(), "not a real trash directory; not deleting from it");
+            return None;
+        }
     }
     Some((files, info))
 }
@@ -202,15 +271,25 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    const RECORD: &[u8] = b"[Trash Info]\nPath=/home/u/a.txt\nDeletionDate=2026-09-27T12:00:00\n";
+
+    fn scratch_trash(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir()
+            .join(format!("omarchy-dock-trash-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (files, info) = (root.join("files"), root.join("info"));
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::create_dir_all(&info).unwrap();
+        (root, files, info)
+    }
+
     #[test]
     fn deleting_from_the_trash_takes_the_record_and_nothing_outside() {
-        let root = std::env::temp_dir().join(format!("omarchy-dock-trash-{}", std::process::id()));
-        let (files, info) = (root.join("files"), root.join("info"));
+        let (root, files, info) = scratch_trash("one");
         std::fs::create_dir_all(files.join("folder/inner")).unwrap();
-        std::fs::create_dir_all(&info).unwrap();
         std::fs::write(files.join("a.txt"), b"x").unwrap();
-        std::fs::write(info.join("a.txt.trashinfo"), b"x").unwrap();
-        std::fs::write(info.join("folder.trashinfo"), b"x").unwrap();
+        std::fs::write(info.join("a.txt.trashinfo"), RECORD).unwrap();
+        std::fs::write(info.join("folder.trashinfo"), RECORD).unwrap();
         std::fs::write(root.join("outside.txt"), b"x").unwrap();
 
         assert!(delete_from_trash_in(&files, &info, &files.join("a.txt")));
@@ -223,6 +302,62 @@ mod tests {
         assert!(!delete_from_trash_in(&files, &info, &files));
         assert!(root.join("outside.txt").exists() && files.exists());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn only_entries_with_a_trash_record_are_deleted() {
+        let (_root, files, info) = scratch_trash("records");
+        // Trashed properly: goes.
+        std::fs::write(files.join("trashed.txt"), b"x").unwrap();
+        std::fs::write(info.join("trashed.txt.trashinfo"), RECORD).unwrap();
+        // No record, or one that is not a trash record: stays.
+        std::fs::write(files.join("unrecorded.txt"), b"x").unwrap();
+        std::fs::write(files.join("fake.txt"), b"x").unwrap();
+        std::fs::write(info.join("fake.txt.trashinfo"), b"not a record").unwrap();
+        // A record whose item is already gone: the record goes.
+        std::fs::write(info.join("orphan.trashinfo"), RECORD).unwrap();
+
+        assert!(!delete_from_trash_in(&files, &info, &files.join("unrecorded.txt")));
+        assert!(!delete_from_trash_in(&files, &info, &files.join("fake.txt")));
+
+        let emptied = empty_trash_in(&files, &info);
+        assert_eq!(emptied.deleted, 2);
+        assert_eq!(emptied.kept, 3);
+        assert!(!files.join("trashed.txt").exists() && !info.join("orphan.trashinfo").exists());
+        assert!(files.join("unrecorded.txt").exists() && files.join("fake.txt").exists());
+        assert!(info.join("fake.txt.trashinfo").exists());
+    }
+
+    #[test]
+    fn a_trashed_symlink_goes_but_not_what_it_points_at() {
+        let (root, files, info) = scratch_trash("link");
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::fs::write(root.join("elsewhere/keep.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), files.join("link")).unwrap();
+        std::fs::write(info.join("link.trashinfo"), RECORD).unwrap();
+        assert_eq!(empty_trash_in(&files, &info).deleted, 1);
+        assert!(root.join("elsewhere/keep.txt").exists());
+    }
+
+    #[test]
+    fn a_linked_trash_directory_is_not_deleted_from() {
+        let base = std::env::temp_dir()
+            .join(format!("omarchy-dock-linked-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, target) = (base.join("data"), base.join("target"));
+        std::fs::create_dir_all(target.join("files")).unwrap();
+        std::fs::create_dir_all(target.join("info")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::os::unix::fs::symlink(&target, data.join("Trash")).unwrap();
+        assert!(trash_dirs_in(&data).is_none());
+        // The same trash, really there, is.
+        std::fs::remove_file(data.join("Trash")).unwrap();
+        std::fs::rename(&target, data.join("Trash")).unwrap();
+        assert!(trash_dirs_in(&data).is_some());
+        // And a symlinked `files` inside a real `Trash` is refused too.
+        std::fs::remove_dir(data.join("Trash/files")).unwrap();
+        std::os::unix::fs::symlink(&base, data.join("Trash/files")).unwrap();
+        assert!(trash_dirs_in(&data).is_none());
     }
 
     #[test]
