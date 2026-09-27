@@ -456,6 +456,37 @@ impl Config {
         }
     }
 
+    /// Load the config, apply `f`, and save it.
+    ///
+    /// Unlike `load`, a file that cannot be read or parsed is an error here
+    /// rather than defaults: saving defaults plus one change over it would
+    /// throw away everything else the user had written there. The user is
+    /// told, and the file is left for them to fix.
+    pub fn edit(f: impl FnOnce(&mut Config)) -> Result<()> {
+        let result = Self::edit_at(&config_path(), Config::bootstrap, f);
+        if let Err(e) = &result {
+            crate::omarchy::notify(
+                "Dock config not saved",
+                Some(&format!("The change was not written, to keep the file as it is. {e:#}")),
+                Some("\u{f071}"),
+            );
+        }
+        result
+    }
+
+    /// `edit` on the file at `path`, starting from `fresh()` if there is none.
+    fn edit_at(path: &Path, fresh: impl FnOnce() -> Config, f: impl FnOnce(&mut Config)) -> Result<()> {
+        let mut cfg = match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str::<Config>(&text)
+                .with_context(|| format!("parsing {}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        f(&mut cfg);
+        let text = toml::to_string_pretty(&cfg).context("serialising config")?;
+        crate::safe_write::replace(path, text.as_bytes())
+    }
+
     /// Defaults, plus anything worth importing from the stock Omarchy dock.
     fn bootstrap() -> Self {
         let mut cfg = Config::default();
@@ -472,12 +503,8 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let path = config_path();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
-        }
         let text = toml::to_string_pretty(self).context("serialising config")?;
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+        crate::safe_write::replace(&path, text.as_bytes())?;
         tracing::info!(path = %path.display(), "config written");
         Ok(())
     }
@@ -586,5 +613,43 @@ mod tests {
         assert_eq!(expand_tilde(Path::new("~/Downloads")), home.join("Downloads"));
         // Only a leading ~ is special; a path containing one is left alone.
         assert_eq!(expand_tilde(Path::new("/tmp/~x")), PathBuf::from("/tmp/~x"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("omarchy-dock-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.toml")
+    }
+
+    #[test]
+    fn an_edit_never_saves_over_a_file_it_could_not_parse() {
+        let path = scratch("invalid");
+        let text = "[dock]\nicon_size = \"big\"   # a typo, and a comment worth keeping\n";
+        std::fs::write(&path, text).unwrap();
+        let edited = Config::edit_at(&path, Config::default, |c| c.items.pinned.push("x".into()));
+        assert!(edited.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn an_edit_keeps_the_rest_of_the_file() {
+        let path = scratch("valid");
+        let mut cfg = Config::default();
+        cfg.dock.icon_size = 61.0;
+        std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        Config::edit_at(&path, Config::default, |c| c.items.pinned.push("x".into())).unwrap();
+        let saved: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.dock.icon_size, 61.0);
+        assert_eq!(saved.items.pinned.last().map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn a_first_edit_starts_from_fresh() {
+        let path = scratch("fresh");
+        Config::edit_at(&path, Config::default, |c| c.items.pinned = vec!["x".into()]).unwrap();
+        let saved: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.items.pinned, vec!["x".to_string()]);
     }
 }

@@ -288,7 +288,7 @@ fn set_plugin_enabled(on: bool) -> Result<bool> {
 
 fn set_enabled(id: &str, on: bool) -> Result<bool> {
     let path = shell_json_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Some(text) = read_existing(&path)? else {
         // No shell config at all: nothing to enable ourselves in, and creating
         // one from scratch is not the dock's business.
         return Ok(false);
@@ -323,8 +323,7 @@ fn set_enabled(id: &str, on: bool) -> Result<bool> {
         let mut out = serde_json::to_string_pretty(&json)
             .context("serialising shell.json")?;
         out.push('\n');
-        std::fs::write(&path, out)
-            .with_context(|| format!("writing {}", path.display()))?;
+        write_file(&path, &out)?;
     }
     Ok(changed)
 }
@@ -568,9 +567,18 @@ fn blur_is_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn install_blur() -> Result<Report> {
-    let path = looknfeel_path();
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+fn install_blur(path: PathBuf) -> Result<Report> {
+    let existing = match read_existing(&path) {
+        Ok(text) => text.unwrap_or_default(),
+        Err(e) => {
+            return Ok(Report {
+                label: "hyprland blur",
+                installed: false,
+                note: Some(unreadable_note(&e)),
+                path,
+            })
+        }
+    };
 
     let next = match find_block(&existing, HYPR_BEGIN, HYPR_END) {
         // Replace in place, so an upgrade picks up a changed rule.
@@ -604,9 +612,18 @@ fn install_blur() -> Result<Report> {
     Ok(Report { label: "hyprland blur", path, installed: true, note: Some(note) })
 }
 
-fn remove_blur() -> Result<Report> {
-    let path = looknfeel_path();
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+fn remove_blur(path: PathBuf) -> Result<Report> {
+    let existing = match read_existing(&path) {
+        Ok(text) => text.unwrap_or_default(),
+        Err(e) => {
+            return Ok(Report {
+                label: "hyprland blur",
+                installed: true,
+                note: Some(unreadable_note(&e)),
+                path,
+            })
+        }
+    };
     match find_block(&existing, HYPR_BEGIN, HYPR_END) {
         Block::Found(before, after) => {
             let next = format!("{}\n{}", before.trim_end(), after.trim_start_matches('\n'));
@@ -623,6 +640,69 @@ fn remove_blur() -> Result<Report> {
         Block::Absent => {}
     }
     Ok(Report { label: "hyprland blur", path, installed: false, note: None })
+}
+
+/// Add the dock's rows to the menu extension, creating the file if there is
+/// none. A file that exists but cannot be read is left as it is.
+fn install_menu(path: PathBuf) -> Result<Report> {
+    let existing = match read_existing(&path) {
+        Ok(text) => text.unwrap_or_else(|| "{\n}\n".into()),
+        Err(e) => {
+            return Ok(Report {
+                label: "menu extension",
+                installed: false,
+                note: Some(unreadable_note(&e)),
+                path,
+            })
+        }
+    };
+    Ok(match splice_menu_block(&existing, &menu_block()) {
+        Some(next) => {
+            write_file(&path, &next)?;
+            Report {
+                label: "menu extension",
+                path,
+                installed: true,
+                note: Some("`Dock` is now on the Omarchy menu and in its search".into()),
+            }
+        }
+        None => Report {
+            label: "menu extension",
+            path,
+            installed: false,
+            note: Some(if matches!(find_block(&existing, MENU_BEGIN, MENU_END), Block::Unterminated) {
+                unterminated_note()
+            } else {
+                "could not find where to insert; leave it and add the rows by hand".into()
+            }),
+        },
+    })
+}
+
+/// Take the dock's rows back out of the menu extension, leaving the rest.
+fn remove_menu(path: PathBuf) -> Result<Report> {
+    let existing = match read_existing(&path) {
+        Ok(text) => text.unwrap_or_default(),
+        Err(e) => {
+            return Ok(Report {
+                label: "menu extension",
+                installed: true,
+                note: Some(unreadable_note(&e)),
+                path,
+            })
+        }
+    };
+    let next = remove_menu_block(&existing);
+    if next != existing {
+        write_file(&path, &next)?;
+    }
+    let kept = next.contains(MENU_BEGIN);
+    Ok(Report {
+        label: "menu extension",
+        installed: kept,
+        note: kept.then(unterminated_note),
+        path,
+    })
 }
 
 /// Why a file with a start marker but no end marker was not touched.
@@ -738,35 +818,12 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
         }),
     }
 
-    // Menu extension.
-    let path = menu_extension_path();
-    let existing = read_or_default_menu(&path);
-    match splice_menu_block(&existing, &menu_block()) {
-        Some(next) => {
-            write_file(&path, &next)?;
-            out.push(Report {
-                label: "menu extension",
-                path,
-                installed: true,
-                note: Some("`Dock` is now on the Omarchy menu and in its search".into()),
-            });
-        }
-        None => out.push(Report {
-            label: "menu extension",
-            path,
-            installed: false,
-            note: Some(if matches!(find_block(&existing, MENU_BEGIN, MENU_END), Block::Unterminated) {
-                unterminated_note()
-            } else {
-                "could not find where to insert; leave it and add the rows by hand".into()
-            }),
-        }),
-    }
+    out.push(install_menu(menu_extension_path())?);
 
     // Blur is opt-in: it turns the effect on for the *whole* desktop, which
     // Omarchy deliberately ships off, and only the glass style needs it.
     if blur {
-        out.push(install_blur()?);
+        out.push(install_blur(looknfeel_path())?);
     } else if !blur_is_enabled() {
         out.push(Report {
             label: "hyprland blur",
@@ -835,20 +892,8 @@ pub fn uninstall() -> Result<Vec<Report>> {
         path: dir,
     });
 
-    let path = menu_extension_path();
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let next = remove_menu_block(&existing);
-    if next != existing {
-        write_file(&path, &next)?;
-    }
-    let kept = next.contains(MENU_BEGIN);
-    out.push(Report {
-        label: "menu extension",
-        installed: kept,
-        note: kept.then(unterminated_note),
-        path,
-    });
-    out.push(remove_blur()?);
+    out.push(remove_menu(menu_extension_path())?);
+    out.push(remove_blur(looknfeel_path())?);
 
     Ok(out)
 }
@@ -886,17 +931,25 @@ pub fn status() -> Vec<Report> {
 
 // ── file helpers ────────────────────────────────────────────────────────────
 
-fn read_or_default_menu(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|_| "{\n}\n".to_string())
+/// A file's text, or `None` if it does not exist yet. Every other failure —
+/// no permission, contents that are not UTF-8, an I/O error — is an error and
+/// never an empty file: an edit made to "nothing" and written back would
+/// replace whatever the file really holds.
+fn read_existing(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Why a file that could not be read was not touched.
+fn unreadable_note(e: &anyhow::Error) -> String {
+    format!("left alone: {e:#}")
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(path, contents)
-        .with_context(|| format!("writing {}", path.display()))
+    crate::safe_write::replace(path, contents.as_bytes())
 }
 
 fn write_executable(path: &Path, contents: &str) -> Result<()> {
@@ -1174,6 +1227,42 @@ mod tests {
         let existing = "{\n  \"a\": {\"description\":\"see http://x\"}\n}\n";
         let out = splice_menu_block(existing, "BLOCK").unwrap();
         assert!(out.contains("},\nBLOCK"), "{out}");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_replaced() {
+        let (dir, _) = scratch("unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Not UTF-8, so it cannot be read as text; what is there must survive.
+        let bytes: &[u8] = b"{\n  \"mine\": 1 \xff\n}\n";
+        let menu = dir.join("omarchy-menu.jsonc");
+        let looknfeel = dir.join("looknfeel.conf");
+        for path in [&menu, &looknfeel] {
+            std::fs::write(path, bytes).unwrap();
+        }
+
+        let report = install_menu(menu.clone()).unwrap();
+        assert!(!report.installed);
+        assert!(report.note.unwrap().starts_with("left alone"));
+        let report = install_blur(looknfeel.clone()).unwrap();
+        assert!(!report.installed);
+        assert!(remove_menu(menu.clone()).unwrap().installed);
+        assert!(remove_blur(looknfeel.clone()).unwrap().installed);
+
+        for path in [&menu, &looknfeel] {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn a_missing_menu_file_is_created() {
+        let (dir, _) = scratch("menu-new");
+        let menu = dir.join("omarchy-menu.jsonc");
+        assert!(install_menu(menu.clone()).unwrap().installed);
+        let text = std::fs::read_to_string(&menu).unwrap();
+        assert!(text.contains(MENU_BEGIN) && text.contains(MENU_END));
+        assert!(!remove_menu(menu.clone()).unwrap().installed);
+        assert!(!std::fs::read_to_string(&menu).unwrap().contains(MENU_BEGIN));
     }
 
     fn wrapped(body: &str) -> String {

@@ -370,9 +370,7 @@ fn add_separator() {
 
 /// Load, mutate, and save the config. The watcher applies it.
 fn edit<F: FnOnce(&mut Config)>(f: F) {
-    let mut cfg = Config::load();
-    f(&mut cfg);
-    if let Err(e) = cfg.save() {
+    if let Err(e) = Config::edit(f) {
         tracing::error!(error = %e, "cannot save settings");
     }
 }

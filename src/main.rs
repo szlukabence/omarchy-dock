@@ -10,6 +10,7 @@ mod hypr;
 mod ipc_ctl;
 mod omarchy;
 mod runtime;
+mod safe_write;
 mod stacks;
 mod state;
 mod theme;

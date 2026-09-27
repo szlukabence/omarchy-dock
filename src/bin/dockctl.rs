@@ -18,6 +18,8 @@ use std::path::PathBuf;
 // put it in, and it is not worth becoming one for a single module.
 #[path = "../integrate.rs"]
 mod integrate;
+#[path = "../safe_write.rs"]
+mod safe_write;
 
 fn socket_path() -> PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());

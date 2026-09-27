@@ -163,16 +163,18 @@ impl App {
             Control::ToggleAutohide => {
                 // Persist it, so the toggle survives a restart and matches
                 // what the config file says.
-                let mut cfg = Config::load();
-                cfg.autohide.mode = match cfg.autohide.mode {
-                    crate::config::HideMode::Never => crate::config::HideMode::Intelligent,
-                    _ => crate::config::HideMode::Never,
-                };
-                let mode = cfg.autohide.mode;
-                if let Err(e) = cfg.save() {
-                    tracing::error!(error = %e, "cannot save autohide mode");
+                let mut mode = None;
+                let saved = Config::edit(|cfg| {
+                    cfg.autohide.mode = match cfg.autohide.mode {
+                        crate::config::HideMode::Never => crate::config::HideMode::Intelligent,
+                        _ => crate::config::HideMode::Never,
+                    };
+                    mode = Some(cfg.autohide.mode);
+                });
+                match saved {
+                    Ok(()) => tracing::info!(?mode, "autohide toggled"),
+                    Err(e) => tracing::error!(error = %e, "cannot save autohide mode"),
                 }
-                tracing::info!(?mode, "autohide toggled");
             }
             Control::Reload => {
                 self.raw_cfg = Config::load();
@@ -558,9 +560,7 @@ fn needs_rebuild(old: &Config, new: &Config) -> bool {
 /// Create one surface per monitor the config asks for.
 /// Apply an edit to the pinned list and persist it.
 fn edit_pins<F: FnOnce(&mut Vec<String>)>(f: F) {
-    let mut cfg = Config::load();
-    f(&mut cfg.items.pinned);
-    if let Err(e) = cfg.save() {
+    if let Err(e) = Config::edit(|cfg| f(&mut cfg.items.pinned)) {
         tracing::error!(error = %e, "cannot save pinned list");
     }
 }
@@ -602,12 +602,13 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
             });
         }
         MenuAction::SetPinned { key, pinned } => {
-            let mut cfg = Config::load();
-            cfg.items.pinned.retain(|p| p != &key);
-            if pinned {
-                cfg.items.pinned.push(key.clone());
-            }
-            match cfg.save() {
+            let saved = Config::edit(|cfg| {
+                cfg.items.pinned.retain(|p| p != &key);
+                if pinned {
+                    cfg.items.pinned.push(key.clone());
+                }
+            });
+            match saved {
                 Ok(()) => tracing::info!(%key, pinned, "pin updated"),
                 Err(e) => tracing::error!(%key, error = %e, "cannot save pin"),
             }

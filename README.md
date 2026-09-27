@@ -89,6 +89,11 @@ directory or the hook holds anything else (your edit, or another plugin), it is
 left alone, the plugin is not enabled, and the report says what was found.
 `uninstall` removes the plugin directory only once that leaves it empty, and
 never a git-managed plugin checkout — that is `omarchy plugin remove`'s job.
+A file the dock edits a block in (the menu extension, `shell.json`,
+`looknfeel.lua`) that exists but cannot be read — no permission, not UTF-8 — is
+left alone and reported, never treated as empty. Every write goes to a
+temporary file that is then renamed into place, so a crash or a full disk
+leaves the old file whole, and a symlinked file stays a symlink.
 
 ## What it does
 
@@ -145,7 +150,10 @@ entry dropped, only if its files are byte for byte what 1.2.0 wrote; otherwise
 it may be another plugin of that name, and both are left alone. The files
 earlier releases wrote are kept in `resources/released/` for exactly these
 comparisons. Nothing is written on start, on
-poll, or on open. The dock itself never runs `sudo` — the only privileged step
+poll, or on open. The dock saves its own `config.toml` only when you change a
+setting from the dock (pinning, the settings window, the auto-hide toggle), and
+not at all while the file has an error: the change is refused with a
+notification rather than saved over what you wrote. The dock itself never runs `sudo` — the only privileged step
 is the `pacman` install you run — and it makes no network requests. `/tmp` is
 read once — Omarchy's own screen-recording marker — and never written.
 
