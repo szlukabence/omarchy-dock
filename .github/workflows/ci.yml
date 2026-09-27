@@ -29,10 +29,13 @@ jobs:
       # Packages come from one day's snapshot of the Arch Linux Archive, so a
       # rebuild of the same commit gets the same packages: like the image
       # digest, bump the date deliberately. The keyring first, so the
-      # snapshot's signatures verify against keys of the same day.
+      # snapshot's signatures verify against keys of the same day; the image
+      # ships pacman's keyring uninitialised, and without that the new keys
+      # are never imported.
       - name: Pin the package repositories
         run: |
           echo 'Server = https://archive.archlinux.org/repos/2026/09/26/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman-key --init
           pacman -Syy --noconfirm archlinux-keyring
 
       - name: Install build dependencies
