@@ -32,9 +32,15 @@ pub enum Control {
     Settings,
 }
 
-pub fn socket_path() -> PathBuf {
-    let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(base).join("omarchy-dock.sock")
+/// The control socket, in the user's private runtime directory.
+///
+/// Never in `/tmp` as a fallback: that is shared by every user, and anyone who
+/// could reach the socket could drive the dock — `activate` launches apps. A
+/// session without `XDG_RUNTIME_DIR` (never the case under Hyprland) simply
+/// has no control socket.
+pub fn socket_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_RUNTIME_DIR").filter(|b| !b.is_empty())?;
+    Some(PathBuf::from(base).join("omarchy-dock.sock"))
 }
 
 /// Parse one command line. Unknown verbs are rejected rather than ignored, so
@@ -61,7 +67,7 @@ pub fn parse(line: &str) -> Option<Control> {
 
 /// Serve the control socket until the process exits.
 pub async fn serve(tx: Sender) -> Result<()> {
-    let path = socket_path();
+    let path = socket_path().context("XDG_RUNTIME_DIR is not set; no control socket")?;
 
     // A stale socket from a crashed instance would make bind() fail. Removing
     // it is safe: a live instance would still be holding the path, and we

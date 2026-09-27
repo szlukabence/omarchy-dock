@@ -36,6 +36,8 @@ futures-util  = "0.3.34"
 serde      = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml       = "1.1"
+# Edits config.toml in place, keeping the user's comments and layout.
+toml_edit  = "0.25"
 
 # --- file watching: config.toml, style.css, theme symlink, Trash, stacks ---
 notify                = "8.2.0"
@@ -47,6 +49,7 @@ thiserror          = "2"
 tracing            = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs               = "6"
+libc               = "0.2"
 zbus = { version = "5.13.2", default-features = false, features = ["tokio"] }
 
 [profile.release]

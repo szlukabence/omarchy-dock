@@ -19,27 +19,21 @@ pub mod request;
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
-/// Locate Hyprland's IPC directory.
+/// Locate Hyprland's IPC directory: `$XDG_RUNTIME_DIR/hypr/<sig>/`.
 ///
-/// Modern Hyprland uses `$XDG_RUNTIME_DIR/hypr/<sig>/`; the pre-0.40 location
-/// was `/tmp/hypr/<sig>/`. The legacy path is still tried so the dock works on
-/// older setups, but on this machine `/tmp/hypr` does not exist at all.
+/// Hyprland before 0.40 used `/tmp/hypr/<sig>/`. That is not tried: Omarchy
+/// needs a far newer Hyprland, and `/tmp` is shared, so a socket found there
+/// could belong to another user posing as the compositor.
 pub fn ipc_dir() -> Result<PathBuf> {
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
         .map_err(|_| anyhow!("HYPRLAND_INSTANCE_SIGNATURE unset — not running under Hyprland"))?;
-
-    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        let p = PathBuf::from(runtime).join("hypr").join(&sig);
-        if p.exists() {
-            return Ok(p);
-        }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|r| !r.is_empty())
+        .ok_or_else(|| anyhow!("XDG_RUNTIME_DIR unset — cannot find Hyprland's socket"))?;
+    let p = PathBuf::from(runtime).join("hypr").join(&sig);
+    if p.exists() {
+        return Ok(p);
     }
-
-    let legacy = PathBuf::from("/tmp/hypr").join(&sig);
-    if legacy.exists() {
-        return Ok(legacy);
-    }
-
     Err(anyhow!("no Hyprland IPC directory for instance {sig}"))
 }
 

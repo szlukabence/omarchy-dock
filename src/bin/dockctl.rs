@@ -21,9 +21,11 @@ mod integrate;
 #[path = "../safe_write.rs"]
 mod safe_write;
 
-fn socket_path() -> PathBuf {
-    let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(base).join("omarchy-dock.sock")
+/// Where the dock listens: the user's private runtime directory, never `/tmp`
+/// (see `ipc_ctl::socket_path`).
+fn socket_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_RUNTIME_DIR").filter(|b| !b.is_empty())?;
+    Some(PathBuf::from(base).join("omarchy-dock.sock"))
 }
 
 fn main() -> std::process::ExitCode {
@@ -60,7 +62,14 @@ fn main() -> std::process::ExitCode {
         }
         "uninstall" => return report(integrate::uninstall(), "removed"),
         "status" => {
-            for r in integrate::status() {
+            let reports = match integrate::status() {
+                Ok(reports) => reports,
+                Err(e) => {
+                    eprintln!("omarchy-dockctl: {e:#}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            for r in reports {
                 let mark = if r.installed { "✓" } else { "·" };
                 println!("{mark} {:<16} {}", r.label, r.path.display());
             }
@@ -69,7 +78,10 @@ fn main() -> std::process::ExitCode {
         _ => {}
     }
 
-    let path = socket_path();
+    let Some(path) = socket_path() else {
+        eprintln!("omarchy-dockctl: XDG_RUNTIME_DIR is not set, so there is no dock to reach");
+        return std::process::ExitCode::FAILURE;
+    };
     let mut stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(e) => {

@@ -20,9 +20,12 @@ pub struct StackEntry {
 }
 
 /// The freedesktop trash directory holding trashed files themselves.
+///
+/// Without a data directory there is no trash: the path then names nothing,
+/// rather than a directory other users can write to.
 pub fn trash_files_dir() -> PathBuf {
     dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent"))
         .join("Trash")
         .join("files")
 }
@@ -157,10 +160,17 @@ pub fn empty_trash() -> usize {
 
 /// The trash's `files` and `info` directories, for deleting from. Unlike
 /// [`trash_files_dir`], which only reads, there is no fallback: without a
-/// data directory there is no trash, and nothing to delete.
+/// data directory there is no trash, and nothing to delete. Nor is there one
+/// when either is a symlink: that points somewhere other than the trash, and
+/// emptying it would delete whatever is there.
 fn trash_dirs() -> Option<(PathBuf, PathBuf)> {
     let trash = dirs::data_dir()?.join("Trash");
-    Some((trash.join("files"), trash.join("info")))
+    let (files, info) = (trash.join("files"), trash.join("info"));
+    if files.is_symlink() || info.is_symlink() {
+        tracing::warn!(trash = %trash.display(), "the trash is a symlink; not deleting from it");
+        return None;
+    }
+    Some((files, info))
 }
 
 fn spawn(program: &str, args: &[&std::ffi::OsStr]) {

@@ -14,8 +14,10 @@
 //! * a **menu extension**, so the dock's own settings live where every other
 //!   Omarchy setting lives, reachable from the launcher search.
 //!
-//! Everything written here is confined to `~/.config/omarchy/`, is marked as
-//! belonging to the dock, and is removed cleanly. The menu extension is the
+//! Everything written here is confined to `~/.config/omarchy/` — plus copies
+//! of what was written in `~/.local/state/omarchy-dock/`, and the opt-in blur
+//! block in `~/.config/hypr/looknfeel.lua` — is marked as belonging to the
+//! dock, and is removed cleanly. The menu extension is the
 //! one file we share with the user, so it is edited between markers and never
 //! rewritten wholesale. Nothing is ever deleted on the strength of its name
 //! alone: a plugin file goes only if it is byte for byte what the dock wrote,
@@ -63,8 +65,15 @@ fn find_block<'a>(text: &'a str, begin: &str, end: &str) -> Block<'a> {
     }
 }
 
+/// `~/.config`. [`preflight`] has checked it can be found before anything
+/// is written; there is no fallback, so nothing ever lands relative to
+/// wherever the command happened to be run.
+fn config_home() -> PathBuf {
+    dirs::config_dir().expect("preflight found the config directory")
+}
+
 pub fn omarchy_config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("omarchy")
+    config_home().join("omarchy")
 }
 
 fn hook_path() -> PathBuf {
@@ -86,7 +95,7 @@ fn legacy_plugin_dir() -> PathBuf {
 /// that directory — including the dock's files after someone edited them.
 fn written_copies_dir() -> PathBuf {
     dirs::state_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+        .expect("preflight found the state directory")
         .join("omarchy-dock/plugin-files")
 }
 
@@ -207,6 +216,11 @@ fn is_dock_file(path: &Path, file: &DockFile, copies: Option<&Path>) -> bool {
 /// What in `dir` is not the dock's: every entry other than `files`, and each
 /// of `files` that is there but is not the dock's. Empty when `dir` is absent.
 fn foreign_entries(dir: &Path, files: &[DockFile], copies: Option<&Path>) -> Result<Vec<String>> {
+    if is_symlink(dir) {
+        // Linked here by someone — a development checkout, say. What it
+        // points at is theirs, and so is the link.
+        return Ok(vec![symlink_note(dir)]);
+    }
     let read = match std::fs::read_dir(dir) {
         Ok(read) => read,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -222,6 +236,11 @@ fn foreign_entries(dir: &Path, files: &[DockFile], copies: Option<&Path>) -> Res
         .collect();
     foreign.sort();
     Ok(foreign)
+}
+
+fn symlink_note(dir: &Path) -> String {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    format!("{name} (a symlink)")
 }
 
 /// Write the plugin files into `dir`, keeping a copy of each in `copies` —
@@ -245,6 +264,9 @@ fn write_plugin_files(dir: &Path, copies: &Path) -> Result<Vec<String>> {
 /// empty. Returns the names of whatever is still there, which is not the
 /// dock's to delete.
 fn remove_plugin_files(dir: &Path, files: &[DockFile], copies: Option<&Path>) -> Result<Vec<String>> {
+    if is_symlink(dir) {
+        return Ok(vec![symlink_note(dir)]);
+    }
     for file in files {
         let path = dir.join(file.name);
         if is_dock_file(&path, file, copies) {
@@ -429,8 +451,10 @@ pub fn splice_menu_block(existing: &str, block: &str) -> Option<String> {
         Block::Absent => {}
     }
 
-    // Insert before the final closing brace of the JSONC object.
-    let at = existing.rfind('}')?;
+    // Insert before the brace that closes the object: the last `}` that is
+    // JSONC content. A `}` in a comment after it, or in a string, is not it,
+    // and inserting there would put the rows outside the object.
+    let (at, '}') = last_significant(existing)? else { return None };
     let (before, after) = existing.split_at(at);
 
     // JSONC tolerates a trailing comma, but a *missing* one between our block
@@ -449,12 +473,17 @@ pub fn splice_menu_block(existing: &str, block: &str) -> Option<String> {
 /// comma after. Comments do not, which is the whole point — the extension file
 /// Omarchy ships is an empty object wrapped in a page of examples.
 fn last_significant_char(s: &str) -> Option<char> {
+    last_significant(s).map(|(_, c)| c)
+}
+
+/// [`last_significant_char`], with its byte offset in `s`.
+fn last_significant(s: &str) -> Option<(usize, char)> {
     let mut last = None;
-    let mut chars = s.chars().peekable();
+    let mut chars = s.char_indices().peekable();
     let mut in_string = false;
     let mut escaped = false;
 
-    while let Some(c) = chars.next() {
+    while let Some((i, c)) = chars.next() {
         if in_string {
             if escaped {
                 escaped = false;
@@ -463,27 +492,27 @@ fn last_significant_char(s: &str) -> Option<char> {
             } else if c == '"' {
                 in_string = false;
             }
-            last = Some(c);
+            last = Some((i, c));
             continue;
         }
 
         match c {
             '"' => {
                 in_string = true;
-                last = Some(c);
+                last = Some((i, c));
             }
-            '/' if chars.peek() == Some(&'/') => {
+            '/' if chars.peek().map(|&(_, n)| n) == Some('/') => {
                 // Line comment: skip to the newline, which is not significant.
-                for c in chars.by_ref() {
+                for (_, c) in chars.by_ref() {
                     if c == '\n' {
                         break;
                     }
                 }
             }
-            '/' if chars.peek() == Some(&'*') => {
+            '/' if chars.peek().map(|&(_, n)| n) == Some('*') => {
                 chars.next();
                 let mut prev = '\0';
-                for c in chars.by_ref() {
+                for (_, c) in chars.by_ref() {
                     if prev == '*' && c == '/' {
                         break;
                     }
@@ -491,7 +520,7 @@ fn last_significant_char(s: &str) -> Option<char> {
                 }
             }
             c if c.is_whitespace() => {}
-            c => last = Some(c),
+            c => last = Some((i, c)),
         }
     }
     last
@@ -523,7 +552,7 @@ const HYPR_BEGIN: &str = "-- >>> omarchy-dock — managed block, edits are overw
 const HYPR_END: &str = "-- <<< omarchy-dock <<<";
 
 fn looknfeel_path() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("hypr/looknfeel.lua")
+    config_home().join("hypr/looknfeel.lua")
 }
 
 /// The blur setup the glass style needs.
@@ -570,8 +599,8 @@ fn blur_is_enabled() -> bool {
 }
 
 fn install_blur(path: PathBuf) -> Result<Report> {
-    let existing = match read_existing(&path) {
-        Ok(text) => text.unwrap_or_default(),
+    let original = match read_existing(&path) {
+        Ok(text) => text,
         Err(e) => {
             return Ok(Report {
                 label: "hyprland blur",
@@ -581,8 +610,9 @@ fn install_blur(path: PathBuf) -> Result<Report> {
             })
         }
     };
+    let existing = original.as_deref().unwrap_or_default();
 
-    let next = match find_block(&existing, HYPR_BEGIN, HYPR_END) {
+    let next = match find_block(existing, HYPR_BEGIN, HYPR_END) {
         // Replace in place, so an upgrade picks up a changed rule.
         Block::Found(before, after) => format!("{before}{}{after}", hypr_block()),
         Block::Absent => format!("{}\n\n{}\n", existing.trim_end(), hypr_block()),
@@ -595,23 +625,73 @@ fn install_blur(path: PathBuf) -> Result<Report> {
             })
         }
     };
+    let errors_before = hyprland_errors();
     write_file(&path, &next)?;
 
-    // Hyprland reloads on save; ask it whether what we wrote actually parses,
-    // rather than leaving a broken config behind and saying nothing.
-    let errors = std::process::Command::new("hyprctl")
+    // Never leave the user's Hyprland config broken: reload, and if that
+    // brings errors that were not there before, put the file back.
+    reload_hyprland();
+    let errors: Vec<String> =
+        hyprland_errors().into_iter().filter(|e| !errors_before.contains(e)).collect();
+    if errors.is_empty() {
+        return Ok(Report {
+            label: "hyprland blur",
+            path,
+            installed: true,
+            note: Some("global blur on, dock layer opted in — needed only by `theme.style = \"glass\"`".into()),
+        });
+    }
+    let note = if restore(&path, &next, original.as_deref())? {
+        reload_hyprland();
+        format!("Hyprland rejected it, so the file was put back as it was: {}", errors.join("; "))
+    } else {
+        format!(
+            "Hyprland reports errors after this, and the file has changed since, so it was \
+             not put back: {}",
+            errors.join("; ")
+        )
+    };
+    Ok(Report { label: "hyprland blur", path, installed: false, note: Some(note) })
+}
+
+/// Undo a write: put `original` back at `path` (or remove the file, if there
+/// was none) — but only while it still holds exactly `written`. If anything
+/// has changed it since, that change is not ours to throw away, and `false`
+/// says it was left.
+fn restore(path: &Path, written: &str, original: Option<&str>) -> Result<bool> {
+    if read_existing(path)?.as_deref() != Some(written) {
+        return Ok(false);
+    }
+    match original {
+        Some(text) => write_file(path, text)?,
+        None => {
+            remove_path(path)?;
+        }
+    }
+    Ok(true)
+}
+
+fn reload_hyprland() {
+    let _ = std::process::Command::new("hyprctl").arg("reload").output();
+}
+
+/// The config errors Hyprland currently reports, one per line. Empty when
+/// there are none, or when Hyprland is not there to ask.
+fn hyprland_errors() -> Vec<String> {
+    std::process::Command::new("hyprctl")
         .arg("configerrors")
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    let note = if errors.is_empty() || errors == "no errors" {
-        "global blur on, dock layer opted in — needed only by `theme.style = \"glass\"`".into()
-    } else {
-        format!("Hyprland reports config errors after this: {errors}")
-    };
-
-    Ok(Report { label: "hyprland blur", path, installed: true, note: Some(note) })
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && *l != "no errors")
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn remove_blur(path: PathBuf) -> Result<Report> {
@@ -716,7 +796,36 @@ fn unterminated_note() -> String {
 
 // ── install / uninstall ─────────────────────────────────────────────────────
 
+/// Refuse to run where the dock's files would land somewhere they should not.
+///
+/// Everything here lives in the user's home. Run through `sudo`, it would be
+/// written as root: into root's home, or — with the user's `HOME` kept —
+/// root-owned into theirs, where they could no longer edit or remove it.
+fn preflight() -> Result<()> {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    anyhow::ensure!(
+        unsafe { libc::geteuid() } != 0,
+        "run this as your own user, not as root: everything it installs is in your home directory"
+    );
+    anyhow::ensure!(
+        dirs::config_dir().is_some() && dirs::state_dir().is_some(),
+        "cannot find your config and state directories (is HOME set?)"
+    );
+    Ok(())
+}
+
+/// Whether anything at all is at `path`. A dangling symlink counts, and so
+/// does an entry that cannot be inspected: neither is free to write over.
+fn present(path: &Path) -> bool {
+    !matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
 pub fn install(blur: bool) -> Result<Vec<Report>> {
+    preflight()?;
     let mut out = Vec::new();
 
     // Hook. Written only over the dock's own: a hook of the same name that
@@ -725,7 +834,7 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
     let copies = written_copies_dir();
     let script = hook_script();
     let hook = DockFile { name: HOOK_NAME, current: Some(&script), released: &[] };
-    if path.exists() && !is_dock_file(&path, &hook, Some(&copies)) {
+    if present(&path) && !is_dock_file(&path, &hook, Some(&copies)) {
         out.push(Report {
             label: "theme-set hook",
             path,
@@ -843,6 +952,7 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
 }
 
 pub fn uninstall() -> Result<Vec<Report>> {
+    preflight()?;
     let mut out = Vec::new();
 
     // Only the dock's own hook: one someone edited, or replaced with their
@@ -856,7 +966,7 @@ pub fn uninstall() -> Result<Vec<Report>> {
         remove_path(&path)?;
     }
     remove_path(&copies.join(HOOK_NAME))?;
-    let kept = path.exists();
+    let kept = present(&path);
     out.push(Report {
         label: "theme-set hook",
         installed: kept,
@@ -901,16 +1011,20 @@ pub fn uninstall() -> Result<Vec<Report>> {
 }
 
 /// What is currently installed, without changing anything.
-pub fn status() -> Vec<Report> {
+pub fn status() -> Result<Vec<Report>> {
+    anyhow::ensure!(
+        dirs::config_dir().is_some() && dirs::state_dir().is_some(),
+        "cannot find your config and state directories (is HOME set?)"
+    );
     let menu = menu_extension_path();
     let menu_installed = std::fs::read_to_string(&menu)
         .map(|s| s.contains(MENU_BEGIN))
         .unwrap_or(false);
 
-    vec![
+    Ok(vec![
         Report {
             label: "theme-set hook",
-            installed: hook_path().exists(),
+            installed: present(&hook_path()),
             path: hook_path(),
             note: None,
         },
@@ -928,7 +1042,7 @@ pub fn status() -> Vec<Report> {
             path: looknfeel_path(),
             note: Some("only `theme.style = \"glass\"` needs it".into()),
         },
-    ]
+    ])
 }
 
 // ── file helpers ────────────────────────────────────────────────────────────
@@ -1265,6 +1379,58 @@ mod tests {
         assert!(text.contains(MENU_BEGIN) && text.contains(MENU_END));
         assert!(!remove_menu(menu.clone()).unwrap().installed);
         assert!(!std::fs::read_to_string(&menu).unwrap().contains(MENU_BEGIN));
+    }
+
+    #[test]
+    fn a_brace_in_a_trailing_comment_is_not_the_closing_one() {
+        let existing = "{\n  \"a\": 1\n}\n// e.g. \"b\": {\"x\": {}}\n";
+        let out = splice_menu_block(existing, "BLOCK").unwrap();
+        assert!(out.starts_with("{\n  \"a\": 1,\nBLOCK\n}"), "{out}");
+        assert!(out.ends_with("// e.g. \"b\": {\"x\": {}}\n"), "{out}");
+        // No object to close at all: nothing to insert into.
+        assert!(splice_menu_block("// just a comment }\n", "BLOCK").is_none());
+    }
+
+    #[test]
+    fn a_symlinked_plugin_directory_is_left_alone() {
+        let (dir, copies) = scratch("symlinked");
+        let real = dir.with_file_name("real-plugin");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &dir).unwrap();
+        for file in &PLUGIN_FILES {
+            std::fs::write(real.join(file.name), file.current.unwrap()).unwrap();
+        }
+        assert_eq!(write_plugin_files(&dir, &copies).unwrap(), vec!["plugin (a symlink)"]);
+        assert_eq!(remove_plugin_files(&dir, &PLUGIN_FILES, Some(&copies)).unwrap(), vec!["plugin (a symlink)"]);
+        assert!(is_symlink(&dir) && real.join("manifest.json").exists());
+    }
+
+    #[test]
+    fn a_dangling_symlink_is_present() {
+        let (dir, _) = scratch("dangling");
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("hook");
+        std::os::unix::fs::symlink(dir.join("nowhere"), &link).unwrap();
+        assert!(present(&link) && !link.exists());
+        assert!(!present(&dir.join("nothing")));
+    }
+
+    #[test]
+    fn a_rollback_only_undoes_what_is_still_ours() {
+        let (dir, _) = scratch("restore");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("looknfeel.lua");
+        std::fs::write(&path, "ours").unwrap();
+        assert!(restore(&path, "ours", Some("theirs")).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
+        // Changed since we wrote it: kept.
+        assert!(!restore(&path, "ours", Some("older")).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
+        // There was no file before us: it goes.
+        std::fs::write(&path, "ours").unwrap();
+        assert!(restore(&path, "ours", None).unwrap());
+        assert!(!present(&path));
     }
 
     fn wrapped(body: &str) -> String {

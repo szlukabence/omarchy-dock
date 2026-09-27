@@ -475,16 +475,44 @@ impl Config {
     }
 
     /// `edit` on the file at `path`, starting from `fresh()` if there is none.
+    ///
+    /// Only what the change touched is written. The file is edited in place,
+    /// so the user's comments, layout, and any keys this version does not know
+    /// stay exactly as they were.
     fn edit_at(path: &Path, fresh: impl FnOnce() -> Config, f: impl FnOnce(&mut Config)) -> Result<()> {
-        let mut cfg = match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str::<Config>(&text)
-                .with_context(|| format!("parsing {}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(),
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut cfg = fresh();
+                f(&mut cfg);
+                let text = toml::to_string_pretty(&cfg).context("serialising config")?;
+                return crate::safe_write::replace(path, text.as_bytes());
+            }
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        f(&mut cfg);
-        let text = toml::to_string_pretty(&cfg).context("serialising config")?;
-        crate::safe_write::replace(path, text.as_bytes())
+        let parsing = || format!("parsing {}", path.display());
+        let before: Config = toml::from_str(&text).with_context(parsing)?;
+        let mut after = before.clone();
+        f(&mut after);
+
+        let serialised = |cfg: &Config| -> Result<toml_edit::DocumentMut> {
+            Ok(toml::to_string_pretty(cfg).context("serialising config")?.parse()?)
+        };
+        let (old, new) = (serialised(&before)?, serialised(&after)?);
+        let mut doc: toml_edit::DocumentMut = text.parse().with_context(parsing)?;
+        merge_changes(doc.as_table_mut(), old.as_table(), new.as_table());
+        let edited = doc.to_string();
+
+        // The edited file must mean exactly the edited config; if it somehow
+        // does not, saving it would be saving something the user did not ask
+        // for, so nothing is written.
+        let reread: Config = toml::from_str(&edited).context("re-reading the edited config")?;
+        anyhow::ensure!(
+            toml::to_string(&reread)? == toml::to_string(&after)?,
+            "could not apply the change to {} without rewriting it; nothing was saved",
+            path.display()
+        );
+        crate::safe_write::replace(path, edited.as_bytes())
     }
 
     /// Defaults, plus anything worth importing from the stock Omarchy dock.
@@ -553,6 +581,64 @@ impl Config {
         };
         zoom + Self::LABEL_BAND
     }
+}
+
+/// Apply to `doc` — the user's file — what changed between `old` and `new`,
+/// both the config as the dock serialises it. A key whose value is unchanged
+/// is not touched, so it keeps its formatting and its comments, and keys the
+/// dock does not know are never looked at.
+fn merge_changes(doc: &mut dyn toml_edit::TableLike, old: &dyn toml_edit::TableLike, new: &dyn toml_edit::TableLike) {
+    use toml_edit::Item;
+    for (key, new_item) in new.iter() {
+        let old_item = old.get(key);
+        let tables = match (new_item, old_item) {
+            (Item::Table(n), Some(Item::Table(o))) => Some((n, o)),
+            _ => None,
+        };
+        match tables {
+            // A section: descend, so only the keys that changed are written.
+            Some((new_table, old_table)) => {
+                if doc.get(key).is_none() {
+                    let mut table = toml_edit::Table::new();
+                    table.set_implicit(true);
+                    doc.insert(key, Item::Table(table));
+                }
+                match doc.get_mut(key).and_then(Item::as_table_like_mut) {
+                    Some(sub) => merge_changes(sub, old_table, new_table),
+                    None => {
+                        doc.insert(key, new_item.clone());
+                    }
+                }
+            }
+            None if old_item.is_some_and(|o| rendered(o) == rendered(new_item)) => {}
+            None => match doc.get_mut(key) {
+                // Keep the key's own decoration (its comments) where it has one.
+                Some(Item::Value(v)) if new_item.is_value() => {
+                    let decor = v.decor().clone();
+                    *v = new_item.as_value().cloned().expect("checked is_value");
+                    *v.decor_mut() = decor;
+                }
+                _ => {
+                    doc.insert(key, new_item.clone());
+                }
+            },
+        }
+    }
+    let gone: Vec<String> = old
+        .iter()
+        .map(|(k, _)| k.to_owned())
+        .filter(|k| new.get(k).is_none())
+        .collect();
+    for key in gone {
+        doc.remove(&key);
+    }
+}
+
+/// An item as TOML text, for telling whether two are the same.
+fn rendered(item: &toml_edit::Item) -> String {
+    let mut doc = toml_edit::DocumentMut::new();
+    doc.insert("v", item.clone());
+    doc.to_string()
 }
 
 // ── migration from the stock dock ───────────────────────────────────────────
@@ -643,6 +729,65 @@ mod tests {
         let saved: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved.dock.icon_size, 61.0);
         assert_eq!(saved.items.pinned.last().map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn an_edit_keeps_comments_layout_and_unknown_keys() {
+        let path = scratch("comments");
+        let text = "# my dock\n\
+                    [dock]\n\
+                    icon_size = 40   # big enough\n\
+                    some_future_key = \"kept\"\n\
+                    \n\
+                    [items]\n\
+                    # the apps I use\n\
+                    pinned = [\"a\", \"b\"]\n";
+        std::fs::write(&path, text).unwrap();
+        Config::edit_at(&path, Config::default, |c| {
+            c.items.pinned.push("x".into());
+            c.autohide.mode = HideMode::Never;
+        })
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        for kept in ["# my dock", "icon_size = 40   # big enough", "some_future_key = \"kept\"", "# the apps I use"] {
+            assert!(saved.contains(kept), "lost {kept:?}:\n{saved}");
+        }
+        let cfg: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(cfg.items.pinned, vec!["a", "b", "x"]);
+        assert_eq!(cfg.dock.icon_size, 40.0);
+        assert_eq!(cfg.autohide.mode, HideMode::Never);
+        // Nothing the edit did not touch was written out.
+        assert!(!saved.contains("[magnify]"), "{saved}");
+    }
+
+    #[test]
+    fn an_edit_reaches_into_an_inline_table() {
+        let path = scratch("inline");
+        std::fs::write(&path, "dock = { icon_size = 40 }  # inline\n").unwrap();
+        Config::edit_at(&path, Config::default, |c| c.dock.icon_size = 52.0).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# inline"), "{saved}");
+        let cfg: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(cfg.dock.icon_size, 52.0);
+    }
+
+    #[test]
+    fn an_edit_replaces_lists_and_clears_what_was_unset() {
+        let path = scratch("lists");
+        let text = "[dock]\nspacing = 12.0 # tight\n\n\
+                    [[items.folders]]\npath = \"/a\"\nname = \"A\"\n\n\
+                    [[items.folders]]\npath = \"/b\"\nname = \"B\"\n";
+        std::fs::write(&path, text).unwrap();
+        Config::edit_at(&path, Config::default, |c| {
+            c.dock.spacing = None;
+            c.items.folders.remove(0);
+        })
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let cfg: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(cfg.dock.spacing, None, "{saved}");
+        assert_eq!(cfg.items.folders.len(), 1);
+        assert_eq!(cfg.items.folders[0].path, PathBuf::from("/b"));
     }
 
     #[test]
