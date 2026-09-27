@@ -42,6 +42,8 @@ pub enum AppEvent {
     Tray(Vec<crate::tray::TrayItem>),
     /// A command from `omarchy-dockctl`.
     Control(crate::ipc_ctl::Control),
+    /// The dock was asked to stop (SIGTERM, SIGINT or SIGHUP).
+    Quit,
 }
 
 pub type Sender = async_channel::Sender<AppEvent>;

@@ -384,6 +384,7 @@ pub fn run() -> glib::ExitCode {
     let (tx, rx) = event::channel();
 
     // Each worker owns its own thread and never touches GTK.
+    watch_signals(tx.clone());
     if let Err(e) = crate::config::watcher::spawn(tx.clone()) {
         tracing::error!(error = %e, "live reload unavailable");
     }
@@ -521,6 +522,7 @@ pub fn run() -> glib::ExitCode {
                     }
                     AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),
                     AppEvent::Control(c) => app.on_control(c, &gtk_app),
+                    AppEvent::Quit => gtk_app.quit(),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
                         sync_bar_workspaces(&next);
@@ -549,6 +551,16 @@ pub fn run() -> glib::ExitCode {
                 }
             }
         });
+    });
+
+    // The bar's workspaces are hidden only while the dock is there to show
+    // its own. Stopping the dock — disabling the plugin, logging out, a
+    // `pkill` — sends a signal, so every way out puts them back; the next
+    // start takes them out again if the setting is still on.
+    gtk_app.connect_shutdown(|_| {
+        if let Err(e) = crate::bar_widgets::sync(crate::bar_widgets::WORKSPACES, false) {
+            tracing::warn!(error = %e, "cannot give the bar back its workspaces");
+        }
     });
 
     gtk_app.run()
@@ -754,6 +766,53 @@ fn build_docks(
                 &all[choose_monitor(cfg.monitors.mode, &cfg.monitors.primary, focused, &connectors)];
             vec![DockSurface::build(gtk_app, &fitted(chosen), items, Some(chosen), sink.clone())]
         }
+    }
+}
+
+/// Turn SIGTERM, SIGINT and SIGHUP into an orderly quit, so shutdown work
+/// (giving the bar back its workspaces) runs however the dock is stopped.
+///
+/// Catching a signal takes away its default of ending the process, so this
+/// keeps that promise itself: a second signal, or the quit not finishing
+/// within a few seconds, ends the dock regardless. `pkill` always works.
+fn watch_signals(tx: crate::event::Sender) {
+    let spawned = std::thread::Builder::new().name("omarchy-dock-signals".into()).spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+            return;
+        };
+        rt.block_on(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::interrupt()),
+                signal(SignalKind::hangup()),
+            ) else {
+                return;
+            };
+            let next = async {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                    _ = hup.recv() => {}
+                }
+            };
+            next.await;
+            tracing::info!("asked to stop");
+            let _ = tx.send(AppEvent::Quit).await;
+            let again = async {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                    _ = hup.recv() => {}
+                }
+            };
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), again).await;
+            tracing::warn!("did not stop in time; exiting");
+            std::process::exit(1);
+        });
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "cannot watch for stop signals");
     }
 }
 

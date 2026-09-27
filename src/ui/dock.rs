@@ -1605,7 +1605,10 @@ fn attach_file_drop(
                 FileDrop::Open(exec) => {
                     let pairs: Vec<(String, String)> = files
                         .iter()
-                        .filter_map(|f| Some((f.path()?.to_string_lossy().into_owned(), f.uri().to_string())))
+                        // A path that is not UTF-8 cannot be passed on intact, and
+                        // a lossy copy would name some other file; such files
+                        // are skipped.
+                        .filter_map(|f| Some((f.path()?.to_str()?.to_owned(), f.uri().to_string())))
                         .collect();
                     let cmds = crate::desktop::open_command(&exec, &pairs);
                     if cmds.is_empty() {

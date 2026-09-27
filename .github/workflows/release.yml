@@ -22,8 +22,17 @@ jobs:
     # together when updating it.
     container: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     steps:
+      # Packages come from one day's snapshot of the Arch Linux Archive, so a
+      # rebuild of the same commit gets the same packages: like the image
+      # digest, bump the date deliberately. The keyring first, so the
+      # snapshot's signatures verify against keys of the same day.
+      - name: Pin the package repositories
+        run: |
+          echo 'Server = https://archive.archlinux.org/repos/2026/09/26/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syy --noconfirm archlinux-keyring
+
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed git rustup gtk4 gtk4-layer-shell github-cli
+        run: pacman -Suu --noconfirm --needed git rustup gtk4 gtk4-layer-shell github-cli
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:

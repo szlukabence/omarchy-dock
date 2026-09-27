@@ -29,8 +29,23 @@ async fn run(expr: &str) -> Result<()> {
 }
 
 /// Escape a string for embedding in a single-quoted Lua literal.
+///
+/// Backslash and quote are escaped, and so is every ASCII control character,
+/// as a decimal `\ddd`: a raw newline would end the literal, so a file name with
+/// one in it would otherwise make the whole command fail to parse.
 fn lua_str(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            c if c.is_ascii_control() => out.push_str(&format!("\\{:03}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Focus a specific window by address.
@@ -80,4 +95,17 @@ pub async fn exec(command: &str) -> Result<()> {
 /// Toggle the tiling layout's split orientation.
 pub async fn toggle_split() -> Result<()> {
     run("hl.dsp.layout('togglesplit')").await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lua_str;
+
+    #[test]
+    fn a_lua_literal_cannot_be_broken_out_of() {
+        assert_eq!(lua_str("it's"), r"'it\'s'");
+        assert_eq!(lua_str(r"a\'b"), r"'a\\\'b'");
+        assert_eq!(lua_str("line\nbreak\ttab"), r"'line\010break\009tab'");
+        assert_eq!(lua_str("héllo ✓"), "'héllo ✓'");
+    }
 }

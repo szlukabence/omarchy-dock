@@ -144,13 +144,15 @@ pub fn open_command(exec: &str, files: &[(String, String)]) -> Vec<String> {
     let arg = |(path, uri): &(String, String)| {
         shell_quote(if code.eq_ignore_ascii_case(&'u') { uri } else { path })
     };
-    let collapse = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Tidy the spaces the dropped codes leave behind before the paths go in,
+    // never after: a file name's own spaces are part of the name.
+    let template = template.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if code.is_uppercase() {
         let all: Vec<String> = files.iter().map(arg).collect();
-        vec![collapse(template.replacen(SLOT, &all.join(" "), 1))]
+        vec![template.replacen(SLOT, &all.join(" "), 1)]
     } else {
-        files.iter().map(|f| collapse(template.replacen(SLOT, &arg(f), 1))).collect()
+        files.iter().map(|f| template.replacen(SLOT, &arg(f), 1)).collect()
     }
 }
 
@@ -413,6 +415,12 @@ mod tests {
     fn single_codes_launch_once_per_file() {
         let cmds = open_command("imv %f", &[f("/1.png"), f("/2.png")]);
         assert_eq!(cmds, ["imv '/1.png'", "imv '/2.png'"]);
+    }
+
+    #[test]
+    fn spaces_inside_a_file_name_are_kept() {
+        let cmds = open_command("app  %f  --x", &[f("/a  b\tc.txt")]);
+        assert_eq!(cmds, ["app '/a  b\tc.txt' --x"]);
     }
 
     #[test]

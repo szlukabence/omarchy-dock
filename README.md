@@ -74,7 +74,10 @@ git tag v1.3.0 && git push origin master v1.3.0
 
 The tag starts the release workflow, which builds on Arch with that same
 script and publishes a GitHub release carrying the package, a tarball of the
-binaries, and `SHA256SUMS`. It refuses a tag that disagrees with any of the
+binaries, and `SHA256SUMS`. Every input to that build is pinned: the container
+image by digest, its packages to one day's snapshot of the Arch Linux Archive,
+the Rust release by `rust-toolchain.toml`, the crates by `Cargo.lock`, and the
+checkout action by commit. It refuses a tag that disagrees with any of the
 version numbers above. Afterwards, update the version and the package's
 checksum in the install lines above (from `SHA256SUMS`, which the workflow's
 summary shows); in `packaging/aur/PKGBUILD` set `pkgver`, `_commit` to
@@ -181,7 +184,7 @@ ever in response to an explicit action:
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
 | `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys |
-| The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
+| The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off, or stopping the dock, puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
 | `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |
 
 `uninstall` removes all of it, except what is no longer as the dock wrote it,
@@ -193,7 +196,7 @@ are kept in `resources/released/` for exactly these comparisons. Outside its
 own config directory, nothing is written on start, on poll, or on open, apart
 from the control socket `omarchy-dockctl` talks to, in your private
 `$XDG_RUNTIME_DIR` — and, with `hide_bar_workspaces` on, the check at start
-that the bar matches. The dock saves its own `config.toml` only when you change
+that the bar matches, undone when the dock stops. The dock saves its own `config.toml` only when you change
 a setting from the dock (pinning, the settings window, the auto-hide toggle),
 and then edits it in place: only the setting you changed is rewritten, and your
 comments, layout and any keys it does not know stay as they were. While the
@@ -295,7 +298,7 @@ Notable keys:
 | `items.folders` | Folder stacks, each with its own `enabled` flag; seeded from omadock's `pinnedFolders` |
 | `items.commands` | Command tiles: `id`, `label`, `glyph`, `command`. Pin one by putting `cmd:<id>` in `pinned` |
 | `workspaces.enabled`, `.show_empty`, `.scratchpad` | Workspace strip and scratchpad tile (both off by default — the bar already has workspaces) |
-| `workspaces.hide_bar_workspaces` | Hide the bar's own workspace numbers while the dock shows workspaces, and restore them in place when turned off (default: off) |
+| `workspaces.hide_bar_workspaces` | Hide the bar's own workspace numbers while the dock shows workspaces, and restore them in place when turned off or when the dock stops (default: off) |
 | `workspaces.persistent` | Workspaces 1 to N always get a tile, as the bar always shows 1–5, so there is somewhere to drop a window even on an empty workspace (default: 5) |
 | `preview.enabled`, `.delay_ms`, `.width` | Window previews on hover (default: on, after 600 ms, 220 px tiles) |
 | `items.notification_badges` | Red badge with how many notifications an app sent since you last focused it; a web app's come from its site, so Gmail's mail badges Gmail (default: off — it means watching every notification) |
