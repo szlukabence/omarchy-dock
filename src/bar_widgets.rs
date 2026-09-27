@@ -107,6 +107,15 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
     let (Some(shell_json), Some(record)) = (shell_json_path(), record_path(id)) else {
         anyhow::bail!("cannot find your config and state directories (is HOME set?)");
     };
+    // The record is written and deleted by name, which is only the dock's to
+    // do while its state directory is its own rather than a link elsewhere.
+    if let Some(dir) = record.parent() {
+        anyhow::ensure!(
+            !std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()),
+            "{} is a symlink; not keeping the bar's widget record there",
+            dir.display()
+        );
+    }
     let text = match std::fs::read_to_string(shell_json) {
         Ok(text) => text,
         // No shell config: no bar to change.

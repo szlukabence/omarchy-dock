@@ -170,19 +170,20 @@ impl Session {
             "unsupported format {format:?}"
         );
 
-        // Shared memory the compositor copies into: an unlinked file in the
-        // runtime dir, so it lives only as long as this mapping. Created fresh
-        // and readable by this user alone — it holds a window's pixels — and
-        // never opened through whatever might already sit at that path.
+        // Shared memory the compositor copies into: an anonymous memfd, so it
+        // never has a path — nothing on disk to create, collide with, or
+        // delete — and lives only as long as this mapping. It holds a
+        // window's pixels, and only this process and the compositor it is
+        // handed to can reach it.
         let size = (stride * h) as usize;
-        let path = std::env::var("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)?
-            .join(format!("omarchy-dock-capture-{}", std::process::id()));
-        std::fs::remove_file(&path).ok();
         let file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?
+            use std::os::fd::FromRawFd;
+            // SAFETY: the name is a valid C string; the result is checked
+            // before it is used, and owned by the File from then on.
+            let fd = unsafe { libc::memfd_create(c"omarchy-dock-capture".as_ptr(), libc::MFD_CLOEXEC) };
+            anyhow::ensure!(fd >= 0, "memfd_create: {}", std::io::Error::last_os_error());
+            unsafe { std::fs::File::from_raw_fd(fd) }
         };
-        std::fs::remove_file(&path).ok();
         file.set_len(size as u64)?;
 
         let shm = self.state.globals.shm.clone().expect("checked at connect");
@@ -322,6 +323,24 @@ mod tests {
 
     fn solid(w: u32, h: u32, px: [u8; 4]) -> Vec<u8> {
         (0..w * h).flat_map(|_| px).collect()
+    }
+
+    /// Captures the focused window through the running compositor.
+    #[test]
+    #[ignore = "needs a Hyprland session; run with --ignored"]
+    fn captures_the_focused_window() {
+        let out = std::process::Command::new("hyprctl").args(["activewindow", "-j"]).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let hex = v["address"].as_str().unwrap().trim_start_matches("0x");
+        let address = u64::from_str_radix(hex, 16).unwrap();
+        let (tx, rx) = async_channel::unbounded();
+        let capturer = Capturer::spawn(tx).expect("toplevel export available");
+        capturer.request(Request { address, max_w: 320, max_h: 200, token: 7 });
+        let frame = rx.recv_blocking().unwrap();
+        assert_eq!((frame.address, frame.token), (address, 7));
+        assert!(frame.width > 0 && frame.width <= 320 && frame.height <= 200);
+        assert_eq!(frame.pixels.len(), (frame.width * frame.height * 4) as usize);
+        assert!(frame.pixels.iter().any(|&b| b != 0), "a real image, not an empty buffer");
     }
 
     #[test]
