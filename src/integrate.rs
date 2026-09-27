@@ -992,7 +992,17 @@ fn install_keys(mods: &str) -> Result<Report> {
 
 fn remove_keys() -> Result<Report> {
     let path = bindings_path();
-    let src = std::fs::read_to_string(&path).unwrap_or_default();
+    let src = match read_existing(&path) {
+        Ok(text) => text.unwrap_or_default(),
+        Err(e) => {
+            return Ok(Report {
+                label: "dock-app keys",
+                installed: true,
+                note: Some(unreadable_note(&e)),
+                path,
+            })
+        }
+    };
     match find_block(&src, KEYS_BEGIN, KEYS_END) {
         Block::Found(head, tail) => {
             write_file(&path, &format!("{}\n{}", head.trim_end(), tail.trim_start_matches('\n')))?;

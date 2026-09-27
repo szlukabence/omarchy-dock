@@ -37,18 +37,13 @@ struct Placement {
     before: Option<String>,
 }
 
-fn shell_json_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("omarchy/shell.json")
+fn shell_json_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("omarchy/shell.json"))
 }
 
 /// The record of a widget the dock has hidden.
-fn record_path(id: &str) -> PathBuf {
-    dirs::state_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("omarchy-dock")
-        .join(format!("hidden-bar-widget-{id}.json"))
+fn record_path(id: &str) -> Option<PathBuf> {
+    Some(dirs::state_dir()?.join("omarchy-dock").join(format!("hidden-bar-widget-{id}.json")))
 }
 
 fn entry_id(entry: &Value) -> Option<&str> {
@@ -109,14 +104,16 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let text = match std::fs::read_to_string(shell_json_path()) {
+    let (Some(shell_json), Some(record)) = (shell_json_path(), record_path(id)) else {
+        anyhow::bail!("cannot find your config and state directories (is HOME set?)");
+    };
+    let text = match std::fs::read_to_string(shell_json) {
         Ok(text) => text,
         // No shell config: no bar to change.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).context("reading shell.json"),
     };
     let shell: Value = serde_json::from_str(&text).context("parsing shell.json")?;
-    let record = record_path(id);
     let saved: Option<Placement> = std::fs::read_to_string(&record)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
