@@ -12,15 +12,15 @@ the menus — rather than being a dock that merely runs on the same desktop.
 ## Install
 
 ```bash
-curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.4/omarchy-dock-1.2.4-1-x86_64.pkg.tar.zst
-echo "2cf5ca8f85d2f6fc5d46b16bec007a9c58c272c0ba62647d4dc98298f5d3b4d8  omarchy-dock-1.2.4-1-x86_64.pkg.tar.zst" | sha256sum -c - &&
-  sudo pacman -U omarchy-dock-1.2.4-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.2.5/omarchy-dock-1.2.5-1-x86_64.pkg.tar.zst
+echo "0335360e1246ee8a9670b60c8eef3af1138acb75afdd0f238093f27e0bb3bf7d  omarchy-dock-1.2.5-1-x86_64.pkg.tar.zst" | sha256sum -c - &&
+  sudo pacman -U omarchy-dock-1.2.5-1-x86_64.pkg.tar.zst
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
 omarchy-dockctl install
 ```
 
 The first lines install the dock as an ordinary pacman package from the
-[v1.2.4 release](https://github.com/szlukabence/omarchy-dock/releases/tag/v1.2.4) —
+[v1.2.5 release](https://github.com/szlukabence/omarchy-dock/releases/tag/v1.2.5) —
 prebuilt, nothing to compile. The next adds the Omarchy plugin that starts and
 stops it; the last adds the theme hook and menu entries.
 
