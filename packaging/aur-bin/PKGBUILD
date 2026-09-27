@@ -8,7 +8,7 @@
 
 pkgname=omarchy-dock-bin
 _pkgname=omarchy-dock
-pkgver=1.2.3
+pkgver=1.2.4
 pkgrel=1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — prebuilt binaries"
 arch=('x86_64')
@@ -28,7 +28,7 @@ provides=('omarchy-dock')
 
 options=('!debug')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
-sha256sums=('c5830ec521778807100f152de133c578352f58bf8ea82fa57a733cace305a3d2')
+sha256sums=('37c247c119697c01de98dd7304bdb6de3b42d17baa4e74d4c96da1dc694eeab0')
 
 package() {
   install -Dm0755 "omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"

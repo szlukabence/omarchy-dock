@@ -15,10 +15,10 @@
 # release tarball.
 
 pkgname=omarchy-dock
-pkgver=1.2.3
+pkgver=1.2.4
 pkgrel=1
 # The commit tag v$pkgver points at: `git rev-parse v$pkgver^{commit}`.
-_commit=0c05131ad9a7c6814973d638095fb004dde87116
+_commit=35aa57f825b22aa0a065cce3da1edbcd37257e70
 # The exact Rust release to build with, matching rust-toolchain.toml.
 _rustver=1.98.1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4"
@@ -47,7 +47,7 @@ makedepends+=('git')
 # would be empty.
 options=('!debug')
 source=("$pkgname::git+$url.git#commit=$_commit")
-sha256sums=('d81ee43d440fe886cfe79f51b1da4a5fd380f00d1ab096fd57ccb1572dcb6a0c')
+sha256sums=('ea9be0948f5b2dd3b2f3510e5427d3445445d25f6b0387f99c90003d7dcc8818')
 
 prepare() {
   cd "$pkgname"
