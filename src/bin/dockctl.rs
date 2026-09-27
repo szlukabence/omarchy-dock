@@ -103,40 +103,36 @@ fn main() -> std::process::ExitCode {
 
 /// Print what an install or uninstall did, and turn a failure into an exit
 /// code rather than a panic.
-fn report(
-    result: anyhow::Result<Vec<integrate::Report>>,
-    verb: &str,
-) -> std::process::ExitCode {
-    match result {
-        Ok(items) => {
-            for r in &items {
-                // Not everything reported was acted on: install also reports
-                // the optional pieces it deliberately left alone, and
-                // uninstall what it had to leave because it is not the dock's.
-                // `installed` is the state afterwards, so for uninstall it is
-                // the piece that stayed.
-                let verb = match (verb, r.installed) {
-                    ("removed", false) => "removed",
-                    ("removed", true) => "kept",
-                    (verb, true) => verb,
-                    (_, false) => "skipped",
-                };
-                println!("{verb}: {} — {}", r.label, r.path.display());
-                if let Some(note) = &r.note {
-                    println!("          {note}");
-                }
-            }
-            if verb == "installed" {
-                println!(
-                    "\nThe shell picks up new plugins on its own; if it does not, run\n  \
-                     omarchy restart shell"
-                );
-            }
-            std::process::ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("omarchy-dockctl: {e:#}");
-            std::process::ExitCode::FAILURE
+fn report(outcome: integrate::Outcome, verb: &str) -> std::process::ExitCode {
+    let integrate::Outcome { reports, error } = outcome;
+    for r in &reports {
+        // Not everything reported was acted on: install also reports the
+        // optional pieces it deliberately left alone, and uninstall what it
+        // had to leave because it is not the dock's. `installed` is the state
+        // afterwards, so for uninstall it is the piece that stayed.
+        let verb = match (verb, r.installed) {
+            ("removed", false) => "removed",
+            ("removed", true) => "kept",
+            (verb, true) => verb,
+            (_, false) => "skipped",
+        };
+        println!("{verb}: {} — {}", r.label, r.path.display());
+        if let Some(note) = &r.note {
+            println!("          {note}");
         }
     }
+    if let Some(e) = error {
+        eprintln!("omarchy-dockctl: stopped here: {e:#}");
+        if !reports.is_empty() {
+            eprintln!("Only what is listed above was done.");
+        }
+        return std::process::ExitCode::FAILURE;
+    }
+    if verb == "installed" {
+        println!(
+            "\nThe shell picks up new plugins on its own; if it does not, run\n  \
+             omarchy restart shell"
+        );
+    }
+    std::process::ExitCode::SUCCESS
 }

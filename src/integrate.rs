@@ -824,9 +824,31 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
-pub fn install(blur: bool) -> Result<Vec<Report>> {
+/// What `install` or `uninstall` did, and the error that stopped it, if one
+/// did. Steps run in order and stop at the first failure — a later step may
+/// depend on an earlier one — but whatever was already done is still
+/// reported, so the report always matches what is on disk.
+pub struct Outcome {
+    pub reports: Vec<Report>,
+    pub error: Option<anyhow::Error>,
+}
+
+fn outcome(run: impl FnOnce(&mut Vec<Report>) -> Result<()>) -> Outcome {
+    let mut reports = Vec::new();
+    let error = run(&mut reports).err();
+    Outcome { reports, error }
+}
+
+pub fn install(blur: bool) -> Outcome {
+    outcome(|out| install_into(out, blur))
+}
+
+pub fn uninstall() -> Outcome {
+    outcome(uninstall_into)
+}
+
+fn install_into(out: &mut Vec<Report>, blur: bool) -> Result<()> {
     preflight()?;
-    let mut out = Vec::new();
 
     // Hook. Written only over the dock's own: a hook of the same name that
     // someone wrote or edited is left as it is.
@@ -948,12 +970,11 @@ pub fn install(blur: bool) -> Result<Vec<Report>> {
         });
     }
 
-    Ok(out)
+    Ok(())
 }
 
-pub fn uninstall() -> Result<Vec<Report>> {
+fn uninstall_into(out: &mut Vec<Report>) -> Result<()> {
     preflight()?;
-    let mut out = Vec::new();
 
     // Only the dock's own hook: one someone edited, or replaced with their
     // own under the same name, stays.
@@ -1007,7 +1028,12 @@ pub fn uninstall() -> Result<Vec<Report>> {
     out.push(remove_menu(menu_extension_path())?);
     out.push(remove_blur(looknfeel_path())?);
 
-    Ok(out)
+    // The dock's own state directories, if that left them empty.
+    for dir in copies.ancestors().take(2) {
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    Ok(())
 }
 
 /// What is currently installed, without changing anything.
