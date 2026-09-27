@@ -109,9 +109,11 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let Ok(text) = std::fs::read_to_string(shell_json_path()) else {
+    let text = match std::fs::read_to_string(shell_json_path()) {
+        Ok(text) => text,
         // No shell config: no bar to change.
-        return Ok(());
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).context("reading shell.json"),
     };
     let shell: Value = serde_json::from_str(&text).context("parsing shell.json")?;
     let record = record_path(id);
@@ -123,10 +125,7 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
         (true, Some(here), _) => {
             // Recorded first: if the shell then removes the widget but the
             // dock dies before noting it, the widget can still come back.
-            if let Some(dir) = record.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::write(&record, serde_json::to_string_pretty(&here)?)?;
+            crate::safe_write::replace(&record, serde_json::to_string_pretty(&here)?.as_bytes())?;
             if !shell_call(&["shell", "setPluginEnabled", id, "false"])? {
                 std::fs::remove_file(&record).ok();
                 anyhow::bail!("the shell would not disable {id}");
