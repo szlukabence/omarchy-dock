@@ -813,6 +813,18 @@ fn preflight() -> Result<()> {
         dirs::config_dir().is_some() && dirs::state_dir().is_some(),
         "cannot find your config and state directories (is HOME set?)"
     );
+    // The copies are the one thing deleted by name alone, since the dock
+    // wrote them. That holds only while their directory is the dock's own and
+    // not a link to somewhere else.
+    let copies = written_copies_dir();
+    for dir in [copies.parent(), Some(copies.as_path())].into_iter().flatten() {
+        anyhow::ensure!(
+            !is_symlink(dir),
+            "{} is a symlink. The dock keeps copies of what it wrote there and deletes \
+             them on uninstall, so it has to be the dock's own directory",
+            dir.display()
+        );
+    }
     Ok(())
 }
 
