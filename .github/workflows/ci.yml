@@ -45,12 +45,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # The exact Rust release rust-toolchain.toml pins, never whatever is current.
+      # As an ordinary user, as the dock runs and as the release job builds:
+      # the container is root, and root passes checks a user would fail.
+      # The toolchain is the exact Rust release rust-toolchain.toml pins.
       - name: Install the pinned toolchain
-        run: rustup toolchain install "$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)" --profile minimal --component clippy
+        run: |
+          useradd --create-home builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          rustver="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+          runuser -u builder -- env HOME=/home/builder rustup toolchain install "$rustver" --profile minimal --component clippy
 
       - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: runuser -u builder -- env HOME=/home/builder cargo clippy --locked --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test --locked
+        run: runuser -u builder -- env HOME=/home/builder cargo test --locked

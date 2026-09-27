@@ -75,6 +75,12 @@ mod tests {
 
     #[test]
     fn a_failed_write_leaves_the_old_file() {
+        // Root ignores directory permissions, so there the write cannot be
+        // made to fail this way (CI containers run as root).
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let dir = scratch("fail");
         let file = dir.join("f");
         std::fs::write(&file, "old").unwrap();
