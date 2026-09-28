@@ -266,6 +266,17 @@ impl App {
     fn update_autohide(&self) {
         use crate::config::HideMode;
 
+        // The screensaver outranks everything below, hover included: nothing
+        // should come up over it.
+        let away = self.state.screensaver_showing();
+        for d in &self.docks {
+            d.set_away(away, &self.cfg);
+        }
+        if away {
+            tracing::debug!("away: the screensaver is up");
+            return;
+        }
+
         // Two things override the hide mode outright, because in both cases
         // the dock is in the way of something the user is deliberately
         // pointing at the screen — and `never` would otherwise pin it there.

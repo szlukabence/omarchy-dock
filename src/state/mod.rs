@@ -281,6 +281,9 @@ const GLYPH_RECORDING: &str = "\u{f0ec2}";
 /// Omarchy's command for stopping a recording — what the bar's indicator runs.
 const STOP_RECORDING: &str = "omarchy-capture-screenrecording --stop-recording";
 
+/// The window class `omarchy-launch-screensaver` gives its terminals.
+const SCREENSAVER_CLASS: &str = "org.omarchy.screensaver";
+
 /// A pinned shell command, as a dock item.
 fn command_item(cmd: &crate::config::CommandItem, pin_index: usize) -> DockItem {
     DockItem {
@@ -625,6 +628,15 @@ impl DockState {
         self.clients
             .iter()
             .any(|c| c.fullscreen > 0 && visible.contains(&c.workspace.id))
+    }
+
+    /// Whether Omarchy's screensaver is up.
+    ///
+    /// It is an ordinary fullscreen terminal, so `has_fullscreen` already
+    /// hides the dock for it — but a hidden dock still peeks when the pointer
+    /// reaches the edge, and over a screensaver nothing should appear.
+    pub fn screensaver_showing(&self) -> bool {
+        self.clients.iter().any(|c| c.class == SCREENSAVER_CLASS)
     }
 
     /// The workspace currently shown on the focused monitor, or the first.
@@ -1687,6 +1699,17 @@ mod workspace_tests {
         // Same window, now the workspace you are on.
         let s = state(vec![full], vec![ws(1, "1"), ws(2, "2")], 2);
         assert!(s.has_fullscreen());
+    }
+
+    #[test]
+    fn the_screensaver_is_recognised_by_its_class() {
+        let s = state(vec![client("0x1", 1, "1")], vec![ws(1, "1")], 1);
+        assert!(!s.screensaver_showing());
+
+        let mut saver = client("0x2", 1, "1");
+        saver.class = "org.omarchy.screensaver".into();
+        let s = state(vec![client("0x1", 1, "1"), saver], vec![ws(1, "1")], 1);
+        assert!(s.screensaver_showing());
     }
 }
 

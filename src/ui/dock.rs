@@ -236,6 +236,7 @@ impl DockSurface {
             "building dock surface"
         );
         let travel = travel_for(cfg, &geom);
+        let extent = extent_for(cfg, &geom);
         let geom_size = (geom.panel_w, geom.panel_h);
 
         let fixed = gtk::Fixed::new();
@@ -444,6 +445,8 @@ impl DockSurface {
             // How far the surface must travel to be off-screen, minus the
             // sliver left behind as a pointer trigger.
             travel,
+            extent,
+            away: false,
             ticking: false,
             last_us: 0,
         }));
@@ -738,11 +741,30 @@ impl DockSurface {
         self.apply_slide(cfg);
     }
 
+    /// Take the surface off-screen whole, or let auto-hide have it back.
+    ///
+    /// For the screensaver: a hidden dock keeps a sliver that reveals it on
+    /// hover, and the pointer resting at the bottom edge of a screensaver
+    /// should not summon anything.
+    pub fn set_away(&self, away: bool, cfg: &Config) {
+        {
+            let mut s = self.slide.borrow_mut();
+            if s.away == away {
+                return;
+            }
+            s.away = away;
+            // Whatever the pointer was doing before is stale by the time the
+            // dock comes back; a fresh enter on the sliver peeks again.
+            s.peeking = false;
+        }
+        self.apply_slide(cfg);
+    }
+
     /// Drive the spring toward wherever policy and peek state agree it goes.
     fn apply_slide(&self, cfg: &Config) {
         {
             let mut s = self.slide.borrow_mut();
-            let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
+            let target = s.target();
             tracing::debug!(
                 target, hidden = s.hidden, peeking = s.peeking,
                 current = s.spring.target, travel = s.travel, "policy retarget"
@@ -1121,7 +1143,7 @@ fn surface_set_peeking(
             return;
         }
         s.peeking = peeking;
-        let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
+        let target = s.target();
         if (s.spring.target - target).abs() < f64::EPSILON {
             return;
         }
@@ -1209,17 +1231,39 @@ struct Slide {
     /// deferred pointer check acts. Separate from `generation`, which a
     /// pending reveal timer depends on.
     settle_gen: u64,
+    /// Out of the way entirely, over the screensaver: no trigger sliver, and
+    /// neither hover nor an open menu brings the dock back.
+    away: bool,
     edge: Edge,
     base_margin: i32,
     travel: f64,
+    /// The surface's full depth: how far it moves to leave the screen whole.
+    extent: f64,
     ticking: bool,
     last_us: i64,
 }
 
+impl Slide {
+    /// Where the slide should settle, from policy, peek and hold state.
+    fn target(&self) -> f64 {
+        if self.away {
+            self.extent
+        } else if self.hidden && !self.peeking && self.held == 0 {
+            self.travel
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The surface's depth away from its screen edge.
+fn extent_for(cfg: &Config, geom: &Geometry) -> f64 {
+    if cfg.dock.position.is_vertical() { geom.window_w } else { geom.window_h }
+}
+
 /// Distance the surface must move to be off-screen but for a trigger sliver.
 fn travel_for(cfg: &Config, geom: &Geometry) -> f64 {
-    let extent = if cfg.dock.position.is_vertical() { geom.window_w } else { geom.window_h };
-    (extent - cfg.autohide.trigger_px.max(1) as f64).max(0.0)
+    (extent_for(cfg, geom) - cfg.autohide.trigger_px.max(1) as f64).max(0.0)
 }
 
 /// Make a pinned item draggable.
@@ -1794,7 +1838,7 @@ fn hold(
                 }
             }
         }
-        let target = if s.hidden && !s.peeking && s.held == 0 { s.travel } else { 0.0 };
+        let target = s.target();
         if (s.spring.target - target).abs() >= f64::EPSILON {
             s.spring.target = target;
             drop(s);
@@ -2731,6 +2775,42 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn slide() -> Slide {
+        Slide {
+            spring: Spring::at(0.0),
+            hidden: false,
+            peeking: false,
+            held: 0,
+            generation: 0,
+            settle_gen: 0,
+            away: false,
+            edge: Edge::Bottom,
+            base_margin: 0,
+            travel: 76.0,
+            extent: 80.0,
+            ticking: false,
+            last_us: 0,
+        }
+    }
+
+    #[test]
+    fn a_hidden_dock_keeps_its_sliver_and_peeks() {
+        let mut s = slide();
+        s.hidden = true;
+        assert_eq!(s.target(), 76.0);
+        s.peeking = true;
+        assert_eq!(s.target(), 0.0);
+    }
+
+    #[test]
+    fn away_leaves_the_screen_whatever_the_pointer_does() {
+        let mut s = slide();
+        s.away = true;
+        s.peeking = true;
+        s.held = 1;
+        assert_eq!(s.target(), 80.0);
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
