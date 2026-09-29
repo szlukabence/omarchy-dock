@@ -36,6 +36,9 @@ pub enum ItemKind {
     /// A macOS-style stack: a directory whose recent contents fan out.
     Folder,
     Trash,
+    /// A plugged-in removable drive. Opens in the file manager, mounting it
+    /// first if need be.
+    Drive,
     /// A system-tray item, hosted over D-Bus rather than owned by the dock.
     Tray,
     /// One Hyprland workspace, rendered as a numbered tile the way the bar's
@@ -92,7 +95,7 @@ pub struct DockItem {
     pub path: Option<std::path::PathBuf>,
     /// Index in `items.pinned`, for entries that live there. `None` for
     /// derived items — running-but-unpinned apps, automatic dividers, the
-    /// launcher, folders and Trash — which have nothing to reorder.
+    /// launcher, folders, drives and Trash — which have nothing to reorder.
     pub pin_index: Option<usize>,
     /// Monochrome glyph to draw instead of a themed icon, when the dock's
     /// furniture is rendered the way the bar's widgets are. `None` for real
@@ -236,6 +239,15 @@ pub fn tray_service(key: &str) -> Option<&str> {
     key.strip_prefix(TRAY_KEY)
 }
 
+/// Key prefix for a removable drive. The drive's id follows, which is what
+/// opening and ejecting look it up by.
+const DRIVE_KEY: &str = "__drive:";
+
+/// Id of the drive a dock item stands for, if it is one.
+pub fn drive_of(key: &str) -> Option<&str> {
+    key.strip_prefix(DRIVE_KEY)
+}
+
 /// Fallback glyph for a tray item that ships neither a themed icon nor a
 /// pixmap. Rare, but an invisible dock item is worse than a generic one.
 const GLYPH_TRAY: &str = "\u{f013}";
@@ -341,6 +353,21 @@ const GLYPH_DOWNLOADS: &str = "\u{f019}";
 const GLYPH_DOCUMENTS: &str = "\u{f0f6}";
 const GLYPH_PICTURES: &str = "\u{f03e}";
 const GLYPH_TRASH: &str = "\u{f1f8}";
+const GLYPH_DRIVE: &str = "\u{f287}";
+const GLYPH_PHONE: &str = "\u{f10b}";
+const GLYPH_CAMERA: &str = "\u{f030}";
+
+/// Glyph for a drive, from the icon GIO gave it: phones and cameras look like
+/// themselves, anything else is a USB drive.
+pub fn drive_glyph(icon: &str) -> &'static str {
+    if icon.contains("phone") || icon.contains("multimedia-player") {
+        GLYPH_PHONE
+    } else if icon.contains("camera") {
+        GLYPH_CAMERA
+    } else {
+        GLYPH_DRIVE
+    }
+}
 const GLYPH_TRASH_FULL: &str = "\u{f014}";
 /// Scratchpad: a drawer to put windows in.
 const GLYPH_SCRATCHPAD: &str = "\u{f01c}";
@@ -520,6 +547,7 @@ pub struct DockState {
     monitors: Vec<Monitor>,
     workspaces: Vec<Workspace>,
     tray: Vec<crate::tray::TrayItem>,
+    drives: Vec<crate::drives::Drive>,
     media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
@@ -539,6 +567,7 @@ impl DockState {
             monitors: Vec::new(),
             workspaces: Vec::new(),
             tray: Vec::new(),
+            drives: Vec::new(),
             media: Vec::new(),
             focused: None,
             urgent: Vec::new(),
@@ -608,6 +637,10 @@ impl DockState {
 
     pub fn set_tray(&mut self, items: Vec<crate::tray::TrayItem>) {
         self.tray = items;
+    }
+
+    pub fn set_drives(&mut self, drives: Vec<crate::drives::Drive>) {
+        self.drives = drives;
     }
 
     pub fn set_workspaces(&mut self, mut workspaces: Vec<Workspace>) {
@@ -923,7 +956,7 @@ impl DockState {
             items.insert(strip_end, separator());
         }
 
-        // Stacks and Trash form the dock's tail section, as on macOS.
+        // Stacks, drives and Trash form the dock's tail section, as on macOS.
         let tail_start = items.len();
 
         if cfg.tray.enabled {
@@ -964,6 +997,34 @@ impl DockState {
                 downloading,
                 path: Some(path),
             });
+        }
+
+        if cfg.items.show_drives {
+            for d in &self.drives {
+                items.push(DockItem {
+                    kind: ItemKind::Drive,
+                    key: format!("{DRIVE_KEY}{}", d.id),
+                    label: d.name.clone(),
+                    icon: d.icon.clone(),
+                    windows: Vec::new(),
+                    pinned: true,
+                    active: false,
+                    urgent: false,
+                    scratchpad: false,
+                    active_window: None,
+                    exec: String::new(),
+                    actions: Vec::new(),
+                    path: None,
+                    pin_index: None,
+                    glyph: Some(drive_glyph(&d.icon).into()),
+                    pixmap: None,
+                    window_meta: Vec::new(),
+                    open_with: None,
+                    media: None,
+                    unread: 0,
+                    downloading: 0,
+                });
+            }
         }
 
         if cfg.items.show_trash {
@@ -1472,6 +1533,85 @@ mod layout_tests {
         let s = DockState::new(vec![]);
         let items = s.items(&cfg(&[SEPARATOR, SEPARATOR]));
         assert!(items.len() <= 1, "got {:?}", kinds(&items));
+    }
+
+    fn drive(id: &str) -> crate::drives::Drive {
+        crate::drives::Drive {
+            id: id.into(),
+            name: id.to_uppercase(),
+            icon: "drive-removable-media-usb".into(),
+            mounted: false,
+            can_eject: true,
+        }
+    }
+
+    fn folder() -> crate::config::Folder {
+        crate::config::Folder {
+            path: "/nonexistent/stack".into(),
+            name: "Stack".into(),
+            icon: String::new(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn drives_sit_between_the_folders_and_trash() {
+        let mut c = cfg(&["a"]);
+        c.items.show_trash = true;
+        c.items.folders = vec![folder()];
+        let mut s = DockState::new(vec![]);
+        s.set_drives(vec![drive("sdb1"), drive("sdc1")]);
+        let items = s.items(&c);
+        assert_eq!(
+            kinds(&items),
+            vec![
+                ItemKind::App,
+                ItemKind::Separator,
+                ItemKind::Folder,
+                ItemKind::Drive,
+                ItemKind::Drive,
+                ItemKind::Trash,
+            ]
+        );
+        assert_eq!(drive_of(&items[3].key), Some("sdb1"));
+        assert_eq!(items[3].label, "SDB1");
+    }
+
+    #[test]
+    fn a_drives_only_tail_gets_its_divider() {
+        let mut s = DockState::new(vec![]);
+        s.set_drives(vec![drive("sdb1")]);
+        assert_eq!(
+            kinds(&s.items(&cfg(&["a"]))),
+            vec![ItemKind::App, ItemKind::Separator, ItemKind::Drive]
+        );
+    }
+
+    #[test]
+    fn drives_are_hidden_when_turned_off() {
+        let mut c = cfg(&["a"]);
+        c.items.show_drives = false;
+        let mut s = DockState::new(vec![]);
+        s.set_drives(vec![drive("sdb1")]);
+        assert_eq!(kinds(&s.items(&c)), vec![ItemKind::App]);
+    }
+
+    #[test]
+    fn drives_take_no_hotkey_number() {
+        let mut s = DockState::new(vec![]);
+        s.set_drives(vec![drive("sdb1")]);
+        let items = s.items(&cfg(&["a"]));
+        assert_eq!(nth_app(&items, 0).map(|i| i.key.as_str()), Some("a"));
+        assert!(nth_app(&items, 1).is_none());
+    }
+
+    #[test]
+    fn a_drive_is_drawn_as_what_it_is() {
+        assert_eq!(drive_glyph("phone-apple-iphone"), GLYPH_PHONE);
+        assert_eq!(drive_glyph("multimedia-player"), GLYPH_PHONE);
+        assert_eq!(drive_glyph("camera-photo"), GLYPH_CAMERA);
+        assert_eq!(drive_glyph("drive-removable-media-usb"), GLYPH_DRIVE);
+        assert_eq!(drive_glyph(""), GLYPH_DRIVE);
     }
 }
 
