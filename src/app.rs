@@ -40,6 +40,10 @@ struct App {
     /// stack styles and leak the old ones.
     provider: gtk::CssProvider,
     docks: Vec<DockSurface>,
+    /// For workers started on the main thread, like the drive watcher.
+    tx: crate::event::Sender,
+    /// Watches removable drives while they are shown.
+    drives: Option<crate::drives::DriveWatcher>,
 }
 
 impl App {
@@ -90,6 +94,20 @@ impl App {
                 tracing::info!(theme = %name, "icon theme set");
                 icons.set_theme_name(Some(&name));
             }
+        }
+    }
+
+    /// Watch for drives only while the dock shows them.
+    fn sync_drive_watcher(&mut self) {
+        match (self.cfg.items.show_drives, self.drives.is_some()) {
+            (true, false) => {
+                self.drives = Some(crate::drives::DriveWatcher::start(self.tx.clone()))
+            }
+            (false, true) => {
+                self.drives = None;
+                self.state.set_drives(Vec::new());
+            }
+            _ => {}
         }
     }
 
@@ -405,6 +423,7 @@ pub fn run() -> glib::ExitCode {
     let startup = Config::load();
     let (tray, media) = (startup.tray.enabled, startup.items.media_controls);
     let badges = startup.items.notification_badges;
+    let drive_tx = tx.clone();
     let worker = match crate::runtime::spawn(tx, tray, media, badges) {
         Ok(handle) => Some(handle),
         Err(e) => {
@@ -444,8 +463,11 @@ pub fn run() -> glib::ExitCode {
             shell: Shell::fallback(&Palette::default()),
             provider,
             docks: Vec::new(),
+            tx: drive_tx.clone(),
+            drives: None,
         };
         app.state.set_recording(crate::omarchy::is_recording());
+        app.sync_drive_watcher();
         // Style before building, so surfaces map already themed and the user
         // never sees an unstyled frame.
         app.restyle();
@@ -507,6 +529,10 @@ pub fn run() -> glib::ExitCode {
                         app.state.set_tray(items);
                         app.sync(&gtk_app);
                     }
+                    AppEvent::Drives(drives) => {
+                        app.state.set_drives(drives);
+                        app.sync(&gtk_app);
+                    }
                     AppEvent::StyleChanged => {
                         // A theme carries its own spacing and font scale, so
                         // switching themes can change the dock's geometry, not
@@ -550,6 +576,7 @@ pub fn run() -> glib::ExitCode {
                         // restyle re-derives `cfg` from the new raw config and
                         // the current shell scale.
                         app.restyle();
+                        app.sync_drive_watcher();
                         if structural {
                             app.rebuild(&gtk_app);
                         } else {
@@ -717,6 +744,9 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
                 }
             });
         }
+        // Main thread, straight to GIO: udisks2 does the work, as the user.
+        MenuAction::DriveOpen(id) => crate::drives::open(&id),
+        MenuAction::DriveEject(id) => crate::drives::eject(&id),
         MenuAction::SetPinned { key, pinned } => {
             let saved = Config::edit(|cfg| {
                 cfg.items.pinned.retain(|p| p != &key);

@@ -27,6 +27,10 @@ pub enum MenuAction {
     ReorderPin { from: usize, to: usize },
     /// Drop an entry from the pinned list.
     RemovePin { index: usize },
+    /// Open a removable drive in the file manager, mounting it first.
+    DriveOpen(String),
+    /// Eject a removable drive, or unmount it.
+    DriveEject(String),
 }
 
 /// Context menu for a user-placed separator.

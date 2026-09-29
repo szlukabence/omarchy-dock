@@ -40,6 +40,8 @@ pub enum AppEvent {
     Notified(crate::notices::Notice),
     /// The current set of system-tray items. Sent whole on every change.
     Tray(Vec<crate::tray::TrayItem>),
+    /// The removable drives plugged in right now. Sent whole on every change.
+    Drives(Vec<crate::drives::Drive>),
     /// A command from `omarchy-dockctl`.
     Control(crate::ipc_ctl::Control),
     /// The dock was asked to stop (SIGTERM, SIGINT or SIGHUP).
