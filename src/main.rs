@@ -8,6 +8,7 @@ mod autohide;
 mod config;
 mod event;
 mod desktop;
+mod drives;
 mod hypr;
 mod ipc_ctl;
 mod media;
