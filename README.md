@@ -227,7 +227,7 @@ dock's memory: nothing is saved to disk or sent anywhere.
 | Notifications, by watching `Notify` calls on the session bus (it listens, never answers) — only while badges are on, which they are not by default | Unread badges | Who sent each one — app name, desktop id, and a browser notification's site — as a count per app. Titles and text are never kept | `items.notification_badges = false` |
 | Media players, over MPRIS | The progress ring and play controls | Title, artist and position of what is playing | — |
 | Your Downloads folder | The download ring | How many partial `.crdownload`/`.part` files are in it | — |
-| Removable drives, through GIO's volume monitor (gvfs and udisks2) | Drive icons | Each drive's name, icon, and whether it is mounted | `items.show_drives = false` |
+| Removable drives, through GIO's volume monitor (gvfs and udisks2), and the kernel's mount table for partitions gvfs hides, like Ventoy's `VTOYEFI` | Drive icons and the partition picker | Each drive's name, icon, device path, and which partitions are mounted | `items.show_drives = false` |
 
 ## Looking like Omarchy
 

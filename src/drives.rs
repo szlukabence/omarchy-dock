@@ -18,6 +18,7 @@ use gtk::prelude::*;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::event::{AppEvent, Sender};
@@ -86,14 +87,61 @@ fn read(v: &gio::Volume) -> Option<VolumeInfo> {
         mounted: mount.is_some(),
         can_eject: mount.as_ref().map_or_else(|| v.can_eject(), |m| m.can_eject()),
         can_unmount: mount.as_ref().is_some_and(|m| m.can_unmount()),
-        device: drive.map(|d| DeviceInfo {
-            id: drive_id(&d),
-            name: d.name().to_string(),
-            icons: icon_names(&d.icon()),
-            media_removable: d.is_media_removable(),
-            can_eject: d.can_eject(),
-        }),
+        device: drive.map(|d| device_info(&d)),
     })
+}
+
+fn device_info(d: &gio::Drive) -> DeviceInfo {
+    DeviceInfo {
+        id: drive_id(d),
+        name: d.name().to_string(),
+        icons: icon_names(&d.icon()),
+        media_removable: d.is_media_removable(),
+        can_eject: d.can_eject(),
+    }
+}
+
+/// Partitions gvfs keeps no volume for but which are mounted anyway, with
+/// the removable drive each is on.
+///
+/// udisks tells gvfs to hide some partitions — Ventoy's `VTOYEFI`, recovery
+/// partitions — so they have no volume and their mount belongs to no drive.
+/// Mounted by hand, they are still on the stick: found through the kernel's
+/// mount table and sysfs, so the picker lists them and Eject unmounts them.
+fn loose_mounts(monitor: &gio::VolumeMonitor) -> Vec<(gio::Mount, VolumeInfo)> {
+    let loose: Vec<gio::Mount> =
+        monitor.mounts().into_iter().filter(|m| m.volume().is_none()).collect();
+    if loose.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    let drives = monitor.connected_drives();
+    loose
+        .into_iter()
+        .filter_map(|m| {
+            let point = m.root().path()?;
+            let source = std::fs::canonicalize(mount_source(&mountinfo, &point)?).ok()?;
+            let name = source.file_name()?.to_str()?.to_string();
+            let sysfs = std::fs::canonicalize(format!("/sys/class/block/{name}")).ok()?;
+            let disk = format!("/dev/{}", disk_of(&sysfs)?);
+            let drive = drives.iter().find(|d| drive_id(d) == disk)?;
+            if !is_removable(Some((drive.is_removable(), drive.is_media_removable())), None) {
+                return None;
+            }
+            let info = VolumeInfo {
+                id: source.to_string_lossy().into_owned(),
+                name: m.name().to_string(),
+                icons: icon_names(&m.icon()),
+                mounted: true,
+                can_eject: false,
+                can_unmount: m.can_unmount(),
+                device: Some(device_info(drive)),
+            };
+            Some((m, info))
+        })
+        .collect()
 }
 
 /// Whether the icon theme in use can draw `name`.
@@ -102,8 +150,14 @@ fn has_icon(name: &str) -> bool {
 }
 
 fn snapshot(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
-    let volumes = monitor.volumes().iter().filter_map(read).collect();
+    let mut volumes: Vec<VolumeInfo> = monitor.volumes().iter().filter_map(read).collect();
+    volumes.extend(loose_mounts(monitor).into_iter().map(|(_, info)| info));
     crate::state::drive::group(volumes, has_icon)
+}
+
+/// The drive with this device id.
+fn gio_drive(id: &str) -> Option<gio::Drive> {
+    gio::VolumeMonitor::get().connected_drives().into_iter().find(|d| drive_id(d) == id)
 }
 
 /// The partition with this id.
@@ -232,7 +286,13 @@ fn end(id: &str) {
 
 /// Open a partition in the file manager, mounting it first if need be.
 pub fn open(id: &str) {
-    let Some(v) = volume(id) else { return };
+    let Some(v) = volume(id) else {
+        let loose = loose_mounts(&gio::VolumeMonitor::get());
+        if let Some((m, _)) = loose.into_iter().find(|(_, i)| i.id == id) {
+            show(&m);
+        }
+        return;
+    };
     if let Some(m) = v.get_mount() {
         show(&m);
         return;
@@ -260,15 +320,16 @@ pub fn open(id: &str) {
     );
 }
 
-/// A callback shared by the `parts` operations of one eject, which speaks
-/// once they have all finished: "Safe to remove" only if every one worked,
-/// otherwise the first real failure.
-fn finisher(
+/// A callback shared by the `parts` operations of one step of an eject. Once
+/// all have finished it runs `then` if every one worked; otherwise it reports
+/// the first real failure and releases the device.
+fn after_all(
     id: String,
     name: String,
-    glyph: &'static str,
     parts: usize,
+    then: impl FnOnce() + 'static,
 ) -> Rc<dyn Fn(Result<(), glib::Error>)> {
+    let then = RefCell::new(Some(then));
     let (left, failed) = (Cell::new(parts), Cell::new(false));
     Rc::new(move |r| {
         if let Err(e) = r {
@@ -278,12 +339,58 @@ fn finisher(
         }
         left.set(left.get().saturating_sub(1));
         if left.get() == 0 {
-            end(&id);
-            if !failed.get() {
-                crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph));
+            if failed.get() {
+                end(&id);
+            } else if let Some(then) = then.borrow_mut().take() {
+                then();
             }
         }
     })
+}
+
+/// The last step of every eject: release the device and say so.
+fn safe_to_remove(id: String, name: String, glyph: &'static str) -> impl FnOnce() {
+    move || {
+        end(&id);
+        crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph));
+    }
+}
+
+/// Unmount each of `mounts`, then run `then` if all of them went.
+fn unmount_all(id: &str, name: &str, mounts: Vec<gio::Mount>, then: impl FnOnce() + 'static) {
+    if mounts.is_empty() {
+        then();
+        return;
+    }
+    let done = after_all(id.to_string(), name.to_string(), mounts.len(), then);
+    for m in mounts {
+        let done = done.clone();
+        m.unmount_with_operation(
+            gio::MountUnmountFlags::NONE,
+            Some(&operation()),
+            None::<&gio::Cancellable>,
+            move |r| done(r),
+        );
+    }
+}
+
+/// Eject the device itself. gvfs unmounts every partition it has a volume
+/// for first; the ones it hides are the caller's to unmount.
+fn eject_device(id: String, name: String, glyph: &'static str) {
+    let flags = gio::MountUnmountFlags::NONE;
+    let none = None::<&gio::Cancellable>;
+    let first = volumes_of(&id).into_iter().next();
+    let done = after_all(id.clone(), name.clone(), 1, safe_to_remove(id.clone(), name, glyph));
+    let done = move |r| done(r);
+    match (gio_drive(&id), first) {
+        (Some(d), _) => d.eject_with_operation(flags, Some(&operation()), none, done),
+        // A phone or camera: its one volume is the device.
+        (None, Some(v)) => match v.get_mount() {
+            Some(m) if m.can_eject() => m.eject_with_operation(flags, Some(&operation()), none, done),
+            _ => v.eject_with_operation(flags, Some(&operation()), none, done),
+        },
+        (None, None) => end(&id),
+    }
 }
 
 /// Eject a whole device — every partition on it — or, when it cannot be
@@ -291,46 +398,103 @@ fn finisher(
 /// safe to pull out.
 pub fn eject(id: &str) {
     let Some(drive) = find(id) else { return };
-    let volumes = volumes_of(id);
-    let Some(first) = volumes.first() else { return };
     if !(drive.can_eject || drive.can_unmount) || !begin(id) {
         return;
     }
-    let flags = gio::MountUnmountFlags::NONE;
-    let none = None::<&gio::Cancellable>;
     let glyph = drive.kind.glyph();
+    let hidden: Vec<gio::Mount> = loose_mounts(&gio::VolumeMonitor::get())
+        .into_iter()
+        .filter(|(_, i)| i.device_id() == id)
+        .map(|(m, _)| m)
+        .collect();
 
     if drive.can_eject {
-        let done = finisher(id.to_string(), drive.name, glyph, 1);
-        let done = move |r| done(r);
-        match (first.drive(), first.get_mount()) {
-            // gvfs unmounts every partition on the drive before ejecting it.
-            (Some(d), _) => d.eject_with_operation(flags, Some(&operation()), none, done),
-            // A phone or camera: its one volume is the device.
-            (None, Some(m)) if m.can_eject() => {
-                m.eject_with_operation(flags, Some(&operation()), none, done)
-            }
-            (None, _) => first.eject_with_operation(flags, Some(&operation()), none, done),
-        }
+        let (id2, name) = (id.to_string(), drive.name.clone());
+        unmount_all(id, &drive.name, hidden, move || eject_device(id2, name, glyph));
         return;
     }
 
-    let mounts: Vec<gio::Mount> =
-        volumes.iter().filter_map(|v| v.get_mount()).filter(|m| m.can_unmount()).collect();
-    if mounts.is_empty() {
-        end(id);
-        return;
+    let mut mounts: Vec<gio::Mount> = volumes_of(id).iter().filter_map(|v| v.get_mount()).collect();
+    mounts.extend(hidden);
+    mounts.retain(|m| m.can_unmount());
+    let done = safe_to_remove(id.to_string(), drive.name.clone(), glyph);
+    unmount_all(id, &drive.name, mounts, done);
+}
+
+/// Undo mountinfo's octal escapes: `\040` for a space, and so on.
+fn unescape(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let code = rest.get(i + 1..i + 4).and_then(|o| u8::from_str_radix(o, 8).ok());
+        match code {
+            Some(c) => {
+                out.push(c as char);
+                rest = &rest[i + 4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[i + 1..];
+            }
+        }
     }
-    let done = finisher(id.to_string(), drive.name, glyph, mounts.len());
-    for m in mounts {
-        let done = done.clone();
-        m.unmount_with_operation(flags, Some(&operation()), none, move |r| done(r));
-    }
+    out.push_str(rest);
+    out
+}
+
+/// The device mounted at `mount_point`, from `/proc/self/mountinfo` text.
+///
+/// Each line is `id parent major:minor root mount-point options… - type
+/// source super-options`.
+fn mount_source(mountinfo: &str, mount_point: &Path) -> Option<String> {
+    mountinfo.lines().find_map(|line| {
+        let (head, tail) = line.split_once(" - ")?;
+        let point = head.split(' ').nth(4)?;
+        (Path::new(&unescape(point)) == mount_point)
+            .then(|| tail.split(' ').nth(1).map(unescape))
+            .flatten()
+    })
+}
+
+/// The disk a block device belongs to, from its resolved sysfs path:
+/// `…/block/sdb/sdb2` is on `sdb`, and `…/block/sdb` is a disk itself.
+fn disk_of(sysfs: &Path) -> Option<String> {
+    let name = sysfs.file_name()?.to_str()?;
+    let parent = sysfs.parent()?.file_name()?.to_str()?;
+    Some(if parent == "block" { name } else { parent }.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MOUNTINFO: &str = "\
+22 1 259:9 / / rw,relatime shared:1 - ext4 /dev/mapper/omarchy_root rw
+112 30 8:17 / /run/media/me/Ventoy rw,nosuid,nodev,relatime shared:60 - exfat /dev/sdb1 rw
+118 30 8:18 / /run/media/me/VTOYEFI rw,nosuid,nodev,relatime shared:64 - vfat /dev/sdb2 rw,fmask=0022
+120 30 8:33 / /run/media/me/MY\\040STICK rw,relatime shared:66 - vfat /dev/sdc1 rw
+";
+
+    #[test]
+    fn the_device_behind_a_mount_point_is_read_from_mountinfo() {
+        let at = |p: &str| mount_source(MOUNTINFO, Path::new(p));
+        assert_eq!(at("/run/media/me/VTOYEFI").as_deref(), Some("/dev/sdb2"));
+        assert_eq!(at("/run/media/me/Ventoy").as_deref(), Some("/dev/sdb1"));
+        // Spaces in a mount point are written as \040.
+        assert_eq!(at("/run/media/me/MY STICK").as_deref(), Some("/dev/sdc1"));
+        assert_eq!(at("/run/media/me/elsewhere"), None);
+    }
+
+    #[test]
+    fn a_partition_belongs_to_the_disk_above_it_in_sysfs() {
+        let disk = |p: &str| disk_of(Path::new(p));
+        let usb = "/sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host0/target0:0:0/0:0:0:0/block";
+        assert_eq!(disk(&format!("{usb}/sdb/sdb2")).as_deref(), Some("sdb"));
+        // A filesystem on the whole disk, no partition table.
+        assert_eq!(disk(&format!("{usb}/sdb")).as_deref(), Some("sdb"));
+        assert_eq!(disk("/sys/devices/virtual/block/dm-0").as_deref(), Some("dm-0"));
+    }
 
     #[test]
     fn removable_drives_and_media_are_kept() {
