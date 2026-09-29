@@ -950,6 +950,14 @@ fn attach_clicks(
                     }
                     return;
                 }
+                // Mounting can take a moment; the pulse says the click landed.
+                ItemKind::Drive => {
+                    if let Some(id) = crate::state::drive_of(&item.key) {
+                        pulse(&state, index);
+                        sink(MenuAction::DriveOpen(id.to_string()));
+                    }
+                    return;
+                }
                 // Stacks and Trash open a popover rather than launching.
                 ItemKind::Folder | ItemKind::Trash => {
                     let sink2 = sink.clone();
@@ -1090,6 +1098,8 @@ fn context_menu(item: &DockItem, sink: &ActionSink) -> Option<gtk::Popover> {
                 } else {
                     crate::ui::stack::build_folder(item.path.as_ref()?, &item.label, refresh)
                 }
+            } else if item.kind == ItemKind::Drive {
+                menu::build_drive(crate::state::drive_of(&item.key)?, move |a| sink(a))?
             } else if item.kind == ItemKind::Launcher {
                 // The launcher has no windows or desktop actions, so its
                 // right-click is the natural home for the dock's own settings.

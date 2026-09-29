@@ -353,6 +353,9 @@ fn build_window() -> gtk::Window {
     list.append(&toggle("Show Trash", cfg.items.show_trash, |v| {
         edit(move |c| c.items.show_trash = v)
     }));
+    list.append(&toggle("Show removable drives", cfg.items.show_drives, |v| {
+        edit(move |c| c.items.show_drives = v)
+    }));
 
     list.append(&separator());
 

@@ -61,6 +61,47 @@ where
     popover
 }
 
+/// Context menu for a removable drive: open it, and eject or unmount it.
+///
+/// Read from the drive as it is now, not as the dock last drew it, so the
+/// menu offers exactly what can be done. `None` once the drive is gone.
+pub fn build_drive<F>(id: &str, on_action: F) -> Option<gtk::Popover>
+where
+    F: Fn(MenuAction) + Clone + 'static,
+{
+    let drive = crate::drives::find(id)?;
+    let popover = gtk::Popover::new();
+    popover.add_css_class("dock-menu");
+    popover.set_autohide(true);
+
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.add_css_class("dock-menu-list");
+    list.append(&heading(&drive.name));
+    {
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        let id = drive.id.clone();
+        list.append(&row("Open", move || {
+            cb(MenuAction::DriveOpen(id.clone()));
+            pop.popdown();
+        }));
+    }
+    // An unmounted drive that cannot be ejected has nothing to undo.
+    if drive.mounted || drive.can_eject {
+        let cb = on_action.clone();
+        let pop = popover.clone();
+        let id = drive.id.clone();
+        let label = if drive.can_eject { "Eject" } else { "Unmount" };
+        list.append(&row(label, move || {
+            cb(MenuAction::DriveEject(id.clone()));
+            pop.popdown();
+        }));
+    }
+
+    popover.set_child(Some(&list));
+    Some(popover)
+}
+
 /// Build (but do not show) the context menu for `item`.
 pub fn build<F>(item: &DockItem, on_action: F) -> gtk::Popover
 where
