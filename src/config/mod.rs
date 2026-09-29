@@ -283,6 +283,9 @@ pub struct Items {
     pub pinned: Vec<String>,
     pub folders: Vec<Folder>,
     pub show_trash: bool,
+    /// Show plugged-in removable drives — USB sticks, SD cards, phones —
+    /// beside Trash. Nothing shows until one is plugged in.
+    pub show_drives: bool,
     /// Shell commands that can be pinned as tiles, referenced from `pinned`
     /// as `cmd:<id>`.
     pub commands: Vec<CommandItem>,
@@ -415,6 +418,7 @@ impl Default for Items {
             pinned: Vec::new(),
             folders: Vec::new(),
             show_trash: true,
+            show_drives: true,
             commands: Vec::new(),
             show_running: true,
             glyph_ui: true,
@@ -851,5 +855,15 @@ mod tests {
         Config::edit_at(&path, Config::default, |c| c.items.pinned = vec!["x".into()]).unwrap();
         let saved: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved.items.pinned, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn drives_are_shown_unless_turned_off() {
+        assert!(Config::default().items.show_drives);
+        // A config written before the setting existed keeps them on.
+        let old: Config = toml::from_str("[items]\nshow_trash = false\n").unwrap();
+        assert!(old.items.show_drives);
+        let off: Config = toml::from_str("[items]\nshow_drives = false\n").unwrap();
+        assert!(!off.items.show_drives);
     }
 }
