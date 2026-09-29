@@ -146,6 +146,10 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   deleted for good, and both that and "Empty Trash" take a second click. Even
   then only a trashed item goes — one with the `.trashinfo` record every trash
   keeps — and never through a `Trash`, `files` or `info` that is a symlink.
+- **Removable drives**: a USB stick, SD card, external disk or phone shows up
+  beside Trash while it is plugged in. Click to open it in your file manager —
+  mounting it first if need be — and right-click to eject it; the dock tells
+  you when it is safe to pull out. Internal disks never show.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
   tile to switch, or scroll over the strip to step through them; drop an app
   icon on one to send that window there.
@@ -206,7 +210,9 @@ notification rather than saved over what you wrote. The dock itself never runs
 `omarchy-dockctl install` and `uninstall` refuse to run as root, since
 everything they touch is in your home. It makes no network requests. `/tmp` is
 never written; the only thing read there is Omarchy's own screen-recording
-marker.
+marker. Drives are mounted, unmounted and ejected only when you click, through
+udisks2 as you — the way your file manager does it — and the dock never
+writes to one.
 
 ## What it reads
 
@@ -219,6 +225,7 @@ dock's memory: nothing is saved to disk or sent anywhere.
 | Notifications, by watching `Notify` calls on the session bus (it listens, never answers) — only while badges are on, which they are not by default | Unread badges | Who sent each one — app name, desktop id, and a browser notification's site — as a count per app. Titles and text are never kept | `items.notification_badges = false` |
 | Media players, over MPRIS | The progress ring and play controls | Title, artist and position of what is playing | — |
 | Your Downloads folder | The download ring | How many partial `.crdownload`/`.part` files are in it | — |
+| Removable drives, through GIO's volume monitor (gvfs and udisks2) | Drive icons | Each drive's name, icon, and whether it is mounted | `items.show_drives = false` |
 
 ## Looking like Omarchy
 
@@ -311,7 +318,8 @@ Notable keys:
 | `theme.follow_shell_scale` | Track the shell's spacing/font scale (default: on) |
 | `theme.radius` | Corner radius; omit to mirror Hyprland's `decoration:rounding` |
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
-| `items.glyph_ui` | Draw launcher, folders and Trash as monochrome glyphs (default: on) |
+| `items.glyph_ui` | Draw launcher, folders, drives and Trash as monochrome glyphs (default: on) |
+| `items.show_drives` | Show plugged-in removable drives beside Trash (default: on) |
 | `dock.avoid_bar` | Offset past the Omarchy bar when both share an edge (default: on) |
 
 The dock can host the **system tray** itself: it registers as a
