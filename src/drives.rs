@@ -90,6 +90,7 @@ fn read(v: &gio::Volume) -> Option<VolumeInfo> {
             id: drive_id(&d),
             name: d.name().to_string(),
             icons: icon_names(&d.icon()),
+            media_removable: d.is_media_removable(),
             can_eject: d.can_eject(),
         }),
     })
