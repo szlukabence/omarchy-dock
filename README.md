@@ -211,7 +211,7 @@ notification rather than saved over what you wrote. The dock itself never runs
 everything they touch is in your home. It makes no network requests. `/tmp` is
 never written; the only thing read there is Omarchy's own screen-recording
 marker. Drives are mounted, unmounted and ejected only when you click, through
-udisks2 as you — the way your file manager does it — and the dock never
+udisks2 and gvfs as you — the way your file manager does it — and the dock never
 writes to one.
 
 ## What it reads

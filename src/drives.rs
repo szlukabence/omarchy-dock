@@ -33,17 +33,23 @@ pub struct Drive {
     pub can_eject: bool,
 }
 
+/// URI schemes of the gvfs backends for phones and cameras: MTP, PTP
+/// cameras, and iPhones over AFC.
+const DEVICE_SCHEMES: [&str; 3] = ["mtp", "gphoto2", "afc"];
+
 /// Whether a volume belongs in the dock.
 ///
 /// `drive` is its drive's `(is_removable, is_media_removable)`, when it has
 /// one. A volume on a removable drive, or on a drive whose media comes out,
-/// qualifies — a USB stick, a card in a reader. Without a drive, only a
-/// `device` volume does: that is how gvfs presents phones and cameras. Every
-/// internal disk, and every network share, is left out.
-fn is_removable(drive: Option<(bool, bool)>, class: Option<&str>) -> bool {
+/// qualifies — a USB stick, a card in a reader. Without a drive, `scheme` is
+/// its activation root's URI scheme: gvfs presents phones and cameras that
+/// way, with no drive at all. A driveless udisks volume — LVM, RAID — has no
+/// activation root, so it is left out along with every internal disk and
+/// every network share.
+fn is_removable(drive: Option<(bool, bool)>, scheme: Option<&str>) -> bool {
     match drive {
         Some((removable, media_removable)) => removable || media_removable,
-        None => class == Some("device"),
+        None => scheme.is_some_and(|s| DEVICE_SCHEMES.contains(&s)),
     }
 }
 
@@ -69,7 +75,8 @@ fn icon_name(icon: &gio::Icon) -> String {
 /// The dock's view of a volume, or `None` if it is not removable.
 fn describe(v: &gio::Volume) -> Option<Drive> {
     let drive = v.drive().map(|d| (d.is_removable(), d.is_media_removable()));
-    if !is_removable(drive, v.identifier("class").as_deref()) {
+    let scheme = v.activation_root().and_then(|root| root.uri_scheme());
+    if !is_removable(drive, scheme.as_deref()) {
         return None;
     }
     let mount = v.get_mount();
@@ -238,20 +245,30 @@ mod tests {
 
     #[test]
     fn removable_drives_and_media_are_kept() {
-        assert!(is_removable(Some((true, false)), Some("device")));
-        assert!(is_removable(Some((false, true)), Some("device")));
+        assert!(is_removable(Some((true, false)), None));
+        assert!(is_removable(Some((false, true)), None));
     }
 
     #[test]
     fn internal_disks_are_left_out() {
         // The NVMe's Windows and Data partitions: a fixed drive.
-        assert!(!is_removable(Some((false, false)), Some("device")));
+        assert!(!is_removable(Some((false, false)), None));
     }
 
     #[test]
-    fn a_phone_without_a_drive_is_kept_but_a_network_share_is_not() {
-        assert!(is_removable(None, Some("device")));
-        assert!(!is_removable(None, Some("network")));
+    fn phones_and_cameras_are_kept_by_their_gvfs_scheme() {
+        // gvfs gives MTP, gphoto2 and AFC volumes no drive and no class, only
+        // an activation root.
+        assert!(is_removable(None, Some("mtp")));
+        assert!(is_removable(None, Some("gphoto2")));
+        assert!(is_removable(None, Some("afc")));
+    }
+
+    #[test]
+    fn driveless_internal_volumes_and_shares_are_left_out() {
+        // An LVM or RAID volume: no udisks drive, no activation root.
         assert!(!is_removable(None, None));
+        assert!(!is_removable(None, Some("smb")));
+        assert!(!is_removable(None, Some("nfs")));
     }
 }
