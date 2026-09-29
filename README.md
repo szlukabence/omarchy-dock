@@ -147,9 +147,11 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   then only a trashed item goes — one with the `.trashinfo` record every trash
   keeps — and never through a `Trash`, `files` or `info` that is a symlink.
 - **Removable drives**: a USB stick, SD card, external disk or phone shows up
-  beside Trash while it is plugged in. Click to open it in your file manager —
-  mounting it first if need be — and right-click to eject it; the dock tells
-  you when it is safe to pull out. Internal disks never show.
+  beside Trash while it is plugged in, drawn as what it is. Click to open it
+  in your file manager — mounting it first if need be, and letting you pick
+  the partition when it has several — and right-click to eject the whole
+  device; the dock tells you when it is safe to pull out. Internal disks never
+  show.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
   tile to switch, or scroll over the strip to step through them; drop an app
   icon on one to send that window there.

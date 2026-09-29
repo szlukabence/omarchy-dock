@@ -950,11 +950,25 @@ fn attach_clicks(
                     }
                     return;
                 }
-                // Mounting can take a moment; the pulse says the click landed.
+                // One partition opens straight away, and mounting can take a
+                // moment, so the pulse says the click landed. Several are a
+                // choice, offered the way a stack offers its files.
                 ItemKind::Drive => {
-                    if let Some(id) = crate::state::drive_of(&item.key) {
+                    let Some(drive) =
+                        crate::state::drive_of(&item.key).and_then(crate::drives::find)
+                    else {
+                        return;
+                    };
+                    if let [only] = drive.partitions.as_slice() {
                         pulse(&state, index);
-                        sink(MenuAction::DriveOpen(id.to_string()));
+                        sink(MenuAction::DriveOpen(only.id.clone()));
+                    } else {
+                        let sink2 = sink.clone();
+                        let pop = menu::build_drive(&drive, move |a| sink2(a), false);
+                        pop.set_parent(&anchor_left);
+                        pop.set_position(menu_side);
+                        hold_for_popover(&pop, &slide_l, &window_l, &cfg_l);
+                        pop.popup();
                     }
                     return;
                 }
@@ -1099,7 +1113,8 @@ fn context_menu(item: &DockItem, sink: &ActionSink) -> Option<gtk::Popover> {
                     crate::ui::stack::build_folder(item.path.as_ref()?, &item.label, refresh)
                 }
             } else if item.kind == ItemKind::Drive {
-                menu::build_drive(crate::state::drive_of(&item.key)?, move |a| sink(a))?
+                let drive = crate::drives::find(crate::state::drive_of(&item.key)?)?;
+                menu::build_drive(&drive, move |a| sink(a), true)
             } else if item.kind == ItemKind::Launcher {
                 // The launcher has no windows or desktop actions, so its
                 // right-click is the natural home for the dock's own settings.

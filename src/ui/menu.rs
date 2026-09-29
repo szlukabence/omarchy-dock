@@ -27,9 +27,11 @@ pub enum MenuAction {
     ReorderPin { from: usize, to: usize },
     /// Drop an entry from the pinned list.
     RemovePin { index: usize },
-    /// Open a removable drive in the file manager, mounting it first.
+    /// Open one partition of a removable drive in the file manager,
+    /// mounting it first. Carries the partition's id.
     DriveOpen(String),
-    /// Eject a removable drive, or unmount it.
+    /// Eject a whole removable device, or unmount everything on it. Carries
+    /// the device's id.
     DriveEject(String),
 }
 
@@ -61,15 +63,16 @@ where
     popover
 }
 
-/// Context menu for a removable drive: open it, and eject or unmount it.
+/// Menu for a removable device: open a partition, and, with `eject`, eject
+/// the whole device or unmount everything on it.
 ///
-/// Read from the drive as it is now, not as the dock last drew it, so the
-/// menu offers exactly what can be done. `None` once the drive is gone.
-pub fn build_drive<F>(id: &str, on_action: F) -> Option<gtk::Popover>
+/// Without `eject` it is the partition picker a left-click opens on a device
+/// with more than one. Built from the device as it is now, not as the dock
+/// last drew it, so it offers exactly what can be done.
+pub fn build_drive<F>(drive: &crate::drives::Drive, on_action: F, eject: bool) -> gtk::Popover
 where
     F: Fn(MenuAction) + Clone + 'static,
 {
-    let drive = crate::drives::find(id)?;
     let popover = gtk::Popover::new();
     popover.add_css_class("dock-menu");
     popover.set_autohide(true);
@@ -77,21 +80,33 @@ where
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list.add_css_class("dock-menu-list");
     list.append(&heading(&drive.name));
-    {
+    let single = drive.partitions.len() == 1;
+    for part in &drive.partitions {
+        let label = match (single, part.mounted) {
+            (true, _) => "Open".to_string(),
+            (false, false) => format!("Open {}", part.name),
+            (false, true) => format!("Open {} (mounted)", part.name),
+        };
         let cb = on_action.clone();
         let pop = popover.clone();
-        let id = drive.id.clone();
-        list.append(&row("Open", move || {
+        let id = part.id.clone();
+        list.append(&row(&label, move || {
             cb(MenuAction::DriveOpen(id.clone()));
             pop.popdown();
         }));
     }
-    // An unmounted drive that cannot be ejected has nothing to undo.
-    if drive.mounted || drive.can_eject {
+    let undo = if drive.can_eject {
+        Some("Eject")
+    } else if drive.can_unmount {
+        Some("Unmount")
+    } else {
+        None
+    };
+    if let Some(label) = undo.filter(|_| eject) {
+        list.append(&separator());
         let cb = on_action.clone();
         let pop = popover.clone();
         let id = drive.id.clone();
-        let label = if drive.can_eject { "Eject" } else { "Unmount" };
         list.append(&row(label, move || {
             cb(MenuAction::DriveEject(id.clone()));
             pop.popdown();
@@ -99,7 +114,7 @@ where
     }
 
     popover.set_child(Some(&list));
-    Some(popover)
+    popover
 }
 
 /// Build (but do not show) the context menu for `item`.

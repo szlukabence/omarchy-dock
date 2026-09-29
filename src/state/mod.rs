@@ -11,6 +11,7 @@
 // pills and click handling in Phase 5.
 #![allow(dead_code)]
 
+pub mod drive;
 pub mod matcher;
 
 use std::collections::HashMap;
@@ -353,21 +354,6 @@ const GLYPH_DOWNLOADS: &str = "\u{f019}";
 const GLYPH_DOCUMENTS: &str = "\u{f0f6}";
 const GLYPH_PICTURES: &str = "\u{f03e}";
 const GLYPH_TRASH: &str = "\u{f1f8}";
-const GLYPH_DRIVE: &str = "\u{f287}";
-const GLYPH_PHONE: &str = "\u{f10b}";
-const GLYPH_CAMERA: &str = "\u{f030}";
-
-/// Glyph for a drive, from the icon GIO gave it: phones and cameras look like
-/// themselves, anything else is a USB drive.
-pub fn drive_glyph(icon: &str) -> &'static str {
-    if icon.contains("phone") || icon.contains("multimedia-player") {
-        GLYPH_PHONE
-    } else if icon.contains("camera") {
-        GLYPH_CAMERA
-    } else {
-        GLYPH_DRIVE
-    }
-}
 const GLYPH_TRASH_FULL: &str = "\u{f014}";
 /// Scratchpad: a drawer to put windows in.
 const GLYPH_SCRATCHPAD: &str = "\u{f01c}";
@@ -547,7 +533,7 @@ pub struct DockState {
     monitors: Vec<Monitor>,
     workspaces: Vec<Workspace>,
     tray: Vec<crate::tray::TrayItem>,
-    drives: Vec<crate::drives::Drive>,
+    drives: Vec<drive::Drive>,
     media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
@@ -639,7 +625,7 @@ impl DockState {
         self.tray = items;
     }
 
-    pub fn set_drives(&mut self, drives: Vec<crate::drives::Drive>) {
+    pub fn set_drives(&mut self, drives: Vec<drive::Drive>) {
         self.drives = drives;
     }
 
@@ -1016,7 +1002,7 @@ impl DockState {
                     actions: Vec::new(),
                     path: None,
                     pin_index: None,
-                    glyph: Some(drive_glyph(&d.icon).into()),
+                    glyph: Some(d.kind.glyph().into()),
                     pixmap: None,
                     window_meta: Vec::new(),
                     open_with: None,
@@ -1535,13 +1521,15 @@ mod layout_tests {
         assert!(items.len() <= 1, "got {:?}", kinds(&items));
     }
 
-    fn drive(id: &str) -> crate::drives::Drive {
-        crate::drives::Drive {
+    fn drive(id: &str) -> drive::Drive {
+        drive::Drive {
             id: id.into(),
             name: id.to_uppercase(),
             icon: "drive-removable-media-usb".into(),
-            mounted: false,
+            kind: drive::DeviceKind::UsbStick,
             can_eject: true,
+            can_unmount: false,
+            partitions: Vec::new(),
         }
     }
 
@@ -1603,15 +1591,6 @@ mod layout_tests {
         let items = s.items(&cfg(&["a"]));
         assert_eq!(nth_app(&items, 0).map(|i| i.key.as_str()), Some("a"));
         assert!(nth_app(&items, 1).is_none());
-    }
-
-    #[test]
-    fn a_drive_is_drawn_as_what_it_is() {
-        assert_eq!(drive_glyph("phone-apple-iphone"), GLYPH_PHONE);
-        assert_eq!(drive_glyph("multimedia-player"), GLYPH_PHONE);
-        assert_eq!(drive_glyph("camera-photo"), GLYPH_CAMERA);
-        assert_eq!(drive_glyph("drive-removable-media-usb"), GLYPH_DRIVE);
-        assert_eq!(drive_glyph(""), GLYPH_DRIVE);
     }
 }
 

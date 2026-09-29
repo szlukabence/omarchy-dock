@@ -6,7 +6,9 @@
 //! dock mounts only when a drive is clicked, and never writes to one.
 //!
 //! Main thread only: GIO objects are not `Send`. What crosses into the dock's
-//! state is the plain [`Drive`] value.
+//! state is the plain [`Drive`] value, one per physical device; grouping
+//! volumes into devices and telling what kind each is happen, GIO-free, in
+//! `state::drive`.
 
 use gtk4 as gtk;
 
@@ -14,25 +16,14 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::event::{AppEvent, Sender};
+use crate::state::drive::{DeviceInfo, VolumeInfo};
 
-/// One drive, as the dock shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Drive {
-    /// Stable while the drive stays plugged in; see `volume_id`.
-    pub id: String,
-    /// What the file manager calls it: the filesystem label, or a size.
-    pub name: String,
-    /// Themed icon name, e.g. `drive-removable-media-usb`.
-    pub icon: String,
-    pub mounted: bool,
-    /// Whether it can be ejected, rather than only unmounted.
-    pub can_eject: bool,
-}
+pub use crate::state::drive::Drive;
 
 /// URI schemes of the gvfs backends for phones and cameras: MTP, PTP
 /// cameras, and iPhones over AFC.
@@ -54,9 +45,6 @@ fn is_removable(drive: Option<(bool, bool)>, scheme: Option<&str>) -> bool {
     }
 }
 
-/// Fallback when a volume's icon is not a themed one.
-const DEFAULT_ICON: &str = "drive-removable-media";
-
 /// A volume's id: its device node first, which is unique among what is
 /// plugged in right now even for two cloned sticks sharing a UUID; then the
 /// UUID; then, for the odd volume with neither, its name.
@@ -67,43 +55,76 @@ fn volume_id(v: &gio::Volume) -> String {
         .unwrap_or_else(|| v.name().to_string())
 }
 
-fn icon_name(icon: &gio::Icon) -> String {
-    icon.downcast_ref::<gio::ThemedIcon>()
-        .and_then(|t| t.names().first().map(|n| n.to_string()))
-        .unwrap_or_else(|| DEFAULT_ICON.to_string())
+/// A drive's id: its device node, `/dev/sdb`, else its name.
+fn drive_id(d: &gio::Drive) -> String {
+    d.identifier("unix-device")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| d.name().to_string())
 }
 
-/// The dock's view of a volume, or `None` if it is not removable.
-fn describe(v: &gio::Volume) -> Option<Drive> {
-    let drive = v.drive().map(|d| (d.is_removable(), d.is_media_removable()));
+/// Every name in a themed icon, specific first, fallbacks after.
+fn icon_names(icon: &gio::Icon) -> Vec<String> {
+    icon.downcast_ref::<gio::ThemedIcon>()
+        .map(|t| t.names().iter().map(|n| n.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// What the dock needs to know about a volume, or `None` if it is not
+/// removable.
+fn read(v: &gio::Volume) -> Option<VolumeInfo> {
+    let drive = v.drive();
+    let flags = drive.as_ref().map(|d| (d.is_removable(), d.is_media_removable()));
     let scheme = v.activation_root().and_then(|root| root.uri_scheme());
-    if !is_removable(drive, scheme.as_deref()) {
+    if !is_removable(flags, scheme.as_deref()) {
         return None;
     }
     let mount = v.get_mount();
-    Some(Drive {
+    Some(VolumeInfo {
         id: volume_id(v),
         name: v.name().to_string(),
-        icon: icon_name(&v.icon()),
+        icons: icon_names(&v.icon()),
         mounted: mount.is_some(),
         can_eject: mount.as_ref().map_or_else(|| v.can_eject(), |m| m.can_eject()),
+        can_unmount: mount.as_ref().is_some_and(|m| m.can_unmount()),
+        device: drive.map(|d| DeviceInfo {
+            id: drive_id(&d),
+            name: d.name().to_string(),
+            icons: icon_names(&d.icon()),
+            can_eject: d.can_eject(),
+        }),
     })
 }
 
-fn snapshot(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
-    monitor.volumes().iter().filter_map(describe).collect()
+/// Whether the icon theme in use can draw `name`.
+fn has_icon(name: &str) -> bool {
+    gtk::gdk::Display::default().is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(name))
 }
 
+fn snapshot(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
+    let volumes = monitor.volumes().iter().filter_map(read).collect();
+    crate::state::drive::group(volumes, has_icon)
+}
+
+/// The partition with this id.
 fn volume(id: &str) -> Option<gio::Volume> {
     gio::VolumeMonitor::get()
         .volumes()
         .into_iter()
-        .find(|v| describe(v).is_some_and(|d| d.id == id))
+        .find(|v| read(v).is_some_and(|i| i.id == id))
 }
 
-/// The drive with this id, as it is right now.
+/// Every partition on the device with this id.
+fn volumes_of(id: &str) -> Vec<gio::Volume> {
+    gio::VolumeMonitor::get()
+        .volumes()
+        .into_iter()
+        .filter(|v| read(v).is_some_and(|i| i.device_id() == id))
+        .collect()
+}
+
+/// The device with this id, as it is right now.
 pub fn find(id: &str) -> Option<Drive> {
-    volume(id).and_then(|v| describe(&v))
+    snapshot(&gio::VolumeMonitor::get()).into_iter().find(|d| d.id == id)
 }
 
 /// Watches for drives coming and going while it lives.
@@ -208,7 +229,7 @@ fn end(id: &str) {
     BUSY.with(|b| b.borrow_mut().remove(id));
 }
 
-/// Open a drive in the file manager, mounting it first if need be.
+/// Open a partition in the file manager, mounting it first if need be.
 pub fn open(id: &str) {
     let Some(v) = volume(id) else { return };
     if let Some(m) = v.get_mount() {
@@ -238,38 +259,71 @@ pub fn open(id: &str) {
     );
 }
 
-/// Eject a drive, or unmount it when it cannot be ejected, and say when it is
+/// A callback shared by the `parts` operations of one eject, which speaks
+/// once they have all finished: "Safe to remove" only if every one worked,
+/// otherwise the first real failure.
+fn finisher(
+    id: String,
+    name: String,
+    glyph: &'static str,
+    parts: usize,
+) -> Rc<dyn Fn(Result<(), glib::Error>)> {
+    let (left, failed) = (Cell::new(parts), Cell::new(false));
+    Rc::new(move |r| {
+        if let Err(e) = r {
+            if !failed.replace(true) {
+                report_failure("eject", &name, &e);
+            }
+        }
+        left.set(left.get().saturating_sub(1));
+        if left.get() == 0 {
+            end(&id);
+            if !failed.get() {
+                crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph));
+            }
+        }
+    })
+}
+
+/// Eject a whole device — every partition on it — or, when it cannot be
+/// ejected, unmount every partition that is mounted; then say when it is
 /// safe to pull out.
 pub fn eject(id: &str) {
-    let Some(v) = volume(id) else { return };
-    let mount = v.get_mount();
-    let can = match &mount {
-        Some(m) => m.can_eject() || m.can_unmount(),
-        None => v.can_eject(),
-    };
-    if !can || !begin(id) {
+    let Some(drive) = find(id) else { return };
+    let volumes = volumes_of(id);
+    let Some(first) = volumes.first() else { return };
+    if !(drive.can_eject || drive.can_unmount) || !begin(id) {
         return;
     }
-    let (id, name) = (id.to_string(), v.name().to_string());
-    let glyph = crate::state::drive_glyph(&icon_name(&v.icon()));
-    let done = move |r: Result<(), glib::Error>| {
-        end(&id);
-        match r {
-            Ok(()) => crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph)),
-            Err(e) => report_failure("eject", &name, &e),
-        }
-    };
     let flags = gio::MountUnmountFlags::NONE;
     let none = None::<&gio::Cancellable>;
-    match mount {
-        Some(m) if m.can_eject() => m.eject_with_operation(flags, Some(&operation()), none, done),
-        Some(m) if m.can_unmount() => {
-            m.unmount_with_operation(flags, Some(&operation()), none, done)
+    let glyph = drive.kind.glyph();
+
+    if drive.can_eject {
+        let done = finisher(id.to_string(), drive.name, glyph, 1);
+        let done = move |r| done(r);
+        match (first.drive(), first.get_mount()) {
+            // gvfs unmounts every partition on the drive before ejecting it.
+            (Some(d), _) => d.eject_with_operation(flags, Some(&operation()), none, done),
+            // A phone or camera: its one volume is the device.
+            (None, Some(m)) if m.can_eject() => {
+                m.eject_with_operation(flags, Some(&operation()), none, done)
+            }
+            (None, _) => first.eject_with_operation(flags, Some(&operation()), none, done),
         }
-        // Ruled out by `can` above, so `begin` never leaves a drive busy.
-        Some(_) => {}
-        None if v.can_eject() => v.eject_with_operation(flags, Some(&operation()), none, done),
-        None => {}
+        return;
+    }
+
+    let mounts: Vec<gio::Mount> =
+        volumes.iter().filter_map(|v| v.get_mount()).filter(|m| m.can_unmount()).collect();
+    if mounts.is_empty() {
+        end(id);
+        return;
+    }
+    let done = finisher(id.to_string(), drive.name, glyph, mounts.len());
+    for m in mounts {
+        let done = done.clone();
+        m.unmount_with_operation(flags, Some(&operation()), none, move |r| done(r));
     }
 }
 
