@@ -15,6 +15,7 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::event::{AppEvent, Sender};
@@ -192,6 +193,21 @@ fn report_failure(verb: &str, name: &str, e: &glib::Error) {
     crate::omarchy::notify(&format!("Couldn't {verb} {name}"), Some(e.message()), None);
 }
 
+thread_local! {
+    /// Drives with a mount, unmount or eject still under way.
+    static BUSY: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Claim a drive for one operation. `false` while another is still running:
+/// gvfs would refuse the second one, and that refusal is no news to report.
+fn begin(id: &str) -> bool {
+    BUSY.with(|b| b.borrow_mut().insert(id.to_string()))
+}
+
+fn end(id: &str) {
+    BUSY.with(|b| b.borrow_mut().remove(id));
+}
+
 /// Open a drive in the file manager, mounting it first if need be.
 pub fn open(id: &str) {
     let Some(v) = volume(id) else { return };
@@ -199,19 +215,25 @@ pub fn open(id: &str) {
         show(&m);
         return;
     }
-    let name = v.name().to_string();
+    if !begin(id) {
+        return;
+    }
+    let (id, name) = (id.to_string(), v.name().to_string());
     let vol = v.clone();
     v.mount(
         gio::MountMountFlags::NONE,
         Some(&operation()),
         None::<&gio::Cancellable>,
-        move |r| match r {
-            Ok(()) => {
-                if let Some(m) = vol.get_mount() {
-                    show(&m);
+        move |r| {
+            end(&id);
+            match r {
+                Ok(()) => {
+                    if let Some(m) = vol.get_mount() {
+                        show(&m);
+                    }
                 }
+                Err(e) => report_failure("open", &name, &e),
             }
-            Err(e) => report_failure("open", &name, &e),
         },
     );
 }
@@ -220,19 +242,31 @@ pub fn open(id: &str) {
 /// safe to pull out.
 pub fn eject(id: &str) {
     let Some(v) = volume(id) else { return };
-    let name = v.name().to_string();
+    let mount = v.get_mount();
+    let can = match &mount {
+        Some(m) => m.can_eject() || m.can_unmount(),
+        None => v.can_eject(),
+    };
+    if !can || !begin(id) {
+        return;
+    }
+    let (id, name) = (id.to_string(), v.name().to_string());
     let glyph = crate::state::drive_glyph(&icon_name(&v.icon()));
-    let done = move |r: Result<(), glib::Error>| match r {
-        Ok(()) => crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph)),
-        Err(e) => report_failure("eject", &name, &e),
+    let done = move |r: Result<(), glib::Error>| {
+        end(&id);
+        match r {
+            Ok(()) => crate::omarchy::notify(&format!("Safe to remove {name}"), None, Some(glyph)),
+            Err(e) => report_failure("eject", &name, &e),
+        }
     };
     let flags = gio::MountUnmountFlags::NONE;
     let none = None::<&gio::Cancellable>;
-    match v.get_mount() {
+    match mount {
         Some(m) if m.can_eject() => m.eject_with_operation(flags, Some(&operation()), none, done),
         Some(m) if m.can_unmount() => {
             m.unmount_with_operation(flags, Some(&operation()), none, done)
         }
+        // Ruled out by `can` above, so `begin` never leaves a drive busy.
         Some(_) => {}
         None if v.can_eject() => v.eject_with_operation(flags, Some(&operation()), none, done),
         None => {}
@@ -270,5 +304,18 @@ mod tests {
         assert!(!is_removable(None, None));
         assert!(!is_removable(None, Some("smb")));
         assert!(!is_removable(None, Some("nfs")));
+    }
+
+    #[test]
+    fn a_second_click_waits_for_the_first() {
+        assert!(begin("sdx1"));
+        // A double-click, or a click while the password dialog is up: gvfs
+        // would refuse it with "a mount operation is already pending".
+        assert!(!begin("sdx1"));
+        assert!(begin("sdy1"), "another drive is not held up");
+        end("sdx1");
+        assert!(begin("sdx1"));
+        end("sdx1");
+        end("sdy1");
     }
 }
