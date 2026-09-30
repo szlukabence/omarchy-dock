@@ -60,9 +60,25 @@ pub struct WindowMeta {
     pub title: String,
     /// Workspace name as Hyprland reports it: "3", or "special:scratchpad".
     pub workspace: String,
+    /// Parked on `special:minimized` by the dock.
+    pub minimized: bool,
+    /// Where a minimized window goes back to, from its tag.
+    pub home: Option<String>,
+    /// Hyprland's focus history: lower was focused more recently.
+    pub recency: i32,
 }
 
 impl WindowMeta {
+    pub fn of(c: &Client) -> Self {
+        Self {
+            title: c.title.clone(),
+            workspace: c.workspace.name.clone(),
+            minimized: c.is_minimized(),
+            home: crate::hypr::minimize::home_of(&c.tags),
+            recency: c.focus_history_id,
+        }
+    }
+
     /// Short human label for the workspace: "3", or "scratchpad".
     pub fn workspace_label(&self) -> &str {
         self.workspace.strip_prefix("special:").unwrap_or(&self.workspace)
@@ -122,6 +138,16 @@ pub struct DockItem {
     pub unread: usize,
     /// For the Downloads stack, how many downloads are still in progress.
     pub downloading: usize,
+}
+
+/// What a left-click on an app does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Click {
+    /// Nothing running: launch it.
+    Launch,
+    Focus(Address),
+    Minimize(Address),
+    Restore(Address),
 }
 
 impl DockItem {
@@ -205,6 +231,44 @@ impl DockItem {
             return Some(self.downloading);
         }
         (self.windows.len() > 1).then_some(self.windows.len())
+    }
+
+    /// What the dock knows about one of this item's windows.
+    pub fn meta_of(&self, addr: &Address) -> Option<&WindowMeta> {
+        let at = self.windows.iter().position(|w| w == addr)?;
+        self.window_meta.get(at)
+    }
+
+    fn is_minimized(&self, addr: &Address) -> bool {
+        self.meta_of(addr).is_some_and(|m| m.minimized)
+    }
+
+    /// Running, with every window minimized: its dot dims.
+    pub fn all_minimized(&self) -> bool {
+        !self.windows.is_empty() && self.windows.iter().all(|w| self.is_minimized(w))
+    }
+
+    /// What a left-click does.
+    ///
+    /// Clicking the app in front minimizes its focused window; picking one of
+    /// several is what the hover previews are for. Clicking from elsewhere
+    /// goes to its first window on screen. An app with every window minimized
+    /// gets back the one minimized last — the most recently focused of them.
+    pub fn click(&self) -> Click {
+        let focused = self
+            .active_window
+            .as_ref()
+            .filter(|a| self.windows.contains(a) && !self.is_minimized(a));
+        if let Some(a) = focused {
+            return Click::Minimize(a.clone());
+        }
+        if let Some(a) = self.windows.iter().find(|w| !self.is_minimized(w)) {
+            return Click::Focus(a.clone());
+        }
+        self.windows
+            .iter()
+            .min_by_key(|w| self.meta_of(w).map_or(i32::MAX, |m| m.recency))
+            .map_or(Click::Launch, |a| Click::Restore(a.clone()))
     }
 
     /// Which window a left-click should focus.
@@ -693,6 +757,12 @@ impl DockState {
         self.clients.iter().find(|c| &c.address == addr)
     }
 
+    /// The window minimized last — the most recently focused of the
+    /// minimized ones, since it had focus when it went.
+    pub fn last_minimized(&self) -> Option<&Client> {
+        self.clients.iter().filter(|c| c.is_minimized()).min_by_key(|c| c.focus_history_id)
+    }
+
     pub fn clients(&self) -> &[Client] {
         &self.clients
     }
@@ -718,10 +788,17 @@ impl DockState {
         self.focused = addr;
     }
 
-    pub fn set_urgent(&mut self, addr: Address) {
-        if self.focused.as_ref() != Some(&addr) && !self.urgent.contains(&addr) {
+    /// Record an attention request. Returns whether it counts — a window in
+    /// front has the user's attention already — so the caller knows whether
+    /// to pulse. A repeat request counts again.
+    pub fn set_urgent(&mut self, addr: Address) -> bool {
+        if self.focused.as_ref() == Some(&addr) {
+            return false;
+        }
+        if !self.urgent.contains(&addr) {
             self.urgent.push(addr);
         }
+        true
     }
 
     pub fn set_title(&mut self, addr: &Address, title: String) {
@@ -882,7 +959,9 @@ impl DockState {
             type Group = (String, String, String, Vec<Address>, String, Vec<crate::desktop::Action>);
             let mut groups: Vec<Group> = Vec::new();
             for (i, c) in self.clients.iter().enumerate() {
-                if claimed[i] || c.is_special() {
+                // Scratchpad windows show on its tile, not as apps; minimized
+                // ones stay on their app's icon, the only way back to them.
+                if claimed[i] || (c.is_special() && !c.is_minimized()) {
                     continue;
                 }
                 let entry = self.matcher.match_class(c.match_key());
@@ -1148,7 +1227,7 @@ impl DockState {
             let windows: Vec<Address> = self
                 .clients
                 .iter()
-                .filter(|c| c.is_special())
+                .filter(|c| c.is_special() && !c.is_minimized())
                 .map(|c| c.address.clone())
                 .collect();
             items.push(DockItem {
@@ -1192,16 +1271,13 @@ impl DockState {
         exec: String,
         actions: Vec<crate::desktop::Action>,
     ) -> DockItem {
-        let window_meta = windows
+        let window_meta: Vec<WindowMeta> = windows
             .iter()
             .map(|w| {
                 self.clients
                     .iter()
                     .find(|c| &c.address == w)
-                    .map(|c| WindowMeta {
-                        title: c.title.clone(),
-                        workspace: c.workspace.name.clone(),
-                    })
+                    .map(WindowMeta::of)
                     .unwrap_or_default()
             })
             .collect();
@@ -1209,10 +1285,13 @@ impl DockState {
             self.focused.as_ref().filter(|f| windows.contains(f)).cloned();
         let active = active_window.is_some();
         let urgent = windows.iter().any(|w| self.urgent.contains(w));
+        // Minimized windows sit on a special workspace too, but they are
+        // not stashed in the scratchpad.
         let scratchpad = !windows.is_empty()
             && windows.iter().all(|w| {
                 self.clients.iter().any(|c| &c.address == w && c.is_special())
-            });
+            })
+            && !window_meta.iter().all(|m| m.minimized);
         DockItem {
             kind: ItemKind::App,
             key,
@@ -1368,6 +1447,64 @@ mod tests {
         let i = item(&["a", "b"], Some("zz"));
         assert_eq!(i.click_target(), Some(&Address::parse("a")));
     }
+
+    fn meta(minimized: bool, recency: i32) -> WindowMeta {
+        WindowMeta {
+            title: String::new(),
+            workspace: if minimized { "special:minimized".into() } else { "1".into() },
+            minimized,
+            home: None,
+            recency,
+        }
+    }
+
+    /// An app whose windows are `(address, minimized, focus-history id)`.
+    fn app(windows: &[(&str, bool, i32)], active: Option<&str>) -> DockItem {
+        let addrs: Vec<&str> = windows.iter().map(|w| w.0).collect();
+        let mut i = item(&addrs, active);
+        i.window_meta = windows.iter().map(|&(_, m, r)| meta(m, r)).collect();
+        i
+    }
+
+    #[test]
+    fn clicking_the_focused_app_minimizes_its_focused_window() {
+        let i = app(&[("a", false, 1), ("b", false, 0)], Some("b"));
+        assert_eq!(i.click(), Click::Minimize(Address::parse("b")));
+    }
+
+    #[test]
+    fn clicking_from_elsewhere_focuses_the_first_window_on_screen() {
+        let i = app(&[("a", true, 0), ("b", false, 1)], None);
+        assert_eq!(i.click(), Click::Focus(Address::parse("b")));
+    }
+
+    #[test]
+    fn an_app_with_every_window_minimized_restores_the_last_one_minimized() {
+        let i = app(&[("a", true, 5), ("b", true, 2)], None);
+        assert_eq!(i.click(), Click::Restore(Address::parse("b")));
+        assert!(i.all_minimized());
+    }
+
+    #[test]
+    fn a_focused_window_that_is_minimized_is_not_minimized_again() {
+        // The user opened special:minimized by hand and focused a window in it.
+        let i = app(&[("a", true, 0), ("b", false, 1)], Some("a"));
+        assert_eq!(i.click(), Click::Focus(Address::parse("b")));
+        let i = app(&[("a", true, 0)], Some("a"));
+        assert_eq!(i.click(), Click::Restore(Address::parse("a")));
+    }
+
+    #[test]
+    fn a_stale_focus_does_not_minimize_anything() {
+        let i = app(&[("a", false, 0)], Some("zz"));
+        assert_eq!(i.click(), Click::Focus(Address::parse("a")));
+    }
+
+    #[test]
+    fn nothing_running_launches() {
+        assert_eq!(item(&[], None).click(), Click::Launch);
+        assert!(!item(&[], None).all_minimized());
+    }
 }
 
 
@@ -1412,6 +1549,32 @@ mod focus_tests {
         s.set_focused(None);
         assert!(s.focused_client().is_none());
     }
+
+    #[test]
+    fn urgency_from_the_focused_window_is_refused_and_repeats_are_accepted() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("a"), client("b")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(!s.set_urgent(Address::parse("a")));
+        assert!(s.set_urgent(Address::parse("b")));
+        // A second request is still news: it may pulse again.
+        assert!(s.set_urgent(Address::parse("b")));
+    }
+
+    #[test]
+    fn the_window_minimized_last_is_the_most_recently_focused_one() {
+        let parked = |a: &str, h: i32| {
+            let mut c = client(a);
+            c.workspace = WorkspaceRef { id: -98, name: "special:minimized".into() };
+            c.focus_history_id = h;
+            c
+        };
+        let mut s = DockState::new(vec![]);
+        let mut shown = client("c");
+        shown.focus_history_id = 0;
+        s.set_clients(vec![parked("a", 3), parked("b", 1), shown]);
+        assert_eq!(s.last_minimized().map(|c| c.address.clone()), Some(Address::parse("b")));
+    }
 }
 
 #[cfg(test)]
@@ -1451,6 +1614,20 @@ mod layout_tests {
 
     fn kinds(items: &[DockItem]) -> Vec<ItemKind> {
         items.iter().map(|i| i.kind).collect()
+    }
+
+    #[test]
+    fn an_app_with_only_minimized_windows_stays_in_the_dock() {
+        let mut c = client("stranger");
+        c.workspace = WorkspaceRef { id: -98, name: "special:minimized".into() };
+        c.tags = vec!["omarchy-dock-home:4".into()];
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![c]);
+        let items = s.items(&cfg(&[]));
+        assert_eq!(items.len(), 1, "an unpinned minimized app must not vanish");
+        assert!(items[0].all_minimized());
+        assert!(!items[0].scratchpad, "minimized is not stashed in the scratchpad");
+        assert_eq!(items[0].window_meta[0].home.as_deref(), Some("4"));
     }
 
     #[test]
@@ -1785,6 +1962,19 @@ mod workspace_tests {
         let items = s.workspace_items(&c);
         assert_eq!(items.len(), 1, "no workspace strip, just the scratchpad");
         assert_eq!(items[0].kind, ItemKind::Scratchpad);
+        assert_eq!(items[0].windows.len(), 1);
+    }
+
+    #[test]
+    fn the_scratchpad_tile_does_not_count_minimized_windows() {
+        let mut c = cfg(false, true);
+        c.workspaces.scratchpad = true;
+        let s = state(
+            vec![client("0x2", -99, "special:scratchpad"), client("0x3", -98, "special:minimized")],
+            vec![],
+            1,
+        );
+        let items = s.workspace_items(&c);
         assert_eq!(items[0].windows.len(), 1);
     }
 

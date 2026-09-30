@@ -139,7 +139,7 @@ impl App {
                 true
             }
             Urgent(addr) => {
-                self.state.set_urgent(addr);
+                let _ = self.state.set_urgent(addr);
                 true
             }
             // The snapshot carries each client's fullscreen state, and the
