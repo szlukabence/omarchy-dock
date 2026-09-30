@@ -86,7 +86,11 @@ pub struct Panel {
     /// fresh one is captured.
     cache: RefCell<HashMap<u64, gdk::MemoryTexture>>,
     pointer_inside: Cell<bool>,
+    /// Tracks the pointer over the strip; replaced on every show (see
+    /// `track_pointer`).
+    motion: RefCell<Option<gtk::EventControllerMotion>>,
     on_open: Rc<dyn Fn(crate::runtime::DockCommand)>,
+    on_enter: Rc<dyn Fn()>,
     on_leave: Rc<dyn Fn()>,
 }
 
@@ -141,8 +145,10 @@ impl Panel {
             pictures: RefCell::new(HashMap::new()),
             cache: RefCell::new(HashMap::new()),
             pointer_inside: Cell::new(false),
+            motion: RefCell::new(None),
             on_open,
-            on_leave: on_leave.clone(),
+            on_enter,
+            on_leave,
         });
 
         // Thumbnails arrive from the capture thread.
@@ -156,28 +162,40 @@ impl Panel {
             });
         }
 
-        {
-            let motion = gtk::EventControllerMotion::new();
-            let (a, b) = (Rc::downgrade(&panel), Rc::downgrade(&panel));
-            motion.connect_enter(move |_, _, _| {
-                if let Some(p) = a.upgrade() {
-                    p.pointer_inside.set(true);
-                }
-                tracing::debug!("pointer entered previews");
-                on_enter();
-            });
-            // Only a leave that follows an enter counts: `hide` reports the
-            // leave itself, and unmapping may report it again.
-            motion.connect_leave(move |_| {
-                if b.upgrade().is_some_and(|p| p.pointer_inside.replace(false)) {
-                    tracing::debug!("pointer left previews");
-                    on_leave();
-                }
-            });
-            panel.window.add_controller(motion);
-        }
-
+        panel.track_pointer();
         panel
+    }
+
+    /// Put a fresh pointer tracker on the strip.
+    ///
+    /// Done on every show, not once: a strip hidden with the pointer on it
+    /// (a tile clicked, the dock reordered under it) never receives the
+    /// leave, so GTK's tracker goes on believing the pointer is inside and
+    /// never reports an enter again. Every later hover then looked like the
+    /// pointer had left, and the strip and the dock hid from under it.
+    fn track_pointer(&self) {
+        if let Some(old) = self.motion.borrow_mut().take() {
+            self.window.remove_controller(&old);
+        }
+        let motion = gtk::EventControllerMotion::new();
+        let (a, b) = (self.me.clone(), self.me.clone());
+        motion.connect_enter(move |_, _, _| {
+            let Some(p) = a.upgrade() else { return };
+            p.pointer_inside.set(true);
+            tracing::debug!("pointer entered previews");
+            (p.on_enter)();
+        });
+        // Only a leave that follows an enter counts: `hide` reports the
+        // leave itself, and unmapping may report it again.
+        motion.connect_leave(move |_| {
+            let Some(p) = b.upgrade() else { return };
+            if p.pointer_inside.replace(false) {
+                tracing::debug!("pointer left previews");
+                (p.on_leave)();
+            }
+        });
+        self.window.add_controller(motion.clone());
+        *self.motion.borrow_mut() = Some(motion);
     }
 
     /// Whether previews can work at all — i.e. whether the compositor lets
@@ -197,6 +215,7 @@ impl Panel {
     /// Hide the strip. A pointer that was over it counts as having left, so
     /// whatever the dock held out on its behalf is let go.
     pub fn hide(&self) {
+        tracing::debug!(inside = self.pointer_inside.get(), "hiding previews");
         self.window.set_visible(false);
         self.pictures.borrow_mut().clear();
         if self.pointer_inside.replace(false) {
@@ -231,6 +250,10 @@ impl Panel {
         }
 
         self.place(tiles.len(), thumb_h, anchor);
+        if !self.window.is_visible() {
+            self.track_pointer();
+        }
+        tracing::debug!("showing previews");
         self.window.set_visible(true);
     }
 
