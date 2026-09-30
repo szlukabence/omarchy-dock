@@ -103,9 +103,10 @@ pub struct DockItem {
     pub active: bool,
     /// True when any of its windows asked for attention.
     pub urgent: bool,
-    /// True when every window is on a special (scratchpad) workspace.
+    /// True when every window is on a special workspace and at least one is
+    /// stashed rather than minimized.
     pub scratchpad: bool,
-    /// Which of `windows` currently holds focus, for click-to-cycle.
+    /// Which of `windows` currently holds focus: what a click minimizes.
     pub active_window: Option<Address>,
     /// Command line to launch when nothing is running.
     pub exec: String,

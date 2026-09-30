@@ -898,7 +898,7 @@ impl DockSurface {
     }
 }
 
-/// Wire left-click (focus / cycle / launch) and right-click (menu).
+/// Wire left-click (focus / minimize / restore / launch) and right-click (menu).
 #[allow(clippy::too_many_arguments)]
 fn attach_clicks(
     slot: &gtk::Overlay,
