@@ -163,12 +163,14 @@ impl Panel {
                 if let Some(p) = a.upgrade() {
                     p.pointer_inside.set(true);
                 }
+                tracing::debug!("pointer entered previews");
                 on_enter();
             });
             // Only a leave that follows an enter counts: `hide` reports the
             // leave itself, and unmapping may report it again.
             motion.connect_leave(move |_| {
                 if b.upgrade().is_some_and(|p| p.pointer_inside.replace(false)) {
+                    tracing::debug!("pointer left previews");
                     on_leave();
                 }
             });

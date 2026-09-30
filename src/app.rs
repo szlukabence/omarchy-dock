@@ -140,6 +140,7 @@ impl App {
                 true
             }
             Urgent(addr) => {
+                tracing::debug!(%addr, "urgent");
                 if self.state.set_urgent(addr.clone()) {
                     // Refresh first: a rebuild would drop a pulse started
                     // before it.

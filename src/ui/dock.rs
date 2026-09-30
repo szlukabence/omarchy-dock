@@ -753,6 +753,7 @@ impl DockSurface {
     /// let it go. Taken as a hold, like an open menu's, so hover and the hide
     /// rules carry on untouched once it is released.
     pub fn reveal_for_attention(&self, cfg: &Config) {
+        tracing::debug!("revealing for attention");
         hold(&self.slide, &self.window, cfg, true);
         let (slide, window, cfg) = (Rc::downgrade(&self.slide), self.window.downgrade(), cfg.clone());
         glib::timeout_add_local_once(std::time::Duration::from_secs_f64(ATTENTION_S), move || {
@@ -1905,15 +1906,16 @@ fn hold(
             s.held += 1;
         } else {
             s.held = s.held.saturating_sub(1);
-            if s.held == 0 {
-                s.settle_gen += 1;
-                match inside {
-                    Some(true) => s.peeking = true,
-                    // Leave peeking as it stood before the grab — the dock is
-                    // out, since it was being used — and decide shortly.
-                    Some(false) => recheck = Some(s.settle_gen),
-                    None => {}
-                }
+        }
+        tracing::debug!(take, held = s.held, ?inside, "hold");
+        if !take && s.held == 0 {
+            s.settle_gen += 1;
+            match inside {
+                Some(true) => s.peeking = true,
+                // Leave peeking as it stood before the grab — the dock is
+                // out, since it was being used — and decide shortly.
+                Some(false) => recheck = Some(s.settle_gen),
+                None => {}
             }
         }
         let target = s.target();
@@ -2575,6 +2577,7 @@ impl Previews {
             if hovered.is_some() && hovered == me.showing.get() {
                 return;
             }
+            tracing::debug!(?hovered, "preview hidden: pointer left both");
             me.hide();
         });
     }
