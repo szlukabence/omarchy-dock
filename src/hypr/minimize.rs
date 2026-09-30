@@ -74,6 +74,17 @@ pub fn restore_steps(home: Option<&str>, current: &str) -> Vec<Step> {
     steps
 }
 
+/// A minimized window dropped on a workspace tile: untag it and send it
+/// there, without following — a drop puts a window away, it doesn't go to it.
+pub fn unpark_steps(home: Option<&str>, workspace: &str) -> Vec<Step> {
+    let mut steps = Vec::new();
+    if let Some(h) = home {
+        steps.push(Step::Tag(format!("-{HOME_TAG}{h}")));
+    }
+    steps.push(Step::Move { workspace: workspace.into(), follow: false });
+    steps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +149,22 @@ mod tests {
         assert_eq!(
             restore_steps(None, "2"),
             vec![Step::Move { workspace: "2".into(), follow: true }, Step::Focus]
+        );
+    }
+
+    #[test]
+    fn a_minimized_window_dropped_on_a_workspace_goes_there_untagged() {
+        // Sent, not followed: a drop puts a window away somewhere.
+        assert_eq!(
+            unpark_steps(Some("3"), "5"),
+            vec![
+                Step::Tag("-omarchy-dock-home:3".into()),
+                Step::Move { workspace: "5".into(), follow: false },
+            ]
+        );
+        assert_eq!(
+            unpark_steps(None, "special:scratchpad"),
+            vec![Step::Move { workspace: "special:scratchpad".into(), follow: false }]
         );
     }
 

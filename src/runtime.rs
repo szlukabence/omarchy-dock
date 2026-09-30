@@ -44,6 +44,14 @@ pub enum DockCommand {
     /// Send a minimized window home, or to the workspace in front when it
     /// has none, and focus it.
     Restore { window: hypr::Address, home: Option<String>, group: Vec<hypr::Address> },
+    /// Send a minimized window to a workspace without following it, as
+    /// dropping its app on a workspace tile does, and drop its home tag.
+    Unpark {
+        window: hypr::Address,
+        workspace: String,
+        home: Option<String>,
+        group: Vec<hypr::Address>,
+    },
     /// A transport command for one media player, addressed by bus name.
     Media { bus: String, action: crate::media::Action },
     /// Deliver a click to a system-tray item, addressed by its D-Bus service.
@@ -242,6 +250,10 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "1".into())
             };
             let steps = hypr::minimize::restore_steps(home.as_deref(), &current);
+            run_steps(window, group, &steps).await
+        }
+        DockCommand::Unpark { window, workspace, home, group } => {
+            let steps = hypr::minimize::unpark_steps(home.as_deref(), workspace);
             run_steps(window, group, &steps).await
         }
     }

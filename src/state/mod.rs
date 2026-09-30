@@ -268,10 +268,29 @@ impl DockItem {
         if let Some(a) = self.windows.iter().find(|w| !self.is_minimized(w)) {
             return Click::Focus(a.clone());
         }
+        self.last_minimized().map_or(Click::Launch, |a| Click::Restore(a.clone()))
+    }
+
+    /// Which window a drop on a workspace tile sends: the focused one, else
+    /// the first on screen, and only when every window is minimized, the one
+    /// minimized last.
+    pub fn drop_target(&self) -> Option<&Address> {
+        let out = |w: &&Address| !self.is_minimized(w);
+        self.active_window
+            .as_ref()
+            .filter(|a| self.windows.contains(a))
+            .filter(out)
+            .or_else(|| self.windows.iter().find(out))
+            .or_else(|| self.last_minimized())
+    }
+
+    /// Of this item's windows, the most recently focused — which, among
+    /// minimized ones, is the one minimized last.
+    fn last_minimized(&self) -> Option<&Address> {
         self.windows
             .iter()
+            .filter(|w| self.is_minimized(w))
             .min_by_key(|w| self.meta_of(w).map_or(i32::MAX, |m| m.recency))
-            .map_or(Click::Launch, |a| Click::Restore(a.clone()))
     }
 }
 
@@ -1468,6 +1487,24 @@ mod tests {
     fn a_stale_focus_does_not_minimize_anything() {
         let i = app(&[("a", false, 0)], Some("zz"));
         assert_eq!(i.click(), Click::Focus(Address::parse("a")));
+    }
+
+    #[test]
+    fn a_drop_sends_a_window_on_screen_before_a_minimized_one() {
+        // Focused wins, as long as it is not parked.
+        let i = app(&[("a", false, 1), ("b", false, 0)], Some("b"));
+        assert_eq!(i.drop_target(), Some(&Address::parse("b")));
+        let i = app(&[("a", true, 0), ("b", false, 1)], Some("a"));
+        assert_eq!(i.drop_target(), Some(&Address::parse("b")));
+        let i = app(&[("a", true, 0), ("b", false, 1)], None);
+        assert_eq!(i.drop_target(), Some(&Address::parse("b")));
+    }
+
+    #[test]
+    fn a_drop_on_an_app_with_everything_minimized_takes_the_last_one() {
+        let i = app(&[("a", true, 5), ("b", true, 2)], None);
+        assert_eq!(i.drop_target(), Some(&Address::parse("b")));
+        assert_eq!(item(&[], None).drop_target(), None);
     }
 
     #[test]

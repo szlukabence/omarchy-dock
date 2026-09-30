@@ -1489,10 +1489,18 @@ fn workspace_under(s: &State, x: f64, y: f64) -> Option<String> {
 fn send_to_workspace(s: &State, from: usize, x: f64, y: f64) -> Option<DockCommand> {
     let workspace = workspace_under(s, x, y)?;
     let item = s.data.iter().find(|d| d.pin_index == Some(from))?;
-    // The focused window of that app if it has one, else its first: the same
-    // choice a click makes.
-    let window = item.active_window.clone().or_else(|| item.windows.first().cloned())?;
-    Some(DockCommand::SendToWorkspace { window, workspace })
+    // The focused window of that app, else one on screen; a minimized one
+    // only when nothing else is out, and then it leaves its home tag behind.
+    let window = item.drop_target()?.clone();
+    Some(match item.meta_of(&window).filter(|m| m.minimized) {
+        Some(m) => DockCommand::Unpark {
+            window,
+            workspace,
+            home: m.home.clone(),
+            group: m.group.clone(),
+        },
+        None => DockCommand::SendToWorkspace { window, workspace },
+    })
 }
 
 /// Open or close the gap that previews where a drop will land./// Open or close the gap that previews where a drop will land.
