@@ -36,12 +36,20 @@ pub struct Client {
     /// Lower means more recently focused; 0 is the active window.
     #[serde(default)]
     pub focus_history_id: i32,
+    /// Its tags: static ones as set, window-rule ones with a trailing `*`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Client {
     /// Whether this client sits on a special (scratchpad) workspace.
     pub fn is_special(&self) -> bool {
         self.workspace.name.starts_with("special")
+    }
+
+    /// Whether the dock has minimized this window.
+    pub fn is_minimized(&self) -> bool {
+        self.workspace.name == super::minimize::WORKSPACE
     }
 
     /// The best identifier to match against a desktop entry.

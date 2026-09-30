@@ -129,6 +129,7 @@ mod tests {
             at,
             size,
             focus_history_id: 0,
+            tags: Vec::new(),
         }
     }
 

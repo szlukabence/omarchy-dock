@@ -1393,6 +1393,7 @@ mod focus_tests {
             at: (0, 0),
             size: (100, 100),
             focus_history_id: 0,
+            tags: Vec::new(),
         }
     }
 
@@ -1444,6 +1445,7 @@ mod layout_tests {
             at: (0, 0),
             size: (10, 10),
             focus_history_id: 1,
+            tags: Vec::new(),
         }
     }
 
@@ -1643,6 +1645,7 @@ mod workspace_tests {
             at: (0, 0),
             size: (100, 100),
             focus_history_id: 0,
+            tags: Vec::new(),
         }
     }
 

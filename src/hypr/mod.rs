@@ -13,6 +13,7 @@
 
 pub mod dispatch;
 pub mod events;
+pub mod minimize;
 pub mod model;
 pub mod request;
 
