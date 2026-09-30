@@ -237,6 +237,18 @@ impl DockItem {
         (self.windows.len() > 1).then_some(self.windows.len())
     }
 
+    /// What dragging this item carries, if it can be dragged at all: entries
+    /// of the pinned list by their place, running apps by their id.
+    pub fn dragged(&self) -> Option<Dragged> {
+        match self.pin_index {
+            Some(at) => Some(Dragged::Pin(at)),
+            None if self.kind == ItemKind::App && self.running() => {
+                Some(Dragged::App(self.key.clone()))
+            }
+            None => None,
+        }
+    }
+
     /// What the dock knows about one of this item's windows.
     pub fn meta_of(&self, addr: &Address) -> Option<&WindowMeta> {
         let at = self.windows.iter().position(|w| w == addr)?;
@@ -542,6 +554,39 @@ pub fn move_in_list<T>(list: &mut [T], index: usize, delta: i32) -> bool {
     }
     list.swap(index, target);
     true
+}
+
+/// What a drag from the dock carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dragged {
+    /// An entry of the pinned list, by its place in it: reordering rewrites
+    /// that list.
+    Pin(usize),
+    /// A running app that is not pinned, by its id: dropped among the pinned
+    /// entries, it is pinned there.
+    App(String),
+}
+
+/// The item a drag started from, found again when it is dropped.
+pub fn find_dragged<'a>(items: &'a [DockItem], dragged: &Dragged) -> Option<&'a DockItem> {
+    items.iter().find(|i| match dragged {
+        Dragged::Pin(at) => i.pin_index == Some(*at),
+        Dragged::App(key) => i.pin_index.is_none() && i.kind == ItemKind::App && &i.key == key,
+    })
+}
+
+/// Pin `key` so it lands before position `to`, as dropping a running app
+/// among the pinned ones does. One already pinned moves rather than
+/// appearing twice.
+pub fn pin_at(list: &mut Vec<String>, key: &str, to: usize) {
+    let mut to = to.min(list.len());
+    if let Some(at) = list.iter().position(|p| p == key) {
+        list.remove(at);
+        if at < to {
+            to -= 1;
+        }
+    }
+    list.insert(to, key.to_string());
 }
 
 /// Move `from` to `to` within `list`, shifting the rest.
@@ -1514,6 +1559,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_entry_drags_by_its_place_and_a_running_app_by_its_id() {
+        let mut pinned = item(&[], None);
+        pinned.pin_index = Some(2);
+        assert_eq!(pinned.dragged(), Some(Dragged::Pin(2)));
+        let mut running = item(&["a"], None);
+        running.pinned = false;
+        running.key = "org.gnome.Nautilus".into();
+        assert_eq!(running.dragged(), Some(Dragged::App("org.gnome.Nautilus".into())));
+        // Unpinned and not running — a folder, Trash — has nowhere to go.
+        let mut folder = item(&[], None);
+        folder.pinned = false;
+        folder.kind = ItemKind::Folder;
+        assert_eq!(folder.dragged(), None);
+    }
+
+    #[test]
+    fn a_drop_finds_the_dragged_item_again() {
+        let mut pinned = item(&[], None);
+        pinned.key = "p".into();
+        pinned.pin_index = Some(0);
+        let mut running = item(&["a"], None);
+        running.pinned = false;
+        running.key = "r".into();
+        let items = vec![pinned, running];
+        assert_eq!(find_dragged(&items, &Dragged::Pin(0)).map(|i| i.key.as_str()), Some("p"));
+        assert_eq!(find_dragged(&items, &Dragged::App("r".into())).map(|i| i.key.as_str()), Some("r"));
+        // Pinned since the drag began: its id now names a pinned entry, which
+        // is dragged by place, not by id.
+        assert!(find_dragged(&items, &Dragged::App("p".into())).is_none());
+    }
+
+    #[test]
     fn nothing_running_launches() {
         assert_eq!(item(&[], None).click(), Click::Launch);
         assert!(!item(&[], None).all_minimized());
@@ -2097,6 +2174,38 @@ mod workspace_tests {
 #[cfg(test)]
 mod separator_key_tests {
     use super::*;
+
+    fn pins(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_dropped_app_is_pinned_where_it_lands() {
+        let mut v = pins(&["a", "b"]);
+        pin_at(&mut v, "x", 0);
+        assert_eq!(v, pins(&["x", "a", "b"]));
+        let mut v = pins(&["a", "b"]);
+        pin_at(&mut v, "x", 1);
+        assert_eq!(v, pins(&["a", "x", "b"]));
+        let mut v = pins(&["a", "b"]);
+        pin_at(&mut v, "x", 2);
+        assert_eq!(v, pins(&["a", "b", "x"]));
+        // Past the end lands at the end rather than panicking.
+        let mut v = pins(&["a"]);
+        pin_at(&mut v, "x", 9);
+        assert_eq!(v, pins(&["a", "x"]));
+    }
+
+    #[test]
+    fn pinning_an_app_that_is_already_pinned_moves_it_instead_of_doubling_it() {
+        // A drag started before a pin landed from elsewhere, e.g. the menu.
+        let mut v = pins(&["x", "a", "b"]);
+        pin_at(&mut v, "x", 3);
+        assert_eq!(v, pins(&["a", "b", "x"]));
+        let mut v = pins(&["a", "b", "x"]);
+        pin_at(&mut v, "x", 0);
+        assert_eq!(v, pins(&["x", "a", "b"]));
+    }
 
     #[test]
     fn reordering_inserts_rather_than_swapping() {

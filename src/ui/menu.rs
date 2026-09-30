@@ -27,6 +27,9 @@ pub enum MenuAction {
     ReorderPin { from: usize, to: usize },
     /// Drop an entry from the pinned list.
     RemovePin { index: usize },
+    /// Pin a running app at a place in the pinned list, as dropping it among
+    /// the pinned icons does.
+    PinAt { key: String, index: usize },
     /// Open one partition of a removable drive in the file manager,
     /// mounting it first. Carries the partition's id.
     DriveOpen(String),

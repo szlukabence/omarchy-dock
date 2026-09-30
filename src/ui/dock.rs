@@ -17,7 +17,7 @@ use std::rc::Rc;
 use crate::anim::Spring;
 use crate::config::{Config, Hover, Position};
 use crate::runtime::DockCommand;
-use crate::state::{DockItem, ItemKind};
+use crate::state::{DockItem, Dragged, ItemKind};
 use crate::ui::menu::{self, MenuAction};
 use crate::ui::preview::{self, Panel};
 use crate::ui::Geometry;
@@ -1337,10 +1337,11 @@ fn travel_for(cfg: &Config, geom: &Geometry) -> f64 {
     (extent_for(cfg, geom) - cfg.autohide.trigger_px.max(1) as f64).max(0.0)
 }
 
-/// Make a pinned item draggable.
+/// Make a pinned item, or a running app, draggable.
 ///
-/// Only entries that live in the pinned list can move; running-but-unpinned
-/// apps, folders, Trash and the launcher have no position to rewrite.
+/// Entries of the pinned list move within it. A running app that is not
+/// pinned can be dropped among them to pin it there, or on a workspace tile
+/// to send its window there. Folders, Trash and the launcher stay put.
 #[allow(clippy::too_many_arguments)]
 fn attach_drag(
     slot: &gtk::Overlay,
@@ -1351,10 +1352,11 @@ fn attach_drag(
     slide: &Rc<RefCell<Slide>>,
     window: &gtk::ApplicationWindow,
 ) {
-    // Whether a slot is pinned at all is fixed for the life of its widget: a
-    // reorder moves widgets around but never turns a pinned app into a folder.
-    // Where it is pinned is not, so that is read live below.
-    if item.pin_index.is_none() {
+    // Whether a slot can be dragged at all is fixed for the life of its
+    // widget: a reorder moves widgets around but never turns a pinned app into
+    // a folder, and pinning a running app rebuilds the dock. Where it is
+    // pinned is not, so that is read live below.
+    if item.dragged().is_none() {
         return;
     }
 
@@ -1362,18 +1364,24 @@ fn attach_drag(
     source.set_actions(gdk::DragAction::MOVE);
 
     {
-        // The payload is the pinned index, which is what the drop rewrites.
+        // The payload is a `Dragged`: the pinned index, which is what a
+        // reorder rewrites, or a running app's id.
         //
         // It must be read at drag time, not captured when the slot was built.
         // A reorder permutes the widgets and leaves this controller attached,
         // so a captured index would name whatever item had since moved into
         // this slot's old position — dragging one icon would silently move
         // another.
+        //
+        // Boxed as an opaque Rust value rather than as text: GTK cannot turn
+        // it into a MIME type, so it never leaves the dock. A text payload
+        // would drop "app:…" into any text field it was let go over.
         let state = state.clone();
         let at = at.clone();
         source.connect_prepare(move |_, _, _| {
-            let pin = state.borrow().data.get(at.get())?.pin_index?;
-            Some(gdk::ContentProvider::for_value(&(pin as u32).to_value()))
+            let dragged = state.borrow().data.get(at.get())?.dragged()?;
+            let boxed = glib::BoxedAnyObject::new(dragged);
+            Some(gdk::ContentProvider::for_value(&boxed.to_value()))
         });
     }
 
@@ -1500,9 +1508,9 @@ fn workspace_under(s: &State, x: f64, y: f64) -> Option<String> {
 /// `None` when the drop is not over a workspace, or when the dragged item has
 /// no window to send — dropping a pinned-but-closed app somewhere cannot mean
 /// anything, and silently doing nothing is better than launching it.
-fn send_to_workspace(s: &State, from: usize, x: f64, y: f64) -> Option<DockCommand> {
+fn send_to_workspace(s: &State, dragged: &Dragged, x: f64, y: f64) -> Option<DockCommand> {
     let workspace = workspace_under(s, x, y)?;
-    let item = s.data.iter().find(|d| d.pin_index == Some(from))?;
+    let item = crate::state::find_dragged(&s.data, dragged)?;
     // The focused window of that app, else one on screen; a minimized one
     // only when nothing else is out, and then it leaves its home tag behind.
     let window = item.drop_target()?.clone();
@@ -1540,14 +1548,16 @@ fn set_drop_gap(state: &Rc<RefCell<State>>, at: Option<usize>, icon: f64) {
     ensure_ticking(state);
 }
 
-/// Accept a dragged dock item and rewrite the pinned order.
+/// Accept a dragged dock item: reorder the pins, pin a running app, or send a
+/// window to a workspace tile.
 fn attach_drop(
     fixed: &gtk::Fixed,
     state: &Rc<RefCell<State>>,
     sink: &ActionSink,
     cfg: &Config,
 ) {
-    let target = gtk::DropTarget::new(glib::Type::U32, gdk::DragAction::MOVE);
+    let target =
+        gtk::DropTarget::new(glib::BoxedAnyObject::static_type(), gdk::DragAction::MOVE);
     let state = state.clone();
     let sink = sink.clone();
     let icon = cfg.dock.icon_size;
@@ -1587,8 +1597,10 @@ fn attach_drop(
     {
         let state = state.clone();
         target.connect_drop(move |_, value, x, y| {
-            let Ok(from) = value.get::<u32>() else { return false };
-            let from = from as usize;
+            let Ok(boxed) = value.get::<glib::BoxedAnyObject>() else { return false };
+            let Ok(dragged) = boxed.try_borrow::<Dragged>().map(|d| d.clone()) else {
+                return false;
+            };
 
             // Dropping an app onto a workspace tile means "put this there",
             // not "reorder the pins". Checked first because a workspace tile
@@ -1597,7 +1609,7 @@ fn attach_drop(
             // Bound first: a borrow in an `if let` condition lives for the
             // whole block, and set_drop_gap below needs to borrow mutably —
             // which aborted the dock on every drop onto a workspace.
-            let send = send_to_workspace(&state.borrow(), from, x, y);
+            let send = send_to_workspace(&state.borrow(), &dragged, x, y);
             hover_to(&state, None, false);
             if let Some(cmd) = send {
                 set_drop_gap(&state, None, icon);
@@ -1608,7 +1620,11 @@ fn attach_drop(
             let to = {
                 let s = state.borrow();
                 let pos = if s.geom.horizontal() { x } else { y };
-                drop_position(&s, pos, icon).map(|(_, pin)| pin)
+                // Nothing pinned yet: a running app dropped anywhere becomes
+                // the first pin.
+                let first = matches!(dragged, Dragged::App(_))
+                    && s.data.iter().all(|d| d.pin_index.is_none());
+                drop_position(&s, pos, icon).map(|(_, pin)| pin).or(first.then_some(0))
             };
             // Close the gap immediately: the rebuild that follows will place
             // everything properly, and leaving it open flashes a gap in the
@@ -1616,7 +1632,10 @@ fn attach_drop(
             set_drop_gap(&state, None, icon);
 
             let Some(to) = to else { return false };
-            sink(MenuAction::ReorderPin { from, to });
+            sink(match dragged {
+                Dragged::Pin(from) => MenuAction::ReorderPin { from, to },
+                Dragged::App(key) => MenuAction::PinAt { key, index: to },
+            });
             true
         });
     }

@@ -798,6 +798,9 @@ fn make_sink(worker: Option<crate::runtime::Handles>) -> crate::ui::dock::Action
                 crate::state::reorder_in_list(pins, from, to);
             });
         }
+        MenuAction::PinAt { key, index } => {
+            edit_pins(|pins| crate::state::pin_at(pins, &key, index));
+        }
         MenuAction::RemovePin { index } => {
             edit_pins(|pins| {
                 if index < pins.len() {

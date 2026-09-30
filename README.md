@@ -150,7 +150,8 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 - **File drops**: drop files on an app to open them with it, or on Trash to
   trash them.
 - **Drag to reorder**, with the icons parting to show where the drop lands.
-  User-placed dividers drag too.
+  User-placed dividers drag too. Drag a running app that is not pinned among
+  the pinned ones to pin it right there.
 - **Folder stacks and Trash**, drawn as monochrome glyphs so only real
   applications carry colour — the way the bar draws its widgets. A stack's
   delete button moves the file to the Trash. Only in the Trash can anything be
