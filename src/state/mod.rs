@@ -578,6 +578,9 @@ pub struct DockState {
     media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
+    /// A minimized window already sent home by `recall`, so it is not sent
+    /// twice while the snapshot showing it gone is still on its way.
+    recalled: Option<Address>,
     /// Unread notification counts by item key.
     unread: HashMap<String, usize>,
     /// Whether Omarchy is screen-recording.
@@ -598,6 +601,7 @@ impl DockState {
             media: Vec::new(),
             focused: None,
             urgent: Vec::new(),
+            recalled: None,
             unread: HashMap::new(),
             recording: false,
             downloads: 0,
@@ -652,6 +656,12 @@ impl DockState {
         self.clients = clients;
         // An urgent window that has since closed must not stay urgent.
         self.urgent.retain(|a| self.clients.iter().any(|c| &c.address == a));
+        // A recalled window that is no longer parked has made its trip.
+        if let Some(a) = &self.recalled {
+            if !self.clients.iter().any(|c| &c.address == a && c.is_minimized()) {
+                self.recalled = None;
+            }
+        }
     }
 
     pub fn set_monitors(&mut self, monitors: Vec<Monitor>) {
@@ -732,6 +742,20 @@ impl DockState {
     pub fn focused_client(&self) -> Option<&Client> {
         let addr = self.focused.as_ref()?;
         self.clients.iter().find(|c| &c.address == addr)
+    }
+
+    /// A minimized window that something outside the dock just focused — a
+    /// launch-or-focus key, a notification, an app activating itself.
+    /// Hyprland answers by opening all of `special:minimized` over the
+    /// screen; what the focus meant was "bring it back", so the caller
+    /// restores it. Returned once per trip.
+    pub fn recall(&mut self) -> Option<Client> {
+        let c = self.focused_client().filter(|c| c.is_minimized())?.clone();
+        if self.recalled.as_ref() == Some(&c.address) {
+            return None;
+        }
+        self.recalled = Some(c.address.clone());
+        Some(c)
     }
 
     /// The window minimized last — the most recently focused of the
@@ -1501,6 +1525,45 @@ mod focus_tests {
         assert!(s.set_urgent(Address::parse("b")));
         // A second request is still news: it may pulse again.
         assert!(s.set_urgent(Address::parse("b")));
+    }
+
+    fn parked(a: &str) -> Client {
+        let mut c = client(a);
+        c.workspace = WorkspaceRef { id: -98, name: "special:minimized".into() };
+        c.tags = vec!["omarchy-dock-home:1".into()];
+        c
+    }
+
+    #[test]
+    fn a_minimized_window_focused_from_outside_is_recalled_once() {
+        // A launch-or-focus key focused it; Hyprland opened the whole
+        // special:minimized workspace over the screen instead of bringing it back.
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![parked("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert_eq!(s.recall().map(|c| c.address), Some(Address::parse("a")));
+        // Until a snapshot shows it gone home, asking again sends nothing more.
+        s.set_focused(Some(Address::parse("a")));
+        assert!(s.recall().is_none());
+    }
+
+    #[test]
+    fn a_window_that_went_home_can_be_recalled_on_its_next_trip() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![parked("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(s.recall().is_some());
+        s.set_clients(vec![client("a")]);
+        s.set_clients(vec![parked("a")]);
+        assert!(s.recall().is_some());
+    }
+
+    #[test]
+    fn a_focused_window_on_screen_is_not_recalled() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(s.recall().is_none());
     }
 
     #[test]

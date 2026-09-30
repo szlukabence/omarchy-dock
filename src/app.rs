@@ -133,6 +133,7 @@ impl App {
             }
             ActiveWindowAddr(addr) => {
                 self.state.set_focused(addr);
+                self.recall_minimized();
                 // Focus drives both the active indicator and intelligent
                 // hiding, and the new window's geometry may differ.
                 self.request_snapshot();
@@ -299,6 +300,15 @@ impl App {
         };
 
         let cmd = crate::runtime::DockCommand::for_click(item);
+        self.send(cmd);
+    }
+
+    /// Bring home a minimized window that something else focused, rather
+    /// than leave it showing in the opened `special:minimized` workspace.
+    fn recall_minimized(&mut self) {
+        let cmd = self.state.recall().map(|c| {
+            crate::runtime::DockCommand::restore(&c.address, &crate::state::WindowMeta::of(&c))
+        });
         self.send(cmd);
     }
 
@@ -591,6 +601,7 @@ pub fn run() -> glib::ExitCode {
                         app.state.set_monitors(monitors);
                         app.state.set_workspaces(workspaces);
                         app.state.set_focused(focused);
+                        app.recall_minimized();
                         if !app.follow_focused_monitor(&gtk_app) {
                             app.sync(&gtk_app);
                         }
