@@ -129,7 +129,9 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   while all its windows are away. Click its dimmed preview or its menu row —
   or the icon, once all the app's windows are minimized — to bring it back to
   the workspace it came from. Focusing it any other way, like an app's
-  launch-or-focus key or a notification, brings it back too.
+  launch-or-focus key or a notification, brings it back too. Tabbed windows
+  go and come back as their whole group, as Hyprland moves them. An app with
+  a minimized window keeps its icon even with `items.show_running` off.
 - **Notification badges** (opt-in): an app's icon counts the notifications it
   sent since you last looked at it — Gmail's mail on the Gmail web app, not on
   Chromium. Focusing the app clears it.
@@ -330,6 +332,7 @@ Notable keys:
 | `items.media_controls` | Progress ring and play/pause/next on the icon of the app playing media (default: on) |
 | `tray.enabled`, `.show_passive` | Host the system tray in the dock (off by default — the bar already has one) |
 | `autohide.hide_on_fullscreen`, `.hide_while_recording` | Get out of the way of fullscreen windows and screen recordings, whatever `mode` says |
+| `autohide.reveal_on_attention` | Slide a hidden dock out while an app's attention pulse runs — never over a fullscreen window, a recording or the screensaver (default: off) |
 | `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |
 | `dock.tooltip_delay_ms` | Delay before a hovered icon's name appears |
 | `theme.style` | `omarchy` (default) \| `glass` |
