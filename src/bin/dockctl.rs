@@ -38,7 +38,7 @@ fn main() -> std::process::ExitCode {
              commands:\n  \
              activate <1-9>     focus, minimize, or launch that dock item\n  \
              minimize           minimize the focused window\n  \
-             restore            bring back the window minimized last\n  \
+             restore            bring back the most recent minimized window\n  \
              reveal             show the dock now\n  \
              hide               hide the dock now\n  \
              toggle-autohide    switch auto-hide on or off\n  \

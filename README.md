@@ -126,8 +126,10 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 - **Minimize**, which Hyprland lacks: click the app in front, use the
   button beside a window in its menu, or bind `omarchy-dockctl minimize`. The
   window is parked on a hidden `special:minimized` workspace, and its dot dims
-  while all its windows are away. Click the icon, its dimmed preview or its
-  menu row to bring it back to the workspace it came from.
+  while all its windows are away. Click its dimmed preview or its menu row —
+  or the icon, once all the app's windows are minimized — to bring it back to
+  the workspace it came from. Focusing it any other way, like an app's
+  launch-or-focus key or a notification, brings it back too.
 - **Notification badges** (opt-in): an app's icon counts the notifications it
   sent since you last looked at it — Gmail's mail on the Gmail web app, not on
   Chromium. Focusing the app clears it.
@@ -225,8 +227,10 @@ writes to one.
 
 Minimizing moves the window to a hidden `special:minimized` workspace and
 gives it one Hyprland tag, `omarchy-dock-home:<workspace>`, so it can go back
-where it was. Restoring removes the tag. Both happen only when you minimize or
-restore, and neither touches a file.
+where it was. Restoring removes the tag. Both happen only when you minimize, or
+bring a minimized window back — from the dock, or by focusing it some other
+way — and neither touches a file. A minimized window you move out yourself
+keeps its tag until it is minimized again or closed.
 
 ## What it reads
 
@@ -378,8 +382,9 @@ omarchy-dockctl install --keys=CTRL+ALT # or a chord of your choosing
 That binds a chord plus 1…9 to the first nine apps on the dock — pinned or
 running, plus pinned command tiles, in the order they appear. The launcher,
 dividers, workspace tiles, stacks and Trash are not counted, so adding a divider
-does not renumber anything. A press focuses the app, cycles its windows if it is
-already focused, or launches it.
+does not renumber anything. A press focuses the app, minimizes it if it is
+already in front, brings back its most recent minimized window if all of them
+are minimized, or launches it.
 
 The default is `SUPER + CTRL + ALT` because every simpler chord with the number
 row is already Omarchy's: `SUPER` switches workspace, `SUPER + SHIFT` and
@@ -394,7 +399,7 @@ The same actions are available directly:
 ```bash
 omarchy-dockctl activate 3        # focus / minimize / launch dock app 3
 omarchy-dockctl minimize          # minimize the focused window
-omarchy-dockctl restore           # bring back the window minimized last
+omarchy-dockctl restore           # bring back the most recent minimized window
 omarchy-dockctl toggle-autohide
 omarchy-dockctl reveal | hide | reload | restyle | settings
 ```

@@ -21,7 +21,7 @@ pub enum Control {
     Activate(usize),
     /// Minimize the focused window.
     Minimize,
-    /// Restore the window minimized last, of any app.
+    /// Restore the most recently focused minimized window, of any app.
     Restore,
     /// Force the dock visible, hidden, or back to its configured behaviour.
     Reveal,
