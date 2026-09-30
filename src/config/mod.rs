@@ -292,7 +292,8 @@ pub struct Items {
     /// Shell commands that can be pinned as tiles, referenced from `pinned`
     /// as `cmd:<id>`.
     pub commands: Vec<CommandItem>,
-    /// Show apps that are running but not pinned.
+    /// Show apps that are running but not pinned. One with a minimized
+    /// window shows regardless: its icon is the way back to it.
     pub show_running: bool,
     /// Draw the dock's own furniture — launcher, folders, Trash — as
     /// monochrome glyphs in the theme foreground, the way every Omarchy bar

@@ -976,7 +976,9 @@ impl DockState {
         // Everything appended from here is a distinct section.
         let pinned_end = items.len();
 
-        if show_running {
+        // Minimized windows show even when running apps don't: their icon is
+        // the only way back to them.
+        if show_running || self.clients.iter().any(|c| c.is_minimized()) {
             // Group leftovers by matched entry so multiple windows of one app
             // collapse into a single icon.
             type Group = (String, String, String, Vec<Address>, String, Vec<crate::desktop::Action>);
@@ -984,7 +986,10 @@ impl DockState {
             for (i, c) in self.clients.iter().enumerate() {
                 // Scratchpad windows show on its tile, not as apps; minimized
                 // ones stay on their app's icon, the only way back to them.
-                if claimed[i] || (c.is_special() && !c.is_minimized()) {
+                if claimed[i]
+                    || (c.is_special() && !c.is_minimized())
+                    || (!show_running && !c.is_minimized())
+                {
                     continue;
                 }
                 let entry = self.matcher.match_class(c.match_key());
@@ -1676,6 +1681,20 @@ mod layout_tests {
         assert!(items[0].all_minimized());
         assert!(!items[0].scratchpad, "minimized is not stashed in the scratchpad");
         assert_eq!(items[0].window_meta[0].home.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn a_minimized_app_keeps_its_icon_when_running_apps_are_hidden() {
+        // Its icon is the only way back to it.
+        let mut parked = client("parked");
+        parked.workspace = WorkspaceRef { id: -98, name: "special:minimized".into() };
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![parked, client("shown")]);
+        let mut c = cfg(&[]);
+        c.items.show_running = false;
+        let items = s.items(&c);
+        let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, vec!["parked"], "the minimized app only, not every running one");
     }
 
     #[test]
