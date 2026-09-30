@@ -749,6 +749,19 @@ impl DockSurface {
         }
     }
 
+    /// Slide a hidden dock out for as long as an attention pulse runs, then
+    /// let it go. Taken as a hold, like an open menu's, so hover and the hide
+    /// rules carry on untouched once it is released.
+    pub fn reveal_for_attention(&self, cfg: &Config) {
+        hold(&self.slide, &self.window, cfg, true);
+        let (slide, window, cfg) = (Rc::downgrade(&self.slide), self.window.downgrade(), cfg.clone());
+        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(ATTENTION_S), move || {
+            if let (Some(slide), Some(window)) = (slide.upgrade(), window.upgrade()) {
+                hold(&slide, &window, &cfg, false);
+            }
+        });
+    }
+
     /// Pulse the item with `key` for an attention request.
     pub fn attention_key(&self, key: &str) {
         let at = self.state.borrow().data.iter().position(|d| d.key == key);

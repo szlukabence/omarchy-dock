@@ -188,6 +188,9 @@ fn build_window() -> gtk::Window {
         })
     });
     list.append(&field("Auto-hide", &hide));
+    list.append(&toggle("Show for apps that need attention", cfg.autohide.reveal_on_attention, |v| {
+        edit(move |c| c.autohide.reveal_on_attention = v)
+    }));
 
     list.append(&toggle("Reserve screen space", cfg.dock.reserve_space, |v| {
         edit(move |c| c.dock.reserve_space = v)

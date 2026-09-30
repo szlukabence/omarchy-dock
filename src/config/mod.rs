@@ -160,6 +160,10 @@ pub struct Autohide {
     /// Get out of the way of `omarchy capture screenrecording`, so the dock
     /// does not end up in the recording.
     pub hide_while_recording: bool,
+    /// Slide a hidden dock out while an app's attention pulse runs, then hide
+    /// it again. Never over a fullscreen window, a recording or the
+    /// screensaver.
+    pub reveal_on_attention: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +389,7 @@ impl Default for Autohide {
             slide_ms: 220,
             hide_on_fullscreen: true,
             hide_while_recording: true,
+            reveal_on_attention: false,
         }
     }
 }
@@ -870,6 +875,13 @@ mod tests {
         assert!(old.items.show_drives);
         let off: Config = toml::from_str("[items]\nshow_drives = false\n").unwrap();
         assert!(!off.items.show_drives);
+    }
+
+    #[test]
+    fn a_hidden_dock_stays_hidden_for_attention_unless_asked() {
+        assert!(!Config::default().autohide.reveal_on_attention);
+        let on: Config = toml::from_str("[autohide]\nreveal_on_attention = true\n").unwrap();
+        assert!(on.autohide.reveal_on_attention);
     }
 
     #[test]

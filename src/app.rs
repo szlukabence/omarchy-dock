@@ -158,6 +158,17 @@ impl App {
                             }
                         }
                     }
+                    // Out of a hidden dock only where nothing is being
+                    // watched: not over fullscreen, a recording or the
+                    // screensaver.
+                    let quiet = !self.state.has_fullscreen()
+                        && !self.state.screensaver_showing()
+                        && !crate::omarchy::is_recording();
+                    if self.cfg.autohide.reveal_on_attention && quiet {
+                        for d in &self.docks {
+                            d.reveal_for_attention(&self.cfg);
+                        }
+                    }
                 }
                 false
             }
