@@ -286,6 +286,9 @@ pub struct Items {
     /// Show plugged-in removable drives — USB sticks, SD cards, phones —
     /// beside Trash. Nothing shows until one is plugged in.
     pub show_drives: bool,
+    /// Pulse an app's icon a few times when one of its windows asks for
+    /// attention. Its red dot stays either way until you look.
+    pub urgent_pulse: bool,
     /// Shell commands that can be pinned as tiles, referenced from `pinned`
     /// as `cmd:<id>`.
     pub commands: Vec<CommandItem>,
@@ -419,6 +422,7 @@ impl Default for Items {
             folders: Vec::new(),
             show_trash: true,
             show_drives: true,
+            urgent_pulse: true,
             commands: Vec::new(),
             show_running: true,
             glyph_ui: true,
@@ -865,5 +869,14 @@ mod tests {
         assert!(old.items.show_drives);
         let off: Config = toml::from_str("[items]\nshow_drives = false\n").unwrap();
         assert!(!off.items.show_drives);
+    }
+
+    #[test]
+    fn urgent_apps_pulse_unless_turned_off() {
+        assert!(Config::default().items.urgent_pulse);
+        let old: Config = toml::from_str("[items]\nshow_trash = false\n").unwrap();
+        assert!(old.items.urgent_pulse);
+        let off: Config = toml::from_str("[items]\nurgent_pulse = false\n").unwrap();
+        assert!(!off.items.urgent_pulse);
     }
 }

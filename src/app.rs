@@ -139,8 +139,26 @@ impl App {
                 true
             }
             Urgent(addr) => {
-                let _ = self.state.set_urgent(addr);
-                true
+                if self.state.set_urgent(addr.clone()) {
+                    // Refresh first: a rebuild would drop a pulse started
+                    // before it.
+                    self.sync(gtk_app);
+                    if self.cfg.items.urgent_pulse {
+                        // The app's icon, never a workspace or scratchpad tile
+                        // that also lists the window.
+                        let items = self.current_items();
+                        let key = items
+                            .iter()
+                            .find(|i| i.kind == crate::state::ItemKind::App && i.windows.contains(&addr))
+                            .map(|i| i.key.clone());
+                        if let Some(key) = key {
+                            for d in &self.docks {
+                                d.attention_key(&key);
+                            }
+                        }
+                    }
+                }
+                false
             }
             // The snapshot carries each client's fullscreen state, and the
             // event only says that *something* changed.

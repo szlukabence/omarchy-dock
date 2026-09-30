@@ -356,6 +356,9 @@ fn build_window() -> gtk::Window {
     list.append(&toggle("Show removable drives", cfg.items.show_drives, |v| {
         edit(move |c| c.items.show_drives = v)
     }));
+    list.append(&toggle("Pulse apps that need attention", cfg.items.urgent_pulse, |v| {
+        edit(move |c| c.items.urgent_pulse = v)
+    }));
 
     list.append(&separator());
 

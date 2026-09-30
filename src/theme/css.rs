@@ -123,6 +123,9 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 {plate_border}
 }}
 
+/* An app asking for attention breathes in the urgent colour. */
+.dock-hover-plate.attention {{ background-color: @dock_urgent; }}
+
 .dock-indicator {{
   background-color: @dock_accent;
   border-radius: 2px;

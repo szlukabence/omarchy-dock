@@ -45,6 +45,15 @@ const PULSE_FLOOR: f64 = 0.3;
 /// An app that never shows a window stops breathing after this long.
 const PULSE_TIMEOUT_S: f64 = 10.0;
 
+/// An app asking for attention breathes in the urgent colour a few times and
+/// then rests; its red dot carries on saying so until it is looked at. A
+/// pulse that never stopped would keep the dock redrawing for as long as the
+/// request was ignored.
+const ATTENTION_S: f64 = 3.5;
+const ATTENTION_BREATHS: f64 = 3.0;
+/// Peak plate opacity: noticeable, never a solid block.
+const ATTENTION_PEAK: f64 = 0.55;
+
 /// How far the hover plate extends past the icon box on each side. Small: the
 /// shell's own hover fill hugs its content rather than framing it.
 const PLATE_MARGIN: f64 = 4.0;
@@ -543,6 +552,18 @@ impl DockSurface {
             }
         }
 
+        // Test hook: an app cannot be made to ask for attention on cue, so
+        // this starts the attention pulse on the given slot.
+        if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_ATTENTION") {
+            if let Ok(i) = n.parse::<usize>() {
+                let st = state.clone();
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(400),
+                    move || attention(&st, i),
+                );
+            }
+        }
+
         surface.attach_peek(cfg);
 
         // A rebuild replaces the surface, and the new one never receives an
@@ -725,6 +746,14 @@ impl DockSurface {
         let at = self.state.borrow().data.iter().position(|d| d.key == key);
         if let Some(i) = at {
             pulse(&self.state, i);
+        }
+    }
+
+    /// Pulse the item with `key` for an attention request.
+    pub fn attention_key(&self, key: &str) {
+        let at = self.state.borrow().data.iter().position(|d| d.key == key);
+        if let Some(i) = at {
+            attention(&self.state, i);
         }
     }
 
@@ -1898,6 +1927,9 @@ struct Pulse {
     start_us: i64,
     /// Breathe until the item has a window, rather than for one breath.
     until_window: bool,
+    /// An attention request rather than a launch: urgent colour, three
+    /// breaths from dark.
+    attention: bool,
 }
 
 /// The fill level `t` seconds into a pulse: full at the click, easing down to
@@ -1905,6 +1937,16 @@ struct Pulse {
 fn pulse_level(t: f64) -> f64 {
     let wave = (1.0 + (std::f64::consts::TAU * t / PULSE_PERIOD_S).cos()) / 2.0;
     PULSE_FLOOR + (1.0 - PULSE_FLOOR) * wave
+}
+
+/// The fill level `t` seconds into an attention pulse: dark, up to the peak
+/// and back, `ATTENTION_BREATHS` times, then dark for good.
+fn attention_level(t: f64) -> f64 {
+    if !(0.0..ATTENTION_S).contains(&t) {
+        return 0.0;
+    }
+    let breath = ATTENTION_S / ATTENTION_BREATHS;
+    ATTENTION_PEAK * (std::f64::consts::PI * t / breath).sin().powi(2)
 }
 
 /// Start launch feedback on slot `index`.
@@ -1916,8 +1958,30 @@ fn pulse(state: &Rc<RefCell<State>>, index: usize) {
         // command tile, files handed to an app already running — has no
         // window to wait for, so it gets a single breath.
         let until_window = item.kind == ItemKind::App && item.windows.is_empty();
+        // A launch takes the plate over from an attention pulse, colour too.
+        if let Some(plate) = s.plates.get(index) {
+            set_class(plate, "attention", false);
+        }
         if let Some(p) = s.pulses.get_mut(index) {
-            *p = Some(Pulse { start_us: 0, until_window });
+            *p = Some(Pulse { start_us: 0, until_window, attention: false });
+        }
+    }
+    ensure_ticking(state);
+}
+
+/// Start an attention pulse on slot `index`, unless one is already running:
+/// a repeated request mid-pulse should not restart it.
+fn attention(state: &Rc<RefCell<State>>, index: usize) {
+    {
+        let mut s = state.borrow_mut();
+        if s.pulses.get(index).is_some_and(|p| p.is_some_and(|p| p.attention)) {
+            return;
+        }
+        if let Some(plate) = s.plates.get(index) {
+            set_class(plate, "attention", true);
+        }
+        if let Some(p) = s.pulses.get_mut(index) {
+            *p = Some(Pulse { start_us: 0, until_window: false, attention: true });
         }
     }
     ensure_ticking(state);
@@ -2734,20 +2798,30 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                     p.start_us = now;
                 }
                 let t = (now - p.start_us) as f64 / 1_000_000.0;
-                let over = t >= PULSE_TIMEOUT_S
-                    || if p.until_window {
-                        s.data.get(i).is_none_or(|d| !d.windows.is_empty())
-                    } else {
-                        t >= PULSE_PERIOD_S
-                    };
+                let over = if p.attention {
+                    t >= ATTENTION_S
+                } else {
+                    t >= PULSE_TIMEOUT_S
+                        || if p.until_window {
+                            s.data.get(i).is_none_or(|d| !d.windows.is_empty())
+                        } else {
+                            t >= PULSE_PERIOD_S
+                        }
+                };
                 if over {
                     // Hand the level to the hover spring, so the fill eases to
                     // wherever hover wants it instead of snapping there.
                     s.hovers[i].pos = s.pulse_levels[i];
                     s.hovers[i].vel = 0.0;
                     s.pulses[i] = None;
+                    if p.attention {
+                        if let Some(plate) = s.plates.get(i) {
+                            set_class(plate, "attention", false);
+                        }
+                    }
                 } else {
-                    s.pulse_levels[i] = pulse_level(t);
+                    s.pulse_levels[i] =
+                        if p.attention { attention_level(t) } else { pulse_level(t) };
                     s.pulses[i] = Some(p);
                 }
                 moving = true;
@@ -2884,6 +2958,31 @@ mod tests {
     fn a_pulse_dims_to_its_floor_mid_breath_and_comes_back() {
         assert!(close(pulse_level(PULSE_PERIOD_S / 2.0), PULSE_FLOOR));
         assert!(close(pulse_level(PULSE_PERIOD_S), 1.0));
+    }
+
+    #[test]
+    fn an_attention_pulse_starts_and_ends_dark() {
+        assert!(close(attention_level(0.0), 0.0));
+        assert!(close(attention_level(ATTENTION_S), 0.0));
+        assert!(close(attention_level(ATTENTION_S + 1.0), 0.0));
+    }
+
+    #[test]
+    fn an_attention_pulse_breathes_three_times() {
+        let breath = ATTENTION_S / ATTENTION_BREATHS;
+        for k in 0..3 {
+            let peak = attention_level(breath * (k as f64 + 0.5));
+            assert!(close(peak, ATTENTION_PEAK), "breath {k}: {peak}");
+            assert!(close(attention_level(breath * (k as f64 + 1.0)), 0.0));
+        }
+    }
+
+    #[test]
+    fn an_attention_pulse_never_leaves_its_range() {
+        for k in 0..=1000 {
+            let level = attention_level(k as f64 * ATTENTION_S / 1000.0);
+            assert!((-1e-9..=ATTENTION_PEAK + 1e-9).contains(&level), "{level}");
+        }
     }
 
     #[test]

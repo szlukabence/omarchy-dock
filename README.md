@@ -113,9 +113,10 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 
 ## What it does
 
-- **Pinned and running apps**, with running indicators, window-count badges and
-  urgency. Click to focus, click the app in front to minimize it, click an idle
-  icon to launch, middle-click for a new window.
+- **Pinned and running apps**, with running indicators, window-count badges,
+  and a pulse when an app asks for attention. Click to focus, click the app in
+  front to minimize it, click an idle icon to launch, middle-click for a new
+  window.
 - **Window previews**: rest the pointer on a running app and its windows appear
   as live thumbnails, each with its title and workspace — including windows on
   workspaces that are not on screen. Click one to jump straight to it.
@@ -328,6 +329,7 @@ Notable keys:
 | `theme.user_css` | Extra CSS layered over the generated stylesheet |
 | `items.glyph_ui` | Draw launcher, folders, drives and Trash as monochrome glyphs (default: on) |
 | `items.show_drives` | Show plugged-in removable drives beside Trash (default: on) |
+| `items.urgent_pulse` | Pulse an app's icon three times when it asks for attention; its red dot stays until you look (default: on) |
 | `dock.avoid_bar` | Offset past the Omarchy bar when both share an edge (default: on) |
 
 The dock can host the **system tray** itself: it registers as a
