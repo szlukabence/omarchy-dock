@@ -22,11 +22,16 @@ pub enum Step {
     Focus,
 }
 
+/// Whether `home` names somewhere a window can go back to.
+pub fn is_home(home: &str) -> bool {
+    !home.is_empty() && home != WORKSPACE
+}
+
 /// The home workspace recorded in a window's tags, if any.
 pub fn home_of(tags: &[String]) -> Option<String> {
     tags.iter()
         .find_map(|t| t.strip_prefix(HOME_TAG))
-        .filter(|h| !h.is_empty() && *h != WORKSPACE)
+        .filter(|h| is_home(h))
         .map(str::to_string)
 }
 
@@ -43,7 +48,7 @@ fn selector(name: &str) -> String {
 
 /// Where a restored window goes: home, else the workspace in front.
 pub fn restore_target(home: Option<&str>, current: &str) -> String {
-    selector(home.filter(|h| !h.is_empty() && *h != WORKSPACE).unwrap_or(current))
+    selector(home.filter(|h| is_home(h)).unwrap_or(current))
 }
 
 /// Tag first, then move: the move is what makes the dock resync, and the

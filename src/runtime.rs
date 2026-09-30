@@ -229,14 +229,18 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
             run_steps(window, group, &steps).await
         }
         DockCommand::Restore { window, home, group } => {
-            // Only needed without a home, but one query is cheaper than a
-            // second code path.
-            let current = hypr::request::monitors()
-                .await?
-                .into_iter()
-                .find(|m| m.focused)
-                .map(|m| m.active_workspace.name)
-                .unwrap_or_else(|| "1".into());
+            // The workspace in front is only needed without a home, and a
+            // window with one must not stay parked because this query failed.
+            let current = if home.as_deref().is_some_and(hypr::minimize::is_home) {
+                String::new()
+            } else {
+                hypr::request::monitors()
+                    .await?
+                    .into_iter()
+                    .find(|m| m.focused)
+                    .map(|m| m.active_workspace.name)
+                    .unwrap_or_else(|| "1".into())
+            };
             let steps = hypr::minimize::restore_steps(home.as_deref(), &current);
             run_steps(window, group, &steps).await
         }
