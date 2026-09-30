@@ -114,13 +114,19 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 ## What it does
 
 - **Pinned and running apps**, with running indicators, window-count badges and
-  urgency. Click to focus, click again to cycle windows, click an idle icon to
-  launch, middle-click for a new window.
+  urgency. Click to focus, click the app in front to minimize it, click an idle
+  icon to launch, middle-click for a new window.
 - **Window previews**: rest the pointer on a running app and its windows appear
   as live thumbnails, each with its title and workspace — including windows on
   workspaces that are not on screen. Click one to jump straight to it.
 - **Window menu**: right-click an app to see its windows by title and
-  workspace, and move any of them to another workspace or the scratchpad.
+  workspace, and minimize any of them, or move it to another workspace or the
+  scratchpad.
+- **Minimize**, which Hyprland lacks: click the app in front, use the
+  button beside a window in its menu, or bind `omarchy-dockctl minimize`. The
+  window is parked on a hidden `special:minimized` workspace, and its dot dims
+  while all its windows are away. Click the icon, its dimmed preview or its
+  menu row to bring it back to the workspace it came from.
 - **Notification badges** (opt-in): an app's icon counts the notifications it
   sent since you last looked at it — Gmail's mail on the Gmail web app, not on
   Chromium. Focusing the app clears it.

@@ -140,8 +140,9 @@ where
     // ── open windows ────────────────────────────────────────────────────────
     // One row per window: its title and workspace, so an app open on several
     // workspaces can be steered directly instead of cycled through blindly.
-    // Each row carries a move button, which is how windows get organised in
-    // Omarchy — by workspace — rather than by minimising.
+    // Each row carries a minimize (or restore) button and a move button:
+    // windows are organised by workspace in Omarchy, and minimizing parks one
+    // out of the way until it is wanted.
     if !item.windows.is_empty() {
         let n = item.windows.len();
         list.append(&heading(if n == 1 { "Window" } else { "Windows" }));
@@ -299,11 +300,11 @@ where
 
     let title = if meta.title.is_empty() { app_label.to_string() } else { meta.title.clone() };
     let focus = row("", {
-        let a = addr.clone();
+        let (a, m) = (addr.clone(), meta.clone());
         let cb = on_action.clone();
         let pop = popover.clone();
         move || {
-            cb(MenuAction::Command(DockCommand::Focus(a.clone())));
+            cb(MenuAction::Command(DockCommand::open_window(&a, Some(&m))));
             pop.popdown();
         }
     });
@@ -327,26 +328,56 @@ where
     focus.set_hexpand(true);
     line.append(&focus);
 
-    // The move targets live in a nested popover so the main menu stays one row
-    // per window however many workspaces there are.
-    let mover = gtk::Button::with_label("\u{f061}"); // arrow-right glyph
-    mover.add_css_class("dock-menu-item");
-    mover.add_css_class("dock-glyph");
-    mover.set_has_frame(false);
-    mover.set_tooltip_text(Some("Move to workspace"));
+    // Minimize or restore in place, so a window can be put away without
+    // leaving the menu for the icon.
+    let (glyph, tip) = if meta.minimized {
+        ("\u{f2d2}", "Restore") // fa-window-restore
+    } else {
+        ("\u{f2d1}", "Minimize") // fa-window-minimize
+    };
+    let toggle = gtk::Button::with_label(glyph);
+    toggle.add_css_class("dock-menu-item");
+    toggle.add_css_class("dock-glyph");
+    toggle.set_has_frame(false);
+    toggle.set_tooltip_text(Some(tip));
     {
-        let a = addr.clone();
-        let current = meta.workspace.clone();
-        let cb = on_action.clone();
-        let pop = popover.clone();
-        mover.connect_clicked(move |btn| {
-            let sub = move_menu(&a, &current, &cb, &pop);
-            sub.set_parent(btn);
-            sub.connect_closed(|p| p.unparent());
-            sub.popup();
+        let (a, m, cb, pop) = (addr.clone(), meta.clone(), on_action.clone(), popover.clone());
+        toggle.connect_clicked(move |_| {
+            let cmd = if m.minimized {
+                DockCommand::restore(&a, &m)
+            } else {
+                DockCommand::minimize(&a, &m)
+            };
+            cb(MenuAction::Command(cmd));
+            pop.popdown();
         });
     }
-    line.append(&mover);
+    line.append(&toggle);
+
+    // Moving a minimized window would leave its home tag behind; restoring
+    // is the way out.
+    if !meta.minimized {
+        // The move targets live in a nested popover so the main menu stays one
+        // row per window however many workspaces there are.
+        let mover = gtk::Button::with_label("\u{f061}"); // arrow-right glyph
+        mover.add_css_class("dock-menu-item");
+        mover.add_css_class("dock-glyph");
+        mover.set_has_frame(false);
+        mover.set_tooltip_text(Some("Move to workspace"));
+        {
+            let a = addr.clone();
+            let current = meta.workspace.clone();
+            let cb = on_action.clone();
+            let pop = popover.clone();
+            mover.connect_clicked(move |btn| {
+                let sub = move_menu(&a, &current, &cb, &pop);
+                sub.set_parent(btn);
+                sub.connect_closed(|p| p.unparent());
+                sub.popup();
+            });
+        }
+        line.append(&mover);
+    }
     line
 }
 

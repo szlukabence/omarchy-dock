@@ -371,6 +371,7 @@ impl DockSurface {
             dot.set_visible(item.shows_indicator());
             set_class(&dot, "urgent", item.urgent);
             set_class(&dot, "active", item.active);
+            set_class(&dot, "minimized", item.all_minimized());
             dot.set_size_request(len as i32, thick as i32);
             if let Some((ix, iy)) = geom.indicator_at(i, cfg.dock.icon_size, len, thick) {
                 fixed.put(&dot, ix, iy);
@@ -604,6 +605,7 @@ impl DockSurface {
                 // Toggle rather than add: classes persist across refreshes.
                 set_class(dot, "urgent", item.urgent);
                 set_class(dot, "active", item.active);
+                set_class(dot, "minimized", item.all_minimized());
             }
             if let Some(badge) = s.badges.get(i) {
                 set_class(badge, "unread", item.unread > 0);
@@ -695,6 +697,7 @@ impl DockSurface {
                     dot.set_visible(item.shows_indicator());
                     set_class(dot, "urgent", item.urgent);
                     set_class(dot, "active", item.active);
+                    set_class(dot, "minimized", item.all_minimized());
                 }
             }
         }
@@ -2325,8 +2328,8 @@ impl Previews {
             // Whether the strip is holding the dock out, so enter and leave
             // can never release a hold they did not take, or take two.
             let holding = Rc::new(Cell::new(false));
-            let on_focus: Rc<dyn Fn(crate::hypr::Address)> =
-                Rc::new(move |address| sink(MenuAction::Command(DockCommand::Focus(address))));
+            let on_open: Rc<dyn Fn(DockCommand)> =
+                Rc::new(move |cmd| sink(MenuAction::Command(cmd)));
             let on_enter: Rc<dyn Fn()> = {
                 let (holding, slide, window, cfg, me) =
                     (holding.clone(), slide.clone(), window.clone(), cfg.clone(), me.clone());
@@ -2358,7 +2361,7 @@ impl Previews {
                 monitor.as_ref(),
                 cfg.dock.position,
                 cfg.preview.width,
-                on_focus,
+                on_open,
                 on_enter,
                 on_leave,
             )
@@ -2531,6 +2534,8 @@ fn tiles_for(item: &DockItem) -> Vec<preview::Tile> {
                     .unwrap_or_else(|| item.label.clone()),
                 workspace: meta.map(|m| m.workspace_label().to_string()).unwrap_or_default(),
                 icon: item.icon.clone(),
+                minimized: meta.is_some_and(|m| m.minimized),
+                open: DockCommand::open_window(address, meta),
             }
         })
         .collect()

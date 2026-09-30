@@ -52,6 +52,10 @@ pub struct Tile {
     pub workspace: String,
     /// Icon shown until the thumbnail arrives.
     pub icon: String,
+    /// Minimized: drawn dimmed, and clicking restores it.
+    pub minimized: bool,
+    /// What clicking the tile sends.
+    pub open: crate::runtime::DockCommand,
 }
 
 /// Where the strip goes, in logical pixels of the area layer surfaces are
@@ -82,7 +86,7 @@ pub struct Panel {
     /// fresh one is captured.
     cache: RefCell<HashMap<u64, gdk::MemoryTexture>>,
     pointer_inside: Cell<bool>,
-    on_focus: Rc<dyn Fn(Address)>,
+    on_open: Rc<dyn Fn(crate::runtime::DockCommand)>,
     on_leave: Rc<dyn Fn()>,
 }
 
@@ -94,7 +98,7 @@ impl Panel {
         monitor: Option<&gdk::Monitor>,
         position: Position,
         tile_width: f64,
-        on_focus: Rc<dyn Fn(Address)>,
+        on_open: Rc<dyn Fn(crate::runtime::DockCommand)>,
         on_enter: Rc<dyn Fn()>,
         on_leave: Rc<dyn Fn()>,
     ) -> Rc<Self> {
@@ -137,7 +141,7 @@ impl Panel {
             pictures: RefCell::new(HashMap::new()),
             cache: RefCell::new(HashMap::new()),
             pointer_inside: Cell::new(false),
-            on_focus,
+            on_open,
             on_leave: on_leave.clone(),
         });
 
@@ -231,6 +235,9 @@ impl Panel {
     fn tile(&self, tile: &Tile, thumb_h: i32) -> gtk::Widget {
         let button = gtk::Button::new();
         button.add_css_class("dock-preview-tile");
+        if tile.minimized {
+            button.add_css_class("minimized");
+        }
         button.set_has_frame(false);
         button.set_tooltip_text(Some(&tile.title));
 
@@ -278,9 +285,9 @@ impl Panel {
         body.append(&footer);
         button.set_child(Some(&body));
 
-        let (address, on_focus, me) = (tile.address.clone(), self.on_focus.clone(), self.me.clone());
+        let (open, on_open, me) = (tile.open.clone(), self.on_open.clone(), self.me.clone());
         button.connect_clicked(move |_| {
-            on_focus(address.clone());
+            on_open(open.clone());
             if let Some(panel) = me.upgrade() {
                 panel.hide();
             }

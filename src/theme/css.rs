@@ -139,6 +139,9 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   min-width: 10px;
 }}
 
+/* Running, but every window minimized: still there, just put away. */
+.dock-indicator.minimized {{ opacity: 0.4; }}
+
 /* A window count is information; an unread count wants attention, so only it
    takes the urgent colour — two red numbers could not be told apart. */
 .dock-badge {{
@@ -309,6 +312,8 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
 }}
 
 .dock-preview-thumb {{ border-radius: {row_radius}px; }}
+
+.dock-preview-tile.minimized .dock-preview-thumb {{ opacity: 0.45; }}
 
 .dock-preview-title {{ font-size: {caption}px; }}
 
