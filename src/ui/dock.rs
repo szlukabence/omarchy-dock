@@ -998,9 +998,9 @@ fn attach_clicks(
                     MenuAction::Command(DockCommand::Exec(item.exec.clone()))
                 })
             } else {
-                // Running: focus, or cycle when this app already has focus.
-                item.click_target()
-                    .map(|next| MenuAction::Command(DockCommand::Focus(next.clone())))
+                // Running: focus it, minimize it if it is in front, or bring
+                // back its last minimized window.
+                DockCommand::for_click(&item).map(MenuAction::Command)
             };
 
             if let Some(a) = action {

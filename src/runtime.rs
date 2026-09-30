@@ -32,10 +32,50 @@ pub enum DockCommand {
     /// Send one window to a workspace without following it — what dropping a
     /// dock icon onto a workspace tile means.
     SendToWorkspace { window: hypr::Address, workspace: String },
+    /// Park a window on `special:minimized`, tagged with the workspace it is
+    /// on so it can go back there.
+    Minimize { window: hypr::Address, workspace: String, stale_home: Option<String> },
+    /// Send a minimized window home, or to the workspace in front when it
+    /// has none, and focus it.
+    Restore { window: hypr::Address, home: Option<String> },
     /// A transport command for one media player, addressed by bus name.
     Media { bus: String, action: crate::media::Action },
     /// Deliver a click to a system-tray item, addressed by its D-Bus service.
     TrayClick { service: String, click: crate::tray::Click },
+}
+
+impl DockCommand {
+    pub fn minimize(window: &hypr::Address, meta: &crate::state::WindowMeta) -> Self {
+        DockCommand::Minimize {
+            window: window.clone(),
+            workspace: meta.workspace.clone(),
+            stale_home: meta.home.clone(),
+        }
+    }
+
+    pub fn restore(window: &hypr::Address, meta: &crate::state::WindowMeta) -> Self {
+        DockCommand::Restore { window: window.clone(), home: meta.home.clone() }
+    }
+
+    /// Bring one window to the front: restored if minimized, else focused.
+    pub fn open_window(window: &hypr::Address, meta: Option<&crate::state::WindowMeta>) -> Self {
+        match meta {
+            Some(m) if m.minimized => Self::restore(window, m),
+            _ => DockCommand::Focus(window.clone()),
+        }
+    }
+
+    /// What a left-click on `item` sends, if anything.
+    pub fn for_click(item: &crate::state::DockItem) -> Option<Self> {
+        use crate::state::Click;
+        let meta = |a: &hypr::Address| item.meta_of(a).cloned().unwrap_or_default();
+        match item.click() {
+            Click::Launch => (!item.exec.is_empty()).then(|| DockCommand::Exec(item.exec.clone())),
+            Click::Focus(a) => Some(DockCommand::Focus(a)),
+            Click::Minimize(a) => Some(Self::minimize(&a, &meta(&a))),
+            Click::Restore(a) => Some(Self::restore(&a, &meta(&a))),
+        }
+    }
 }
 
 pub type CommandSender = tokio::sync::mpsc::Sender<DockCommand>;
@@ -173,7 +213,39 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
             // put it away, not to go there.
             dispatch::move_window_to_workspace(window, workspace, false).await
         }
+        DockCommand::Minimize { window, workspace, stale_home } => {
+            let steps = hypr::minimize::minimize_steps(workspace, stale_home.as_deref());
+            run_steps(window, &steps).await
+        }
+        DockCommand::Restore { window, home } => {
+            // Only needed without a home, but one query is cheaper than a
+            // second code path.
+            let current = hypr::request::monitors()
+                .await?
+                .into_iter()
+                .find(|m| m.focused)
+                .map(|m| m.active_workspace.name)
+                .unwrap_or_else(|| "1".into());
+            let steps = hypr::minimize::restore_steps(home.as_deref(), &current);
+            run_steps(window, &steps).await
+        }
     }
+}
+
+/// Run minimize or restore steps in order, stopping at the first failure so a
+/// window is never moved without the tag that says where it belongs.
+async fn run_steps(window: &hypr::Address, steps: &[hypr::minimize::Step]) -> anyhow::Result<()> {
+    use hypr::{dispatch, minimize::Step};
+    for step in steps {
+        match step {
+            Step::Tag(tag) => dispatch::tag_window(window, tag).await?,
+            Step::Move { workspace, follow } => {
+                dispatch::move_window_to_workspace(window, workspace, *follow).await?
+            }
+            Step::Focus => dispatch::focus_window(window).await?,
+        }
+    }
+    Ok(())
 }
 
 async fn snapshot(tx: &Sender) {
@@ -205,5 +277,45 @@ async fn snapshot(tx: &Sender) {
                 .await;
         }
         Err(e) => tracing::warn!(error = %e, "client snapshot failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::WindowMeta;
+
+    fn meta(workspace: &str, home: Option<&str>) -> WindowMeta {
+        WindowMeta {
+            workspace: workspace.into(),
+            minimized: workspace == hypr::minimize::WORKSPACE,
+            home: home.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn minimizing_remembers_where_the_window_was() {
+        let a = hypr::Address::parse("0x1");
+        match DockCommand::minimize(&a, &meta("3", Some("7"))) {
+            DockCommand::Minimize { window, workspace, stale_home } => {
+                assert_eq!(window, a);
+                assert_eq!(workspace, "3");
+                assert_eq!(stale_home.as_deref(), Some("7"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn opening_a_minimized_window_restores_it_and_any_other_is_focused() {
+        let a = hypr::Address::parse("0x1");
+        let parked = meta("special:minimized", Some("2"));
+        assert!(matches!(
+            DockCommand::open_window(&a, Some(&parked)),
+            DockCommand::Restore { home: Some(ref h), .. } if h == "2"
+        ));
+        assert!(matches!(DockCommand::open_window(&a, Some(&meta("2", None))), DockCommand::Focus(_)));
+        assert!(matches!(DockCommand::open_window(&a, None), DockCommand::Focus(_)));
     }
 }

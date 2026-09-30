@@ -86,6 +86,16 @@ pub async fn move_window_to_workspace(addr: &Address, workspace: &str, follow: b
     .await
 }
 
+/// Add (`+tag`) or remove (`-tag`) a tag on one specific window.
+pub async fn tag_window(addr: &Address, tag: &str) -> Result<()> {
+    run(&format!(
+        "hl.dsp.window.tag({{ window = {}, tag = {} }})",
+        lua_str(&format!("address:{}", addr.prefixed())),
+        lua_str(tag),
+    ))
+    .await
+}
+
 /// Launch a command through Hyprland so it inherits the compositor's
 /// environment rather than the dock's.
 pub async fn exec(command: &str) -> Result<()> {

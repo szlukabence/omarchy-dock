@@ -17,8 +17,12 @@ use tokio::net::{UnixListener, UnixStream};
 /// A request from `omarchy-dockctl`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Control {
-    /// Focus, cycle, or launch the nth dock item (1-based, as typed by users).
+    /// Focus, minimize, or launch the nth dock item (1-based, as typed by users).
     Activate(usize),
+    /// Minimize the focused window.
+    Minimize,
+    /// Restore the window minimized last, of any app.
+    Restore,
     /// Force the dock visible, hidden, or back to its configured behaviour.
     Reveal,
     Hide,
@@ -55,6 +59,8 @@ pub fn parse(line: &str) -> Option<Control> {
             // eagerly, which underflows and panics on `activate 0`.
             (n >= 1).then(|| Control::Activate(n - 1))
         }
+        "minimize" => Some(Control::Minimize),
+        "restore" => Some(Control::Restore),
         "reveal" => Some(Control::Reveal),
         "hide" => Some(Control::Hide),
         "toggle-autohide" => Some(Control::ToggleAutohide),
@@ -132,5 +138,11 @@ mod tests {
     fn accepts_the_simple_verbs() {
         assert_eq!(parse("reveal"), Some(Control::Reveal));
         assert_eq!(parse("toggle-autohide"), Some(Control::ToggleAutohide));
+    }
+
+    #[test]
+    fn minimize_and_restore_are_verbs() {
+        assert_eq!(parse("minimize"), Some(Control::Minimize));
+        assert_eq!(parse("restore"), Some(Control::Restore));
     }
 }

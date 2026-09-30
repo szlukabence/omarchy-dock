@@ -270,29 +270,6 @@ impl DockItem {
             .min_by_key(|w| self.meta_of(w).map_or(i32::MAX, |m| m.recency))
             .map_or(Click::Launch, |a| Click::Restore(a.clone()))
     }
-
-    /// Which window a left-click should focus.
-    ///
-    /// Clicking an app that already holds focus advances to its next window,
-    /// so repeated clicks cycle — the behaviour a dock icon is expected to
-    /// have. Clicking an app that does *not* hold focus jumps to its first
-    /// window rather than resuming the cycle, so a click from elsewhere is
-    /// predictable instead of landing on wherever the cycle last stopped.
-    pub fn click_target(&self) -> Option<&Address> {
-        if self.windows.is_empty() {
-            return None;
-        }
-        // A stale focus (naming a window that closed between events) falls
-        // through to the first window: doing nothing on click would be worse
-        // than being slightly arbitrary.
-        let next = self
-            .active_window
-            .as_ref()
-            .and_then(|current| self.windows.iter().position(|w| w == current))
-            .map(|at| (at + 1) % self.windows.len())
-            .unwrap_or(0);
-        self.windows.get(next)
-    }
 }
 
 /// Key prefix for a tray item. The D-Bus service follows, which is both the
@@ -1411,41 +1388,6 @@ mod tests {
             unread: 0,
             downloading: 0,
         }
-    }
-
-    #[test]
-    fn repeated_clicks_cycle_and_wrap() {
-        let i = item(&["a", "b", "c"], Some("a"));
-        assert_eq!(i.click_target(), Some(&Address::parse("b")));
-        let i = item(&["a", "b", "c"], Some("c"));
-        // Wraps back to the first rather than stopping at the end.
-        assert_eq!(i.click_target(), Some(&Address::parse("a")));
-    }
-
-    #[test]
-    fn clicking_from_elsewhere_jumps_to_the_first_window() {
-        let i = item(&["a", "b", "c"], None);
-        assert_eq!(i.click_target(), Some(&Address::parse("a")));
-    }
-
-    #[test]
-    fn single_window_click_is_idempotent() {
-        // Focusing the only window again must not wrap to nothing.
-        let i = item(&["a"], Some("a"));
-        assert_eq!(i.click_target(), Some(&Address::parse("a")));
-    }
-
-    #[test]
-    fn nothing_running_has_no_target_so_the_caller_launches() {
-        assert_eq!(item(&[], None).click_target(), None);
-    }
-
-    #[test]
-    fn stale_focus_falls_back_to_the_first_window() {
-        // Focus can name a window that closed between events. Returning
-        // nothing would make the click silently do nothing.
-        let i = item(&["a", "b"], Some("zz"));
-        assert_eq!(i.click_target(), Some(&Address::parse("a")));
     }
 
     fn meta(minimized: bool, recency: i32) -> WindowMeta {

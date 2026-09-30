@@ -216,6 +216,25 @@ impl App {
         use crate::ipc_ctl::Control;
         match cmd {
             Control::Activate(i) => self.activate(i),
+            Control::Minimize => {
+                let cmd = self
+                    .state
+                    .focused_client()
+                    .filter(|c| !c.is_minimized())
+                    .map(|c| {
+                        crate::runtime::DockCommand::minimize(
+                            &c.address,
+                            &crate::state::WindowMeta::of(c),
+                        )
+                    });
+                self.send(cmd);
+            }
+            Control::Restore => {
+                let cmd = self.state.last_minimized().map(|c| {
+                    crate::runtime::DockCommand::restore(&c.address, &crate::state::WindowMeta::of(c))
+                });
+                self.send(cmd);
+            }
             Control::Reveal => self.set_hidden(false),
             Control::Hide => self.set_hidden(true),
             Control::ToggleAutohide => {
@@ -261,11 +280,12 @@ impl App {
             return;
         };
 
-        let cmd = match item.click_target() {
-            Some(addr) => Some(crate::runtime::DockCommand::Focus(addr.clone())),
-            None => (!item.exec.is_empty())
-                .then(|| crate::runtime::DockCommand::Exec(item.exec.clone())),
-        };
+        let cmd = crate::runtime::DockCommand::for_click(item);
+        self.send(cmd);
+    }
+
+    /// Hand a command to the worker, if there is one to hand.
+    fn send(&self, cmd: Option<crate::runtime::DockCommand>) {
         if let (Some(cmd), Some(w)) = (cmd, &self.worker) {
             let _ = w.commands.try_send(cmd);
         }
