@@ -223,6 +223,11 @@ marker. Drives are mounted, unmounted and ejected only when you click, through
 udisks2 and gvfs as you — the way your file manager does it — and the dock never
 writes to one.
 
+Minimizing moves the window to a hidden `special:minimized` workspace and
+gives it one Hyprland tag, `omarchy-dock-home:<workspace>`, so it can go back
+where it was. Restoring removes the tag. Both happen only when you minimize or
+restore, and neither touches a file.
+
 ## What it reads
 
 A few features look at what other programs are doing. All of it stays in the
@@ -387,9 +392,19 @@ puts the file back if Hyprland reports an error. `uninstall` removes it.
 The same actions are available directly:
 
 ```bash
-omarchy-dockctl activate 3        # focus / cycle / launch dock app 3
+omarchy-dockctl activate 3        # focus / minimize / launch dock app 3
+omarchy-dockctl minimize          # minimize the focused window
+omarchy-dockctl restore           # bring back the window minimized last
 omarchy-dockctl toggle-autohide
 omarchy-dockctl reveal | hide | reload | restyle | settings
+```
+
+`install --keys` does not bind minimize. To put it on a key, add a line to
+`~/.config/hypr/bindings.lua`, for example:
+
+```lua
+o.bind("SUPER + CTRL + M", "Minimize window", "omarchy-dockctl minimize")
+o.bind("SUPER + CTRL + SHIFT + M", "Restore window", "omarchy-dockctl restore")
 ```
 
 ## Development
