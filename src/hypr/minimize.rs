@@ -149,4 +149,14 @@ mod tests {
             serde_json::from_str(&format!(r#"{{{base},"tags":["omarchy-dock-home:2"]}}"#)).unwrap();
         assert_eq!(home_of(&new.tags), Some("2".into()));
     }
+
+    #[test]
+    fn a_grouped_window_knows_its_tab_mates_but_not_itself() {
+        let json = r#"{"address":"0x1","class":"c","title":"t","initialClass":"c",
+            "workspace":{"id":3,"name":"3"},"monitor":0,"pid":1,
+            "floating":false,"hidden":false,"mapped":true,"fullscreen":0,
+            "at":[0,0],"size":[1,1],"grouped":["0x1","0x2"]}"#;
+        let c: crate::hypr::model::Client = serde_json::from_str(json).unwrap();
+        assert_eq!(c.tab_mates(), vec![crate::hypr::Address::parse("0x2")]);
+    }
 }

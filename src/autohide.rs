@@ -130,6 +130,7 @@ mod tests {
             size,
             focus_history_id: 0,
             tags: Vec::new(),
+            grouped: Vec::new(),
         }
     }
 

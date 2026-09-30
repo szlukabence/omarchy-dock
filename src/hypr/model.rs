@@ -39,12 +39,25 @@ pub struct Client {
     /// Its tags: static ones as set, window-rule ones with a trailing `*`.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Every window in its tab group, itself included; empty when ungrouped.
+    #[serde(default)]
+    pub grouped: Vec<String>,
 }
 
 impl Client {
     /// Whether this client sits on a special (scratchpad) workspace.
     pub fn is_special(&self) -> bool {
         self.workspace.name.starts_with("special")
+    }
+
+    /// The other windows in its tab group. Hyprland moves a group as one, so
+    /// whatever is done to this window's workspace happens to these too.
+    pub fn tab_mates(&self) -> Vec<Address> {
+        self.grouped
+            .iter()
+            .map(|a| Address::parse(a))
+            .filter(|a| a != &self.address)
+            .collect()
     }
 
     /// Whether the dock has minimized this window.

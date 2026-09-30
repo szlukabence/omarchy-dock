@@ -66,6 +66,8 @@ pub struct WindowMeta {
     pub home: Option<String>,
     /// Hyprland's focus history: lower was focused more recently.
     pub recency: i32,
+    /// The other windows in its tab group, which move with it.
+    pub group: Vec<Address>,
 }
 
 impl WindowMeta {
@@ -76,6 +78,7 @@ impl WindowMeta {
             minimized: c.is_minimized(),
             home: crate::hypr::minimize::home_of(&c.tags),
             recency: c.focus_history_id,
+            group: c.tab_mates(),
         }
     }
 
@@ -1421,6 +1424,7 @@ mod tests {
             minimized,
             home: None,
             recency,
+            group: Vec::new(),
         }
     }
 
@@ -1497,6 +1501,7 @@ mod focus_tests {
             size: (100, 100),
             focus_history_id: 0,
             tags: Vec::new(),
+            grouped: Vec::new(),
         }
     }
 
@@ -1614,6 +1619,7 @@ mod layout_tests {
             size: (10, 10),
             focus_history_id: 1,
             tags: Vec::new(),
+            grouped: Vec::new(),
         }
     }
 
@@ -1828,6 +1834,7 @@ mod workspace_tests {
             size: (100, 100),
             focus_history_id: 0,
             tags: Vec::new(),
+            grouped: Vec::new(),
         }
     }
 

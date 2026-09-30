@@ -34,10 +34,16 @@ pub enum DockCommand {
     SendToWorkspace { window: hypr::Address, workspace: String },
     /// Park a window on `special:minimized`, tagged with the workspace it is
     /// on so it can go back there.
-    Minimize { window: hypr::Address, workspace: String, stale_home: Option<String> },
+    /// `group` is its tab group, which Hyprland moves along with it.
+    Minimize {
+        window: hypr::Address,
+        workspace: String,
+        stale_home: Option<String>,
+        group: Vec<hypr::Address>,
+    },
     /// Send a minimized window home, or to the workspace in front when it
     /// has none, and focus it.
-    Restore { window: hypr::Address, home: Option<String> },
+    Restore { window: hypr::Address, home: Option<String>, group: Vec<hypr::Address> },
     /// A transport command for one media player, addressed by bus name.
     Media { bus: String, action: crate::media::Action },
     /// Deliver a click to a system-tray item, addressed by its D-Bus service.
@@ -50,11 +56,16 @@ impl DockCommand {
             window: window.clone(),
             workspace: meta.workspace.clone(),
             stale_home: meta.home.clone(),
+            group: meta.group.clone(),
         }
     }
 
     pub fn restore(window: &hypr::Address, meta: &crate::state::WindowMeta) -> Self {
-        DockCommand::Restore { window: window.clone(), home: meta.home.clone() }
+        DockCommand::Restore {
+            window: window.clone(),
+            home: meta.home.clone(),
+            group: meta.group.clone(),
+        }
     }
 
     /// Bring one window to the front: restored if minimized, else focused.
@@ -213,11 +224,11 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
             // put it away, not to go there.
             dispatch::move_window_to_workspace(window, workspace, false).await
         }
-        DockCommand::Minimize { window, workspace, stale_home } => {
+        DockCommand::Minimize { window, workspace, stale_home, group } => {
             let steps = hypr::minimize::minimize_steps(workspace, stale_home.as_deref());
-            run_steps(window, &steps).await
+            run_steps(window, group, &steps).await
         }
-        DockCommand::Restore { window, home } => {
+        DockCommand::Restore { window, home, group } => {
             // Only needed without a home, but one query is cheaper than a
             // second code path.
             let current = hypr::request::monitors()
@@ -227,18 +238,27 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
                 .map(|m| m.active_workspace.name)
                 .unwrap_or_else(|| "1".into());
             let steps = hypr::minimize::restore_steps(home.as_deref(), &current);
-            run_steps(window, &steps).await
+            run_steps(window, group, &steps).await
         }
     }
 }
 
 /// Run minimize or restore steps in order, stopping at the first failure so a
-/// window is never moved without the tag that says where it belongs.
-async fn run_steps(window: &hypr::Address, steps: &[hypr::minimize::Step]) -> anyhow::Result<()> {
+/// window is never moved without the tag that says where it belongs. Tags go
+/// on the whole tab group, since the move takes the group along.
+async fn run_steps(
+    window: &hypr::Address,
+    group: &[hypr::Address],
+    steps: &[hypr::minimize::Step],
+) -> anyhow::Result<()> {
     use hypr::{dispatch, minimize::Step};
     for step in steps {
         match step {
-            Step::Tag(tag) => dispatch::tag_window(window, tag).await?,
+            Step::Tag(tag) => {
+                for w in std::iter::once(window).chain(group) {
+                    dispatch::tag_window(w, tag).await?;
+                }
+            }
             Step::Move { workspace, follow } => {
                 dispatch::move_window_to_workspace(window, workspace, *follow).await?
             }
@@ -298,11 +318,28 @@ mod tests {
     fn minimizing_remembers_where_the_window_was() {
         let a = hypr::Address::parse("0x1");
         match DockCommand::minimize(&a, &meta("3", Some("7"))) {
-            DockCommand::Minimize { window, workspace, stale_home } => {
+            DockCommand::Minimize { window, workspace, stale_home, .. } => {
                 assert_eq!(window, a);
                 assert_eq!(workspace, "3");
                 assert_eq!(stale_home.as_deref(), Some("7"));
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_group_goes_and_comes_back_tagged_as_one() {
+        // Hyprland moves a whole tab group with any one of its windows, so
+        // every window in it has to carry the home tag, and lose it again.
+        let a = hypr::Address::parse("0x1");
+        let mut m = meta("3", None);
+        m.group = vec![hypr::Address::parse("0x2")];
+        match DockCommand::minimize(&a, &m) {
+            DockCommand::Minimize { group, .. } => assert_eq!(group, m.group),
+            other => panic!("{other:?}"),
+        }
+        match DockCommand::restore(&a, &m) {
+            DockCommand::Restore { group, .. } => assert_eq!(group, m.group),
             other => panic!("{other:?}"),
         }
     }
