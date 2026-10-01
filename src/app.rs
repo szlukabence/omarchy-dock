@@ -16,6 +16,11 @@ use crate::state::DockState;
 use crate::theme::shell::Shell;
 use crate::theme::{css, Palette};
 use crate::state::{DockItem, ItemKind};
+
+/// How long a burst of focus events gets to settle before the dock decides
+/// what focus landing on a minimized window meant. Hyprland sends a burst
+/// within one dispatch, so this only has to outlast the queue.
+const FOCUS_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 use crate::ui::menu::MenuAction;
 use crate::ui::DockSurface;
 
@@ -132,12 +137,14 @@ impl App {
                 true
             }
             ActiveWindowAddr(addr) => {
-                // A minimized window focused from outside the dock comes home
-                // instead of showing in the opened `special:minimized`.
-                let cmd = self.state.focus_event(addr).map(|c| {
-                    crate::runtime::DockCommand::restore(&c.address, &crate::state::WindowMeta::of(&c))
-                });
-                self.send(cmd);
+                // Focus landing on a minimized window is decided once the
+                // burst is over: Hyprland may pass through another first.
+                if self.state.focus_event(addr) {
+                    let tx = self.tx.clone();
+                    glib::timeout_add_local_once(FOCUS_SETTLE, move || {
+                        let _ = tx.try_send(AppEvent::FocusSettled);
+                    });
+                }
                 // Focus drives both the active indicator and intelligent
                 // hiding, and the new window's geometry may differ.
                 self.request_snapshot();
@@ -337,6 +344,20 @@ impl App {
         };
 
         let cmd = crate::runtime::DockCommand::for_click(item);
+        self.send(cmd);
+    }
+
+    /// A minimized window focused from outside the dock comes home instead
+    /// of showing in the opened `special:minimized`; one that only had focus
+    /// handed back stays, and the overlay goes.
+    fn settle_focus(&mut self) {
+        use crate::{runtime::DockCommand, state::Summons};
+        let cmd = self.state.settle_focus().map(|s| match s {
+            Summons::Restore(c) => {
+                DockCommand::restore(&c.address, &crate::state::WindowMeta::of(&c))
+            }
+            Summons::HandBack => DockCommand::CloseMinimized,
+        });
         self.send(cmd);
     }
 
@@ -636,6 +657,7 @@ pub fn run() -> glib::ExitCode {
                     AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),
                     AppEvent::Control(c) => app.on_control(c, &gtk_app),
                     AppEvent::Quit => gtk_app.quit(),
+                    AppEvent::FocusSettled => app.settle_focus(),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
                         sync_bar_workspaces(&next);

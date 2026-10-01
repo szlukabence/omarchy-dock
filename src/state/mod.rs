@@ -307,6 +307,16 @@ impl DockItem {
     }
 }
 
+/// What a focus landing on a minimized window was.
+#[derive(Debug)]
+pub enum Summons {
+    /// Something asked for it: bring it home.
+    Restore(Box<Client>),
+    /// Hyprland handed focus back to a window that never lost it: close the
+    /// `special:minimized` overlay that opened, and leave the window parked.
+    HandBack,
+}
+
 /// Key prefix for a tray item. The D-Bus service follows, which is both the
 /// item's identity and the address every click has to be sent to.
 const TRAY_KEY: &str = "__tray:";
@@ -649,6 +659,9 @@ pub struct DockState {
     /// A minimized window already sent home by `recall`, so it is not sent
     /// twice while the snapshot showing it gone is still on its way.
     recalled: Option<Address>,
+    /// Where focus was when a burst of focus events that landed on a
+    /// minimized window began, until `settle_focus` reads it.
+    burst_from: Option<Option<Address>>,
     /// Unread notification counts by item key.
     unread: HashMap<String, usize>,
     /// Whether Omarchy is screen-recording.
@@ -670,6 +683,7 @@ impl DockState {
             focused: None,
             urgent: Vec::new(),
             recalled: None,
+            burst_from: None,
             unread: HashMap::new(),
             recording: false,
             downloads: 0,
@@ -812,28 +826,50 @@ impl DockState {
         self.clients.iter().find(|c| &c.address == addr)
     }
 
-    /// Hyprland reported focus landing on `addr`. If that is a minimized
-    /// window, something outside the dock just focused it — a launch-or-focus
-    /// key, a notification, an app activating itself. Hyprland answers by
-    /// opening all of `special:minimized` over the screen; what the focus
-    /// meant was "bring it back", so the returned window is for the caller to
-    /// restore. Returned once per trip.
-    ///
-    /// Only the focus event counts, never a snapshot: a window minimized with
-    /// nothing else on its workspace keeps focus while parked, so a snapshot
-    /// finds it focused without anyone having asked for it.
-    pub fn focus_event(&mut self, addr: Option<Address>) -> Option<Client> {
+    /// Hyprland reported focus landing on `addr`. Returns whether that
+    /// starts a burst for the caller to settle with `settle_focus` a moment
+    /// later: one landing on a minimized window may be followed at once by
+    /// another, since Hyprland, opening `special:minimized` for one window,
+    /// focuses the one minimized last on the way.
+    pub fn focus_event(&mut self, addr: Option<Address>) -> bool {
+        let before = self.focused.clone();
         self.set_focused(addr);
-        self.recall()
+        let parked = self.focused_client().is_some_and(|c| c.is_minimized());
+        if parked && self.burst_from.is_none() {
+            self.burst_from = Some(before);
+            return true;
+        }
+        false
     }
 
-    fn recall(&mut self) -> Option<Client> {
+    /// What the focus burst came to, once it is over.
+    ///
+    /// Focus ending on a minimized window means something outside the dock
+    /// focused it — a launch-or-focus key, a notification, an app activating
+    /// itself. Hyprland answers by opening all of `special:minimized` over
+    /// the screen; what the focus meant was "bring it back", so the caller
+    /// restores it. Returned once per trip.
+    ///
+    /// Unless focus never left it. A window minimized with nothing else on
+    /// screen keeps focus while parked, and when a menu or the launcher
+    /// closes, Hyprland hands focus back to it the same way — opening
+    /// `special:minimized` too. Nobody asked for it then: the caller closes
+    /// the overlay and the window stays where it is.
+    ///
+    /// Only focus events count, never a snapshot: a snapshot finds the parked
+    /// window focused without anyone having asked for it.
+    pub fn settle_focus(&mut self) -> Option<Summons> {
+        let before = self.burst_from.take()?;
         let c = self.focused_client().filter(|c| c.is_minimized())?.clone();
+        // On its way home already: the focus is the restore's own.
         if self.recalled.as_ref() == Some(&c.address) {
             return None;
         }
+        if before.as_ref() == Some(&c.address) {
+            return Some(Summons::HandBack);
+        }
         self.recalled = Some(c.address.clone());
-        Some(c)
+        Some(Summons::Restore(Box::new(c)))
     }
 
     /// The window minimized last — the most recently focused of the
@@ -1685,49 +1721,79 @@ mod focus_tests {
         c
     }
 
+    fn restored(s: Option<Summons>) -> Option<Address> {
+        match s {
+            Some(Summons::Restore(c)) => Some(c.address),
+            _ => None,
+        }
+    }
+
+    /// One focus event, settled straight away.
+    fn focus(s: &mut DockState, a: &str) -> Option<Summons> {
+        s.focus_event(Some(Address::parse(a)));
+        s.settle_focus()
+    }
+
     #[test]
     fn a_minimized_window_focused_from_outside_is_recalled_once() {
         // A launch-or-focus key focused it; Hyprland opened the whole
         // special:minimized workspace over the screen instead of bringing it back.
         let mut s = DockState::new(vec![]);
-        s.set_clients(vec![parked("a")]);
-        let a = Some(Address::parse("a"));
-        assert_eq!(s.focus_event(a.clone()).map(|c| c.address), a);
+        s.set_clients(vec![client("b"), parked("a")]);
+        s.set_focused(Some(Address::parse("b")));
+        assert_eq!(restored(focus(&mut s, "a")), Some(Address::parse("a")));
         // Until a snapshot shows it gone home, focusing it again sends nothing more.
-        assert!(s.focus_event(a).is_none());
+        assert!(focus(&mut s, "a").is_none());
     }
 
     #[test]
     fn a_window_that_went_home_can_be_recalled_on_its_next_trip() {
         let mut s = DockState::new(vec![]);
-        let a = Some(Address::parse("a"));
-        s.set_clients(vec![parked("a")]);
-        assert!(s.focus_event(a.clone()).is_some());
-        s.set_clients(vec![client("a")]);
-        s.set_clients(vec![parked("a")]);
-        assert!(s.focus_event(a).is_some());
+        s.set_clients(vec![client("b"), parked("a")]);
+        s.set_focused(Some(Address::parse("b")));
+        assert!(restored(focus(&mut s, "a")).is_some());
+        s.set_clients(vec![client("b"), client("a")]);
+        s.set_clients(vec![client("b"), parked("a")]);
+        assert!(focus(&mut s, "b").is_none());
+        assert!(restored(focus(&mut s, "a")).is_some());
     }
 
     #[test]
-    fn a_window_minimized_alone_keeps_focus_and_stays_minimized() {
+    fn focus_handed_back_to_a_window_that_never_lost_it_leaves_it_minimized() {
         // Minimizing the only window on a workspace leaves Hyprland nothing
-        // else to focus, so focus stays on it, parked, and no focus event
-        // follows. The snapshot reporting that is not a summons.
+        // else to focus, so focus stays on it, parked. When a menu or the
+        // launcher closes, Hyprland hands focus back to it — and opens
+        // special:minimized — but nobody asked for the window.
         let mut s = DockState::new(vec![]);
-        let a = Some(Address::parse("a"));
         s.set_clients(vec![client("a")]);
-        assert!(s.focus_event(a.clone()).is_none());
+        assert!(focus(&mut s, "a").is_none());
         s.set_clients(vec![parked("a")]);
-        s.set_focused(a.clone());
-        // Only a focus event recalls, and it still does.
-        assert!(s.focus_event(a).is_some());
+        s.set_focused(Some(Address::parse("a")));
+        assert!(matches!(focus(&mut s, "a"), Some(Summons::HandBack)));
+        // Once focus has been somewhere else, focusing it is a request again.
+        s.set_clients(vec![client("b"), parked("a")]);
+        assert!(focus(&mut s, "b").is_none());
+        assert_eq!(restored(focus(&mut s, "a")), Some(Address::parse("a")));
+    }
+
+    #[test]
+    fn only_where_focus_lands_is_recalled_not_where_it_passed() {
+        // Opening special:minimized for one window, Hyprland focuses the one
+        // minimized last on the way. Only the window asked for comes back.
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("c"), parked("a"), parked("b")]);
+        s.set_focused(Some(Address::parse("c")));
+        s.focus_event(Some(Address::parse("b")));
+        s.focus_event(Some(Address::parse("a")));
+        assert_eq!(restored(s.settle_focus()), Some(Address::parse("a")));
+        assert!(s.settle_focus().is_none());
     }
 
     #[test]
     fn a_focused_window_on_screen_is_not_recalled() {
         let mut s = DockState::new(vec![]);
         s.set_clients(vec![client("a")]);
-        assert!(s.focus_event(Some(Address::parse("a"))).is_none());
+        assert!(focus(&mut s, "a").is_none());
     }
 
     #[test]

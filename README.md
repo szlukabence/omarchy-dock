@@ -138,7 +138,11 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   while all its windows are away. Click its dimmed preview or its menu row —
   or the icon, once all the app's windows are minimized — to bring it back to
   the workspace it came from. Focusing it any other way, like an app's
-  launch-or-focus key or a notification, brings it back too. Tabbed windows
+  launch-or-focus key or a notification, brings it back too. Minimizing hands
+  focus to the window you used last on that workspace, without moving the
+  pointer. With nothing left on screen, Hyprland keeps focus on the minimized
+  window, so until you focus something else, a launch-or-focus key leaves it
+  where it is; the dock still brings it back. Tabbed windows
   go and come back as their whole group, as Hyprland moves them. An app with
   a minimized window keeps its icon even with `items.show_running` off.
 - **Notification badges** (opt-in): an app's icon counts the notifications it

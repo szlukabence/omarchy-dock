@@ -47,6 +47,17 @@ pub async fn monitors() -> Result<Vec<Monitor>> {
     json("j/monitors").await
 }
 
+/// Where the pointer is, in layout coordinates.
+pub async fn cursor_pos() -> Result<(f64, f64)> {
+    #[derive(serde::Deserialize)]
+    struct Pos {
+        x: f64,
+        y: f64,
+    }
+    let p: Pos = json("j/cursorpos").await?;
+    Ok((p.x, p.y))
+}
+
 /// The focused window, if any. Hyprland returns `{}` when nothing is focused,
 /// which is not a `Client`, so parse leniently.
 pub async fn active_window() -> Result<Option<Client>> {

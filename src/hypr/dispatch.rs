@@ -28,6 +28,18 @@ async fn run(expr: &str) -> Result<()> {
     }
 }
 
+/// Run Lua statements in one go: dispatchers in one chunk take effect
+/// together, with no frame drawn in between.
+async fn run_eval(lua: &str) -> Result<()> {
+    let reply = request::raw(&format!("eval {lua}")).await?;
+    let reply = reply.trim();
+    if reply.eq_ignore_ascii_case("ok") || reply.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("eval `{lua}` failed: {reply}"))
+    }
+}
+
 /// Escape a string for embedding in a single-quoted Lua literal.
 ///
 /// Backslash and quote are escaped, and so is every ASCII control character,
@@ -52,6 +64,18 @@ fn lua_str(s: &str) -> String {
 pub async fn focus_window(addr: &Address) -> Result<()> {
     run(&format!(
         "hl.dsp.focus({{ window = {} }})",
+        lua_str(&format!("address:{}", addr.prefixed()))
+    ))
+    .await
+}
+
+/// Focus a window and leave the pointer at `(x, y)`, where it was. Hyprland
+/// warps the pointer to a window it focuses unless `cursor.no_warps` is set;
+/// moving it back in the same chunk means it never visibly jumps.
+pub async fn focus_window_in_place(addr: &Address, x: f64, y: f64) -> Result<()> {
+    run_eval(&format!(
+        "hl.dispatch(hl.dsp.focus({{ window = {} }})); \
+         hl.dispatch(hl.dsp.cursor.move({{ x = {x}, y = {y} }}))",
         lua_str(&format!("address:{}", addr.prefixed()))
     ))
     .await

@@ -63,6 +63,29 @@ pub fn minimize_steps(workspace: &str, stale_home: Option<&str>) -> Vec<Step> {
     steps
 }
 
+/// Who gets focus once `window` is parked away from `workspace`: the window
+/// used last that is still on screen there. Hyprland does not always move
+/// focus itself — with nothing under the pointer it leaves it on the parked
+/// window, keys go to a window nobody can see, and the next menu or launcher
+/// that closes hands focus back to it, which opens `special:minimized`.
+pub fn refocus_target(
+    clients: &[crate::hypr::model::Client],
+    window: &crate::hypr::Address,
+    workspace: &str,
+) -> Option<crate::hypr::Address> {
+    let mates = clients
+        .iter()
+        .find(|c| &c.address == window)
+        .map(|c| c.tab_mates())
+        .unwrap_or_default();
+    clients
+        .iter()
+        .filter(|c| &c.address != window && !mates.contains(&c.address))
+        .filter(|c| c.workspace.name == workspace && c.mapped && !c.hidden)
+        .min_by_key(|c| c.focus_history_id)
+        .map(|c| c.address.clone())
+}
+
 /// Send the window home and follow it there, untag it, then focus it. The
 /// tag goes only once the move has worked: a window left parked by a failed
 /// move still knows where home is.
@@ -169,6 +192,47 @@ mod tests {
             unpark_steps(None, "special:scratchpad"),
             vec![Step::Move { workspace: "special:scratchpad".into(), follow: false }]
         );
+    }
+
+    fn window(addr: &str, workspace: &str, history: i32) -> crate::hypr::model::Client {
+        let json = format!(
+            r#"{{"address":"{addr}","class":"c","title":"t","initialClass":"c",
+            "workspace":{{"id":1,"name":"{workspace}"}},"monitor":0,"pid":1,
+            "floating":true,"hidden":false,"mapped":true,"fullscreen":0,
+            "at":[0,0],"size":[1,1],"focusHistoryID":{history}}}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn focus_goes_to_the_window_used_last_on_the_same_workspace() {
+        let addr = crate::hypr::Address::parse;
+        let parked = window("0x1", WORKSPACE, 0);
+        let clients = [
+            parked.clone(),
+            window("0x2", "3", 4),
+            window("0x3", "3", 2),
+            // More recent, but somewhere else: not on screen here.
+            window("0x4", "5", 1),
+        ];
+        assert_eq!(refocus_target(&clients, &parked.address, "3"), Some(addr("0x3")));
+        // Nothing else there: nobody to hand focus to.
+        assert_eq!(refocus_target(&clients, &parked.address, "7"), None);
+    }
+
+    #[test]
+    fn focus_skips_tab_mates_hidden_windows_and_other_minimized_ones() {
+        let addr = crate::hypr::Address::parse;
+        let mut parked = window("0x1", WORKSPACE, 0);
+        parked.grouped = vec!["0x1".into(), "0x2".into()];
+        let mut mate = window("0x2", WORKSPACE, 1);
+        mate.grouped = parked.grouped.clone();
+        let mut hidden = window("0x3", "3", 2);
+        hidden.hidden = true;
+        let other_parked = window("0x4", WORKSPACE, 3);
+        let shown = window("0x5", "3", 9);
+        let clients = [parked.clone(), mate, hidden, other_parked, shown];
+        assert_eq!(refocus_target(&clients, &parked.address, "3"), Some(addr("0x5")));
     }
 
     #[test]

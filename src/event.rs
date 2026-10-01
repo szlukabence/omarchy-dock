@@ -46,6 +46,8 @@ pub enum AppEvent {
     Control(crate::ipc_ctl::Control),
     /// The dock was asked to stop (SIGTERM, SIGINT or SIGHUP).
     Quit,
+    /// A burst of focus events that landed on a minimized window is over.
+    FocusSettled,
 }
 
 pub type Sender = async_channel::Sender<AppEvent>;

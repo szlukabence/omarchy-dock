@@ -52,6 +52,9 @@ pub enum DockCommand {
         home: Option<String>,
         group: Vec<hypr::Address>,
     },
+    /// Close `special:minimized` if it is open: Hyprland opened it to show
+    /// a parked window it handed focus back to.
+    CloseMinimized,
     /// A transport command for one media player, addressed by bus name.
     Media { bus: String, action: crate::media::Action },
     /// Deliver a click to a system-tray item, addressed by its D-Bus service.
@@ -245,7 +248,11 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
         }
         DockCommand::Minimize { window, workspace, stale_home, group } => {
             let steps = hypr::minimize::minimize_steps(workspace, stale_home.as_deref());
-            run_steps(window, group, &steps).await
+            run_steps(window, group, &steps).await?;
+            if let Err(e) = hand_off_focus(window, workspace).await {
+                tracing::warn!(error = %e, "moving focus off a minimized window failed");
+            }
+            Ok(())
         }
         DockCommand::Restore { window, home, group } => {
             // The workspace in front is only needed without a home, and a
@@ -260,14 +267,54 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
                     .map(|m| m.active_workspace.name)
                     .unwrap_or_else(|| "1".into())
             };
+            // Closed first if something opened it: a window moved out of an
+            // open special workspace hands focus to the next one in there,
+            // which would read as that one being asked for too.
+            if let Err(e) = close_minimized().await {
+                tracing::warn!(error = %e, "closing special:minimized failed");
+            }
             let steps = hypr::minimize::restore_steps(home.as_deref(), &current);
             run_steps(window, group, &steps).await
         }
+        DockCommand::CloseMinimized => close_minimized().await,
         DockCommand::Unpark { window, workspace, home, group } => {
             let steps = hypr::minimize::unpark_steps(home.as_deref(), workspace);
             run_steps(window, group, &steps).await
         }
     }
+}
+
+/// Close `special:minimized` if it is open. A toggle opens it when closed,
+/// so only when it shows.
+async fn close_minimized() -> anyhow::Result<()> {
+    let open = hypr::request::monitors().await?.iter().any(|m| {
+        m.special_workspace
+            .as_ref()
+            .is_some_and(|w| w.name == hypr::minimize::WORKSPACE)
+    });
+    if open {
+        let name = hypr::minimize::WORKSPACE.trim_start_matches("special:");
+        hypr::dispatch::toggle_special(name).await?;
+    }
+    Ok(())
+}
+
+/// Give focus to a window still on screen once `window` is parked, if
+/// Hyprland left it on the parked one. The window is already minimized by
+/// then, so a failure here costs only the focus.
+async fn hand_off_focus(window: &hypr::Address, workspace: &str) -> anyhow::Result<()> {
+    let still_focused = hypr::request::active_window()
+        .await?
+        .is_some_and(|c| &c.address == window);
+    if !still_focused {
+        return Ok(());
+    }
+    let clients = hypr::request::clients().await?;
+    let Some(next) = hypr::minimize::refocus_target(&clients, window, workspace) else {
+        return Ok(());
+    };
+    let (x, y) = hypr::request::cursor_pos().await?;
+    hypr::dispatch::focus_window_in_place(&next, x, y).await
 }
 
 /// Run minimize or restore steps in order, stopping at the first failure so a
