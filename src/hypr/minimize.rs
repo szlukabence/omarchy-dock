@@ -63,25 +63,26 @@ pub fn minimize_steps(workspace: &str, stale_home: Option<&str>) -> Vec<Step> {
     steps
 }
 
-/// Untag, send the window home and follow it there, then focus it.
+/// Send the window home and follow it there, untag it, then focus it. The
+/// tag goes only once the move has worked: a window left parked by a failed
+/// move still knows where home is.
 pub fn restore_steps(home: Option<&str>, current: &str) -> Vec<Step> {
-    let mut steps = Vec::new();
+    let mut steps =
+        vec![Step::Move { workspace: restore_target(home, current), follow: true }];
     if let Some(h) = home {
         steps.push(Step::Tag(format!("-{HOME_TAG}{h}")));
     }
-    steps.push(Step::Move { workspace: restore_target(home, current), follow: true });
     steps.push(Step::Focus);
     steps
 }
 
-/// A minimized window dropped on a workspace tile: untag it and send it
-/// there, without following — a drop puts a window away, it doesn't go to it.
+/// A minimized window dropped on a workspace tile: send it there without
+/// following — a drop puts a window away, it doesn't go to it — then untag it.
 pub fn unpark_steps(home: Option<&str>, workspace: &str) -> Vec<Step> {
-    let mut steps = Vec::new();
+    let mut steps = vec![Step::Move { workspace: workspace.into(), follow: false }];
     if let Some(h) = home {
         steps.push(Step::Tag(format!("-{HOME_TAG}{h}")));
     }
-    steps.push(Step::Move { workspace: workspace.into(), follow: false });
     steps
 }
 
@@ -137,12 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn restoring_untags_then_follows_the_window_home() {
+    fn restoring_follows_the_window_home_then_untags_it() {
+        // Moved first: if the move fails, the window is still parked and
+        // still knows where home is.
         assert_eq!(
             restore_steps(Some("3"), "1"),
             vec![
-                Step::Tag("-omarchy-dock-home:3".into()),
                 Step::Move { workspace: "3".into(), follow: true },
+                Step::Tag("-omarchy-dock-home:3".into()),
                 Step::Focus,
             ]
         );
@@ -158,8 +161,8 @@ mod tests {
         assert_eq!(
             unpark_steps(Some("3"), "5"),
             vec![
-                Step::Tag("-omarchy-dock-home:3".into()),
                 Step::Move { workspace: "5".into(), follow: false },
+                Step::Tag("-omarchy-dock-home:3".into()),
             ]
         );
         assert_eq!(

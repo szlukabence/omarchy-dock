@@ -261,7 +261,9 @@ async fn execute(cmd: &DockCommand) -> anyhow::Result<()> {
 
 /// Run minimize or restore steps in order, stopping at the first failure so a
 /// window is never moved without the tag that says where it belongs. Tags go
-/// on the whole tab group, since the move takes the group along.
+/// on the whole tab group, since the move takes the group along; a tab-mate
+/// that closed since the last snapshot is skipped rather than stopping the
+/// window that was asked for.
 async fn run_steps(
     window: &hypr::Address,
     group: &[hypr::Address],
@@ -271,8 +273,11 @@ async fn run_steps(
     for step in steps {
         match step {
             Step::Tag(tag) => {
-                for w in std::iter::once(window).chain(group) {
-                    dispatch::tag_window(w, tag).await?;
+                dispatch::tag_window(window, tag).await?;
+                for w in group {
+                    if let Err(e) = dispatch::tag_window(w, tag).await {
+                        tracing::warn!(window = %w, error = %e, "tagging a tab-mate failed");
+                    }
                 }
             }
             Step::Move { workspace, follow } => {
