@@ -37,6 +37,10 @@ optdepends=(
   'omarchy: theme tokens, menu, notifications, and the shell integration'
   'hyprland: window state, workspaces, and dispatching'
   'ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash'
+  'gvfs: removable drives in the dock'
+  'gvfs-mtp: Android phones'
+  'gvfs-gphoto2: cameras'
+  'gvfs-afc: iPhones'
 )
 
 # Pacman should auto-remove the prebuilt variant when switching to source.

@@ -163,7 +163,9 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
   in your file manager — mounting it first if need be, and letting you pick
   the partition when it has several — and right-click to eject the whole
   device; the dock tells you when it is safe to pull out. Internal disks never
-  show.
+  show. Drives need `gvfs`, which comes with Omarchy's file manager; phones
+  and cameras need its backends too: `gvfs-mtp` for Android, `gvfs-afc` for
+  iPhones and `gvfs-gphoto2` for cameras.
 - **A workspace strip and scratchpad tile**, styled like the bar's own. Click a
   tile to switch, or scroll over the strip to step through them; drop an app
   icon on one to send that window there.

@@ -17,6 +17,10 @@ pkgbase = omarchy-dock
 	optdepends = omarchy: theme tokens, menu, notifications, and the shell integration
 	optdepends = hyprland: window state, workspaces, and dispatching
 	optdepends = ttf-jetbrains-mono-nerd: glyphs for the launcher, folder stacks and Trash
+	optdepends = gvfs: removable drives in the dock
+	optdepends = gvfs-mtp: Android phones
+	optdepends = gvfs-gphoto2: cameras
+	optdepends = gvfs-afc: iPhones
 	conflicts = omarchy-dock-bin
 	options = !debug
 	source = omarchy-dock::git+https://github.com/szlukabence/omarchy-dock.git#commit=0ca99e3a662751e849d182f622a46f2e26446a2f
