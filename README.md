@@ -115,6 +115,13 @@ errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 
 ## What it does
 
+| | |
+| --- | --- |
+| ![Hover previews of an app's two windows](screenshots/previews.png) | ![A minimized window, dimmed in the previews](screenshots/minimize.png) |
+| Rest on an app to see its windows, and click one to go to it. | Minimize from the dock: the window waits, dimmed, until you bring it back. |
+| ![The window menu, with restore, minimize and move buttons](screenshots/menu.png) | ![A USB stick in the dock, with Open and Eject](screenshots/drives.png) |
+| Every window in the menu, to restore, minimize or move to another workspace. | USB sticks, SD cards and phones show while plugged in, ready to open or eject. |
+
 - **Pinned and running apps**, with running indicators, window-count badges,
   and a pulse when an app asks for attention. Click to focus, click the app in
   front to minimize it, click an idle icon to launch, middle-click for a new
@@ -318,6 +325,11 @@ hl.layer_rule({ match = { namespace = "^omarchy-dock$" }, blur = true, ignore_al
 Omarchy's own `dock.json`**, so switching from the stock dock keeps your pins.
 Edits apply on save — no restart. Changing the theme with `omarchy theme set`
 restyles the dock live.
+
+The common settings are also in a window: **Dock → Settings** in the Omarchy
+menu, or `omarchy-dockctl settings`.
+
+![The dock settings window](screenshots/settings.png)
 
 Notable keys:
 
