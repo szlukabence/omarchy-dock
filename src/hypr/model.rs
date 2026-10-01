@@ -33,8 +33,9 @@ pub struct Client {
     pub fullscreen: i32,
     pub at: (i32, i32),
     pub size: (i32, i32),
-    /// Lower means more recently focused; 0 is the active window.
-    #[serde(default)]
+    /// Lower means more recently focused; 0 is the active window. Hyprland
+    /// spells it `focusHistoryID`, which camelCase would not match.
+    #[serde(default, rename = "focusHistoryID")]
     pub focus_history_id: i32,
     /// Its tags: static ones as set, window-rule ones with a trailing `*`.
     #[serde(default)]
