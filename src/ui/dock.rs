@@ -552,8 +552,10 @@ impl DockSurface {
             }
         }
 
-        // Test hook: an app cannot be made to ask for attention on cue, so
-        // this starts the attention pulse on the given slot.
+        // Test hook, debug builds only: an app cannot be made to ask for
+        // attention on cue, so this starts the attention pulse on the given
+        // slot.
+        #[cfg(debug_assertions)]
         if let Ok(n) = std::env::var("OMARCHY_DOCK_FORCE_ATTENTION") {
             if let Ok(i) = n.parse::<usize>() {
                 let st = state.clone();
@@ -1460,25 +1462,50 @@ fn attach_drag(
     slot.add_controller(source);
 }
 
+/// A pinned item's place along the dock's main axis.
+#[derive(Debug, Clone, Copy)]
+struct PinSlot {
+    slot: usize,
+    pin: usize,
+    start: f64,
+    extent: f64,
+}
+
 /// Which rendered slot a drop at `pos` would insert before, and the pinned
 /// index that corresponds to.
 ///
 /// Compares against slot centres so an item can be placed before the first
-/// entry as well as after the last.
-fn drop_position(s: &State, pos: f64, icon: f64) -> Option<(usize, usize)> {
-    let horizontal = s.geom.horizontal();
-    let mut result = None;
-    for (i, item) in s.data.iter().enumerate() {
-        let Some(pin) = item.pin_index else { continue };
-        let Some((sx, sy)) = s.geom.slots.get(i).copied() else { continue };
-        let extent = s.geom.extents.get(i).copied().unwrap_or(icon);
-        let centre = if horizontal { sx + extent / 2.0 } else { sy + extent / 2.0 };
-        if pos < centre {
-            return Some((i, pin));
+/// entry as well as after the last. A pin dragged past the end goes last,
+/// wherever it is let go; `near` limits the drop to that distance from the
+/// pinned icons, so a running app is pinned only when dropped among them and
+/// not by a drag that strays and is let go over its own spot.
+fn insertion_point(pins: &[PinSlot], pos: f64, near: Option<f64>) -> Option<(usize, usize)> {
+    let (first, last) = (pins.first()?, pins.last()?);
+    if let Some(margin) = near {
+        if pos < first.start - margin || pos > last.start + last.extent + margin {
+            return None;
         }
-        result = Some((i + 1, pin + 1));
     }
-    result
+    let before = pins.iter().find(|p| pos < p.start + p.extent / 2.0);
+    Some(before.map_or((last.slot + 1, last.pin + 1), |p| (p.slot, p.pin)))
+}
+
+/// `insertion_point` over the dock as it is laid out now; `app` is a running
+/// app being pinned rather than a pin being moved.
+fn drop_position(s: &State, pos: f64, icon: f64, app: bool) -> Option<(usize, usize)> {
+    let horizontal = s.geom.horizontal();
+    let pins: Vec<PinSlot> = s
+        .data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let pin = item.pin_index?;
+            let (sx, sy) = s.geom.slots.get(i).copied()?;
+            let extent = s.geom.extents.get(i).copied().unwrap_or(icon);
+            Some(PinSlot { slot: i, pin, start: if horizontal { sx } else { sy }, extent })
+        })
+        .collect();
+    insertion_point(&pins, pos, app.then_some(icon / 2.0))
 }
 
 /// The slot of the workspace (or scratchpad) tile under a surface point.
@@ -1558,6 +1585,9 @@ fn attach_drop(
 ) {
     let target =
         gtk::DropTarget::new(glib::BoxedAnyObject::static_type(), gdk::DragAction::MOVE);
+    // The drag comes from this process, so its value is at hand during the
+    // motion already: the icons part only where the drop would land.
+    target.set_preload(true);
     let state = state.clone();
     let sink = sink.clone();
     let icon = cfg.dock.icon_size;
@@ -1565,16 +1595,23 @@ fn attach_drop(
     // Preview: part the icons at the prospective insertion point.
     {
         let state = state.clone();
-        target.connect_motion(move |_, x, y| {
-            let (at, tile) = {
+        target.connect_motion(move |t, x, y| {
+            let app = t
+                .value()
+                .and_then(|v| v.get::<glib::BoxedAnyObject>().ok())
+                .is_some_and(|b| {
+                    b.try_borrow::<Dragged>().is_ok_and(|d| matches!(*d, Dragged::App(_)))
+                });
+            let (at, tile, pinned) = {
                 let s = state.borrow();
+                let pinned = s.data.iter().any(|d| d.pin_index.is_some());
                 // Over a workspace tile the drop is a "send there", so the
                 // icons must not part as if something were being inserted.
                 match workspace_slot(&s, x, y) {
-                    Some(tile) => (None, Some(tile)),
+                    Some(tile) => (None, Some(tile), pinned),
                     None => {
                         let pos = if s.geom.horizontal() { x } else { y };
-                        (drop_position(&s, pos, icon).map(|(i, _)| i), None)
+                        (drop_position(&s, pos, icon, app).map(|(i, _)| i), None, pinned)
                     }
                 }
             };
@@ -1583,7 +1620,13 @@ fn attach_drop(
             // the way it does under the mouse; the target says which one the
             // window would go to. No previews mid-drag.
             hover_to(&state, tile, false);
-            gdk::DragAction::MOVE
+            // A running app away from the pins and off any tile has nowhere
+            // to go: the cursor says so before the button is let go.
+            if app && pinned && at.is_none() && tile.is_none() {
+                gdk::DragAction::empty()
+            } else {
+                gdk::DragAction::MOVE
+            }
         });
     }
     {
@@ -1622,9 +1665,9 @@ fn attach_drop(
                 let pos = if s.geom.horizontal() { x } else { y };
                 // Nothing pinned yet: a running app dropped anywhere becomes
                 // the first pin.
-                let first = matches!(dragged, Dragged::App(_))
-                    && s.data.iter().all(|d| d.pin_index.is_none());
-                drop_position(&s, pos, icon).map(|(_, pin)| pin).or(first.then_some(0))
+                let app = matches!(dragged, Dragged::App(_));
+                let first = app && s.data.iter().all(|d| d.pin_index.is_none());
+                drop_position(&s, pos, icon, app).map(|(_, pin)| pin).or(first.then_some(0))
             };
             // Close the gap immediately: the rebuild that follows will place
             // everything properly, and leaving it open flashes a gap in the
@@ -2922,6 +2965,36 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Three pins in slots 1..=3, 40 wide from x = 50, a launcher in slot 0.
+    const PINS: [PinSlot; 3] = [
+        PinSlot { slot: 1, pin: 0, start: 50.0, extent: 40.0 },
+        PinSlot { slot: 2, pin: 1, start: 90.0, extent: 40.0 },
+        PinSlot { slot: 3, pin: 2, start: 130.0, extent: 40.0 },
+    ];
+
+    #[test]
+    fn a_pin_dropped_anywhere_goes_where_it_lands_or_last() {
+        assert_eq!(insertion_point(&PINS, 60.0, None), Some((1, 0)));
+        assert_eq!(insertion_point(&PINS, 120.0, None), Some((3, 2)));
+        assert_eq!(insertion_point(&PINS, 160.0, None), Some((4, 3)));
+        // Far past the pins: still last, as dragging a pin out there always did.
+        assert_eq!(insertion_point(&PINS, 400.0, None), Some((4, 3)));
+        assert_eq!(insertion_point(&[], 60.0, None), None);
+    }
+
+    #[test]
+    fn a_running_app_is_pinned_only_when_dropped_at_the_pins() {
+        let near = Some(20.0);
+        assert_eq!(insertion_point(&PINS, 120.0, near), Some((3, 2)));
+        // Just past either end still counts.
+        assert_eq!(insertion_point(&PINS, 185.0, near), Some((4, 3)));
+        assert_eq!(insertion_point(&PINS, 35.0, near), Some((1, 0)));
+        // Released over its own spot among the running apps, or anywhere
+        // else away from the pins: no pin.
+        assert_eq!(insertion_point(&PINS, 200.0, near), None);
+        assert_eq!(insertion_point(&PINS, 10.0, near), None);
+    }
 
     fn slide() -> Slide {
         Slide {
