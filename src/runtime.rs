@@ -76,6 +76,17 @@ impl DockCommand {
         }
     }
 
+    /// Put a minimized window back on its home workspace, else on `current`,
+    /// without going there with it.
+    pub fn send_home(window: &hypr::Address, meta: &crate::state::WindowMeta, current: &str) -> Self {
+        DockCommand::Unpark {
+            window: window.clone(),
+            workspace: hypr::minimize::restore_target(meta.home.as_deref(), current),
+            home: meta.home.clone(),
+            group: meta.group.clone(),
+        }
+    }
+
     /// Bring one window to the front: restored if minimized, else focused.
     pub fn open_window(window: &hypr::Address, meta: Option<&crate::state::WindowMeta>) -> Self {
         match meta {
@@ -375,5 +386,26 @@ mod tests {
         ));
         assert!(matches!(DockCommand::open_window(&a, Some(&meta("2", None))), DockCommand::Focus(_)));
         assert!(matches!(DockCommand::open_window(&a, None), DockCommand::Focus(_)));
+    }
+
+    #[test]
+    fn sending_a_window_home_puts_it_back_where_it_came_from() {
+        let a = hypr::Address::parse("0x1");
+        let mut parked = meta("special:minimized", Some("mail"));
+        parked.group = vec![hypr::Address::parse("0x2")];
+        match DockCommand::send_home(&a, &parked, "1") {
+            DockCommand::Unpark { window, workspace, home, group } => {
+                assert_eq!(window, a);
+                assert_eq!(workspace, "name:mail");
+                assert_eq!(home.as_deref(), Some("mail"));
+                assert_eq!(group, parked.group);
+            }
+            other => panic!("{other:?}"),
+        }
+        // No home: the workspace in front.
+        match DockCommand::send_home(&a, &meta("special:minimized", None), "4") {
+            DockCommand::Unpark { workspace, home: None, .. } => assert_eq!(workspace, "4"),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -97,6 +97,8 @@ rm -rf ~/.config/omarchy-dock          # your settings, if you want them gone
 `uninstall` reverses everything `install` did and nothing else. Neither ever
 overwrites or deletes a file that is not byte for byte what the dock wrote —
 this build, an earlier release, or the copy it kept when it last wrote it.
+Before it starts, `uninstall` asks a running dock to put any minimized windows
+back on their workspaces, since nothing else brings them back.
 Running `install` again only refreshes the dock's own files: if the plugin
 directory or the hook holds anything else (your edit, or another plugin), it is
 left alone, the plugin is not enabled, and the report says what was found.
@@ -235,7 +237,10 @@ gives it one Hyprland tag, `omarchy-dock-home:<workspace>`, so it can go back
 where it was. Restoring removes the tag. Both happen only when you minimize, or
 bring a minimized window back — from the dock, or by focusing it some other
 way — and neither touches a file. A minimized window you move out yourself
-keeps its tag until it is minimized again or closed.
+keeps its tag until it is minimized again or closed. The tags are the dock's
+only record, so a restarted dock finds its minimized windows again. Stopping it
+leaves them minimized; `omarchy-dockctl restore --all` puts them all back, and
+`uninstall` does that first.
 
 ## What it reads
 
@@ -248,7 +253,7 @@ dock's memory: nothing is saved to disk or sent anywhere.
 | Notifications, by watching `Notify` calls on the session bus (it listens, never answers) — only while badges are on, which they are not by default | Unread badges | Who sent each one — app name, desktop id, and a browser notification's site — as a count per app. Titles and text are never kept | `items.notification_badges = false` |
 | Media players, over MPRIS | The progress ring and play controls | Title, artist and position of what is playing | — |
 | Your Downloads folder | The download ring | How many partial `.crdownload`/`.part` files are in it | — |
-| Removable drives, through GIO's volume monitor (gvfs and udisks2), and the kernel's mount table for partitions gvfs hides, like Ventoy's `VTOYEFI` | Drive icons and the partition picker | Each drive's name, icon, device path, and which partitions are mounted | `items.show_drives = false` |
+| Removable drives, through GIO's volume monitor (gvfs and udisks2), and the kernel's mount table and `/sys/class/block` for partitions gvfs hides, like Ventoy's `VTOYEFI` | Drive icons and the partition picker | Each drive's name, icon, device path, and which partitions are mounted | `items.show_drives = false` |
 
 ## Looking like Omarchy
 
@@ -389,8 +394,8 @@ That binds a chord plus 1…9 to the first nine apps on the dock — pinned or
 running, plus pinned command tiles, in the order they appear. The launcher,
 dividers, workspace tiles, stacks and Trash are not counted, so adding a divider
 does not renumber anything. A press focuses the app, minimizes it if it is
-already in front, brings back its most recent minimized window if all of them
-are minimized, or launches it.
+already in front, brings back the minimized window you used last if all of
+them are minimized, or launches it.
 
 The default is `SUPER + CTRL + ALT` because every simpler chord with the number
 row is already Omarchy's: `SUPER` switches workspace, `SUPER + SHIFT` and
@@ -405,7 +410,8 @@ The same actions are available directly:
 ```bash
 omarchy-dockctl activate 3        # focus / minimize / launch dock app 3
 omarchy-dockctl minimize          # minimize the focused window
-omarchy-dockctl restore           # bring back the most recent minimized window
+omarchy-dockctl restore           # bring back the minimized window used last
+omarchy-dockctl restore --all     # put every minimized window back where it was
 omarchy-dockctl toggle-autohide
 omarchy-dockctl reveal | hide | reload | restyle | settings
 ```

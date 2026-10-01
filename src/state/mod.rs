@@ -842,6 +842,22 @@ impl DockState {
         self.clients.iter().filter(|c| c.is_minimized()).min_by_key(|c| c.focus_history_id)
     }
 
+    /// Every minimized window, one per tab group: Hyprland moves a group
+    /// with any one of its windows.
+    pub fn minimized(&self) -> Vec<&Client> {
+        let mut seen: Vec<Address> = Vec::new();
+        let mut out = Vec::new();
+        for c in self.clients.iter().filter(|c| c.is_minimized()) {
+            if seen.contains(&c.address) {
+                continue;
+            }
+            seen.push(c.address.clone());
+            seen.extend(c.tab_mates());
+            out.push(c);
+        }
+        out
+    }
+
     pub fn clients(&self) -> &[Client] {
         &self.clients
     }
@@ -1712,6 +1728,21 @@ mod focus_tests {
         let mut s = DockState::new(vec![]);
         s.set_clients(vec![client("a")]);
         assert!(s.focus_event(Some(Address::parse("a"))).is_none());
+    }
+
+    #[test]
+    fn every_minimized_window_is_listed_once_per_tab_group() {
+        // Hyprland moves a tab group with any one of its windows, so the
+        // group is sent home once.
+        let grouped = |a: &str| {
+            let mut c = parked(a);
+            c.grouped = vec!["a".into(), "b".into()];
+            c
+        };
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![grouped("a"), grouped("b"), client("c"), parked("d")]);
+        let listed: Vec<_> = s.minimized().iter().map(|c| c.address.clone()).collect();
+        assert_eq!(listed, vec![Address::parse("a"), Address::parse("d")]);
     }
 
     #[test]

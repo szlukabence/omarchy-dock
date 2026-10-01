@@ -270,6 +270,27 @@ impl App {
                 });
                 self.send(cmd);
             }
+            Control::RestoreAll => {
+                let current = self
+                    .state
+                    .focused_monitor()
+                    .map_or_else(|| "1".to_string(), |m| m.active_workspace.name.clone());
+                let cmds: Vec<_> = self
+                    .state
+                    .minimized()
+                    .into_iter()
+                    .map(|c| {
+                        crate::runtime::DockCommand::send_home(
+                            &c.address,
+                            &crate::state::WindowMeta::of(c),
+                            &current,
+                        )
+                    })
+                    .collect();
+                for cmd in cmds {
+                    self.send(Some(cmd));
+                }
+            }
             Control::Reveal => self.set_hidden(false),
             Control::Hide => self.set_hidden(true),
             Control::ToggleAutohide => {

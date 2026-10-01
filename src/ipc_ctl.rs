@@ -23,6 +23,9 @@ pub enum Control {
     Minimize,
     /// Restore the most recently focused minimized window, of any app.
     Restore,
+    /// Put every minimized window back where it came from, as before
+    /// uninstalling.
+    RestoreAll,
     /// Force the dock visible, hidden, or back to its configured behaviour.
     Reveal,
     Hide,
@@ -60,7 +63,11 @@ pub fn parse(line: &str) -> Option<Control> {
             (n >= 1).then(|| Control::Activate(n - 1))
         }
         "minimize" => Some(Control::Minimize),
-        "restore" => Some(Control::Restore),
+        "restore" => match parts.next() {
+            None => Some(Control::Restore),
+            Some("--all") => Some(Control::RestoreAll),
+            Some(_) => None,
+        },
         "reveal" => Some(Control::Reveal),
         "hide" => Some(Control::Hide),
         "toggle-autohide" => Some(Control::ToggleAutohide),
@@ -144,5 +151,7 @@ mod tests {
     fn minimize_and_restore_are_verbs() {
         assert_eq!(parse("minimize"), Some(Control::Minimize));
         assert_eq!(parse("restore"), Some(Control::Restore));
+        assert_eq!(parse("restore --all"), Some(Control::RestoreAll));
+        assert_eq!(parse("restore --some"), None);
     }
 }

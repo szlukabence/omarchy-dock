@@ -38,7 +38,8 @@ fn main() -> std::process::ExitCode {
              commands:\n  \
              activate <1-9>     focus, minimize, or launch that dock item\n  \
              minimize           minimize the focused window\n  \
-             restore            bring back the most recent minimized window\n  \
+             restore [--all]    bring back the minimized window used last,\n                     \
+             or put every one back where it came from\n  \
              reveal             show the dock now\n  \
              hide               hide the dock now\n  \
              toggle-autohide    switch auto-hide on or off\n  \
@@ -72,7 +73,19 @@ fn main() -> std::process::ExitCode {
             });
             return report(integrate::install(blur, keys.as_deref()), "installed");
         }
-        "uninstall" => return report(integrate::uninstall(), "removed"),
+        "uninstall" => {
+            // Minimized windows are parked on a special workspace that only
+            // the dock brings them back from, so it puts them back first.
+            match send("restore --all") {
+                Ok(()) => println!("asked the dock to put any minimized windows back"),
+                Err(_) => println!(
+                    "note: the dock is not running, so any minimized windows stay on \
+                     special:minimized.\n          Start it and run `omarchy-dockctl restore --all`, \
+                     or show them with\n          hyprctl dispatch \"hl.dsp.workspace.toggle_special('minimized')\""
+                ),
+            }
+            return report(integrate::uninstall(), "removed");
+        }
         "status" => {
             let reports = match integrate::status() {
                 Ok(reports) => reports,
@@ -90,27 +103,26 @@ fn main() -> std::process::ExitCode {
         _ => {}
     }
 
-    let Some(path) = socket_path() else {
-        eprintln!("omarchy-dockctl: XDG_RUNTIME_DIR is not set, so there is no dock to reach");
-        return std::process::ExitCode::FAILURE;
-    };
-    let mut stream = match UnixStream::connect(&path) {
-        Ok(s) => s,
+    match send(&args.join(" ")) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("omarchy-dockctl: cannot reach the dock at {}: {e}", path.display());
-            eprintln!("is omarchy-dock running?");
-            return std::process::ExitCode::FAILURE;
+            eprintln!("omarchy-dockctl: {e}");
+            std::process::ExitCode::FAILURE
         }
-    };
-
-    // One command per line; the dock reads lines.
-    let line = format!("{}\n", args.join(" "));
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("omarchy-dockctl: write failed: {e}");
-        return std::process::ExitCode::FAILURE;
     }
+}
 
-    std::process::ExitCode::SUCCESS
+/// Hand one command line to the running dock.
+fn send(command: &str) -> Result<(), String> {
+    let path = socket_path()
+        .ok_or("XDG_RUNTIME_DIR is not set, so there is no dock to reach")?;
+    let mut stream = UnixStream::connect(&path).map_err(|e| {
+        format!("cannot reach the dock at {}: {e}\nis omarchy-dock running?", path.display())
+    })?;
+    // One command per line; the dock reads lines.
+    stream
+        .write_all(format!("{command}\n").as_bytes())
+        .map_err(|e| format!("write failed: {e}"))
 }
 
 /// Print what an install or uninstall did, and turn a failure into an exit
