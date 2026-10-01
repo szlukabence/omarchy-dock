@@ -446,9 +446,10 @@ fn unescape(field: &str) -> String {
 /// The device mounted at `mount_point`, from `/proc/self/mountinfo` text.
 ///
 /// Each line is `id parent major:minor root mount-point options… - type
-/// source super-options`.
+/// source super-options`. Of several mounts stacked on one point the last
+/// listed is the one on top, so the search runs from the end.
 fn mount_source(mountinfo: &str, mount_point: &Path) -> Option<String> {
-    mountinfo.lines().find_map(|line| {
+    mountinfo.lines().rev().find_map(|line| {
         let (head, tail) = line.split_once(" - ")?;
         let point = head.split(' ').nth(4)?;
         (Path::new(&unescape(point)) == mount_point)
@@ -484,6 +485,20 @@ mod tests {
         // Spaces in a mount point are written as \040.
         assert_eq!(at("/run/media/me/MY STICK").as_deref(), Some("/dev/sdc1"));
         assert_eq!(at("/run/media/me/elsewhere"), None);
+    }
+
+    #[test]
+    fn of_mounts_stacked_on_one_point_the_last_is_the_one_in_use() {
+        // Mounting over a mount point hides what was there; mountinfo lists
+        // the newer mount later.
+        let stacked = "\
+112 30 8:17 / /run/media/me/X rw shared:60 - exfat /dev/sdb1 rw
+130 112 8:33 / /run/media/me/X rw shared:70 - vfat /dev/sdc1 rw
+";
+        assert_eq!(
+            mount_source(stacked, Path::new("/run/media/me/X")).as_deref(),
+            Some("/dev/sdc1")
+        );
     }
 
     #[test]
