@@ -10,7 +10,7 @@ the menus — rather than being a dock that merely runs on the same desktop.
 ![The dock on Omarchy](preview.png)
 
 If the dock earns a place on your desktop, a ❤️ on its
-[Omarchy plugin page](https://omarchyplugins.com/plugin.html?id=io.github.szlukabence.omarchy-dock)
+[Omarchy plugin page](https://plugins.omarchy.org/plugin.html?id=io.github.szlukabence.omarchy-dock)
 helps other people find it.
 
 ## Install
