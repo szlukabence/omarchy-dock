@@ -5,7 +5,7 @@ The plugin files earlier releases wrote, byte for byte, taken from their tags.
 upgrade from one of these releases is recognised as the dock's own files while
 anything else — edited, or another plugin's — is left alone.
 
-- `1.3.0/`, `1.2.6/`, `1.2.5/`, `1.2.4/`, `1.2.3/`, `1.2.2/`, `1.2.1/` —
+- `1.4.0/`, `1.3.0/`, `1.2.6/`, `1.2.5/`, `1.2.4/`, `1.2.3/`, `1.2.2/`, `1.2.1/` —
   `plugins/io.github.szlukabence.omarchy-dock/`.
   1.2.1 kept no copies of what it wrote; later releases did, but their files
   are here too, in case those copies are gone. Add each release's files here
