@@ -423,7 +423,7 @@ impl App {
                 .or_else(|| self.state.focused_monitor());
 
             let Some(monitor) = monitor else { continue };
-            let (w, h) = dock.panel_size;
+            let (w, h) = dock.panel_size();
             let rect = crate::autohide::dock_rect(&self.cfg, monitor, w, h);
             let hide = crate::autohide::should_hide(
                 &self.cfg,
@@ -479,8 +479,18 @@ impl App {
         if handled {
             self.update_autohide();
         } else {
-            self.rebuild(gtk_app);
+            self.replace(&items);
         }
+    }
+
+    /// New icons into the docks that are up, keeping their windows: a new
+    /// window would flicker as Hyprland fades the old one out and this one in.
+    fn replace(&mut self, items: &[DockItem]) {
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
+        for d in &self.docks {
+            d.replace(&fitted(&self.cfg, &kinds, d.monitor.as_ref()), items);
+        }
+        self.update_autohide();
     }
 
     fn rebuild(&mut self, gtk_app: &gtk::Application) {
@@ -588,7 +598,12 @@ pub fn run() -> glib::ExitCode {
                         let entries = crate::desktop::scan();
                         tracing::info!(count = entries.len(), "desktop entries rescanned");
                         app.state.set_entries(entries);
-                        app.rebuild(&gtk_app);
+                        if app.docks.is_empty() {
+                            app.rebuild(&gtk_app);
+                        } else {
+                            let items = app.current_items();
+                            app.replace(&items);
+                        }
                     }
                     // A recording started or stopped; nothing else changed.
                     AppEvent::HidePolicyChanged => {
@@ -886,17 +901,8 @@ fn build_docks(
         return vec![DockSurface::build(gtk_app, cfg, items, None, sink.clone())];
     }
 
-    // Each dock fits its own monitor: with a dock on every screen, a laptop
-    // panel and an external display have different room to offer.
     let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
-    let fitted = |m: &gdk::Monitor| {
-        let vertical = cfg.dock.position.is_vertical();
-        // The same breathing room at the ends as between the dock and its
-        // screen edge, so a full dock still looks placed rather than jammed.
-        let margin = (cfg.dock.edge_offset.max(8)) as f64;
-        let room = crate::ui::dock::usable_span(Some(m), vertical) - 2.0 * margin;
-        fit_to(cfg, &kinds, room)
-    };
+    let fitted = |m: &gdk::Monitor| fitted(cfg, &kinds, Some(m));
 
     match cfg.monitors.mode {
         MonitorMode::All => all
@@ -911,6 +917,20 @@ fn build_docks(
             vec![DockSurface::build(gtk_app, &fitted(chosen), items, Some(chosen), sink.clone())]
         }
     }
+}
+
+/// `cfg` as a dock on `monitor` uses it, shrunk if need be to fit there.
+///
+/// Each dock fits its own monitor: with a dock on every screen, a laptop
+/// panel and an external display have different room to offer.
+fn fitted(cfg: &Config, kinds: &[ItemKind], monitor: Option<&gdk::Monitor>) -> Config {
+    let Some(m) = monitor else { return cfg.clone() };
+    let vertical = cfg.dock.position.is_vertical();
+    // The same breathing room at the ends as between the dock and its screen
+    // edge, so a full dock still looks placed rather than jammed.
+    let margin = (cfg.dock.edge_offset.max(8)) as f64;
+    let room = crate::ui::dock::usable_span(Some(m), vertical) - 2.0 * margin;
+    fit_to(cfg, kinds, room)
 }
 
 /// Turn SIGTERM, SIGINT and SIGHUP into an orderly quit, so shutdown work

@@ -218,15 +218,19 @@ pub struct DockSurface {
     pub window: gtk::ApplicationWindow,
     /// Connector name (e.g. "eDP-1"), matching Hyprland's monitor name.
     pub monitor_name: Option<String>,
+    /// The monitor it was built for, so new icons are fitted to the same room.
+    pub monitor: Option<gdk::Monitor>,
     /// Logical size of the visible glass panel — not the surface, which also
     /// carries magnification headroom and the edge offset as transparent
     /// padding. Auto-hide overlap must be tested against the panel.
-    pub panel_size: (f64, f64),
+    panel_size: Cell<(f64, f64)>,
     /// Slide offset animation, in pixels away from the screen edge.
     slide: Rc<RefCell<Slide>>,
-    /// Kept so later phases can update items in place instead of rebuilding.
-    #[allow(dead_code)]
-    state: Rc<RefCell<State>>,
+    /// The icons and everything that hangs off them. Replaced whole when the
+    /// set of items changes, while the window stays up.
+    state: RefCell<Rc<RefCell<State>>>,
+    app: gtk::Application,
+    sink: ActionSink,
 }
 
 impl DockSurface {
@@ -237,16 +241,141 @@ impl DockSurface {
         monitor: Option<&gdk::Monitor>,
         sink: ActionSink,
     ) -> Self {
+        let window = gtk::ApplicationWindow::builder()
+            .application(app)
+            .decorated(false)
+            .resizable(false)
+            .build();
+        let edge = init_layer_shell(&window, cfg, monitor);
+
+        let resync: Rc<dyn Fn()> = {
+            let sink = sink.clone();
+            Rc::new(move || sink(MenuAction::Rescan))
+        };
+        let slide = Rc::new(RefCell::new(Slide {
+            spring: Spring::at(0.0),
+            hidden: false,
+            peeking: false,
+            held: 0,
+            generation: 0,
+            settle_gen: 0,
+            edge,
+            // Zero: the edge offset lives inside the surface now, so the
+            // surface itself is flush with the screen edge.
+            base_margin: 0,
+            // Set from the icons' geometry by `fit_to_contents`.
+            travel: 0.0,
+            extent: 0.0,
+            away: false,
+            ticking: false,
+            last_us: 0,
+            swap_waiting: false,
+            resync: Some(resync),
+        }));
+
+        let state = Self::contents(app, cfg, items, monitor, sink.clone(), &slide, &window);
+        window.set_child(Some(&state.borrow().fixed));
+
+        let surface = Self {
+            window: window.clone(),
+            monitor_name: monitor.and_then(|m| m.connector()).map(|c| c.to_string()),
+            monitor: monitor.cloned(),
+            panel_size: Cell::new((0.0, 0.0)),
+            slide,
+            state: RefCell::new(state),
+            app: app.clone(),
+            sink,
+        };
+        surface.fit_to_contents();
+        window.present();
+
+        surface.attach_peek(cfg);
+
+        // A rebuild replaces the surface, and the new one never receives an
+        // `enter` for a pointer that was already inside it — so after a drop
+        // or a config change the dock would decide the pointer had left and
+        // hide out from under the cursor. Ask the compositor where the pointer
+        // actually is instead of waiting to be told.
+        surface.sync_peek_to_pointer(cfg);
+
+        surface
+    }
+
+    /// Put in new icons, keeping the window.
+    ///
+    /// Closing the window and opening another makes Hyprland fade the dock out
+    /// and back in, which reads as a flicker every time an app that is not
+    /// pinned opens or closes. The new icons are built while the old ones
+    /// still show and take their place in one frame.
+    ///
+    /// Waits while a menu or a drag holds the dock; the last hold to go asks
+    /// for the state again, which comes back here.
+    pub fn replace(&self, cfg: &Config, items: &[DockItem]) {
+        if self.slide.borrow_mut().defer_swap() {
+            tracing::debug!("new icons wait until the dock is let go");
+            return;
+        }
+        let old = self.state();
+        let previews = old.borrow().previews.clone();
+        if let Some(p) = previews {
+            p.close();
+        }
+        let state = Self::contents(
+            &self.app,
+            cfg,
+            items,
+            self.monitor.as_ref(),
+            self.sink.clone(),
+            &self.slide,
+            &self.window,
+        );
+        self.window.set_child(Some(&state.borrow().fixed));
+        *self.state.borrow_mut() = state;
+        self.fit_to_contents();
+        // A dock whose depth changed slides by a different amount.
+        self.apply_slide(cfg);
+    }
+
+    /// The current icons' state.
+    fn state(&self) -> Rc<RefCell<State>> {
+        self.state.borrow().clone()
+    }
+
+    /// Size of the glass panel the current icons sit on.
+    pub fn panel_size(&self) -> (f64, f64) {
+        self.panel_size.get()
+    }
+
+    /// Take the panel size and slide distances from the current icons.
+    fn fit_to_contents(&self) {
+        let state = self.state();
+        let s = state.borrow();
+        self.panel_size.set((s.geom.panel_w, s.geom.panel_h));
+        let mut slide = self.slide.borrow_mut();
+        // How far the surface must travel to be off-screen, minus the sliver
+        // left behind as a pointer trigger.
+        slide.travel = travel_for(&s.cfg, &s.geom);
+        slide.extent = extent_for(&s.cfg, &s.geom);
+    }
+
+    /// The icons, their panel, and every controller that reads them.
+    #[allow(clippy::too_many_arguments)]
+    fn contents(
+        app: &gtk::Application,
+        cfg: &Config,
+        items: &[DockItem],
+        monitor: Option<&gdk::Monitor>,
+        sink: ActionSink,
+        slide: &Rc<RefCell<Slide>>,
+        window: &gtk::ApplicationWindow,
+    ) -> Rc<RefCell<State>> {
         let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
         let geom = Geometry::compute(cfg, &kinds);
         // Slot order, for the test hooks that address items by index.
         tracing::debug!(
             slots = ?items.iter().enumerate().map(|(i, it)| format!("{i}:{}", it.key)).collect::<Vec<_>>(),
-            "building dock surface"
+            "building dock contents"
         );
-        let travel = travel_for(cfg, &geom);
-        let extent = extent_for(cfg, &geom);
-        let geom_size = (geom.panel_w, geom.panel_h);
 
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(geom.window_w as i32, geom.window_h as i32);
@@ -431,60 +560,22 @@ impl DockSurface {
         // only magnification.
         attach_motion(&fixed, &state, cfg.dock.icon_size);
 
-        let window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .decorated(false)
-            .resizable(false)
-            .child(&fixed)
-            .build();
-
-        let edge = init_layer_shell(&window, cfg, monitor);
-        window.present();
-
-        let slide = Rc::new(RefCell::new(Slide {
-            spring: Spring::at(0.0),
-            hidden: false,
-            peeking: false,
-            held: 0,
-            generation: 0,
-            settle_gen: 0,
-            edge,
-            // Zero: the edge offset lives inside the surface now, so the
-            // surface itself is flush with the screen edge.
-            base_margin: 0,
-            // How far the surface must travel to be off-screen, minus the
-            // sliver left behind as a pointer trigger.
-            travel,
-            extent,
-            away: false,
-            ticking: false,
-            last_us: 0,
-        }));
-
-        let surface = Self {
-            window: window.clone(),
-            monitor_name: monitor.and_then(|m| m.connector()).map(|c| c.to_string()),
-            panel_size: geom_size,
-            slide: slide.clone(),
-            state: state.clone(),
-        };
-
         // Clicks are wired after State exists so a launch can pulse its own
         // icon without a second lookup.
         for (i, slot) in slots.iter().enumerate() {
             let at = &slot_index[i];
             // Separators get clicks too: not to launch anything, but so their
             // right-click menu can remove them.
-            attach_clicks(slot, &sink, &state, at, &slide, &window, cfg);
+            attach_clicks(slot, &sink, &state, at, slide, window, cfg);
             if let Some(item) = items.get(i) {
-                attach_drag(slot, item, &state, at, cfg, &slide, &window);
+                attach_drag(slot, item, &state, at, cfg, slide, window);
             }
         }
         attach_drop(&fixed, &state, &sink, cfg);
-        attach_file_drop(&fixed, &state, &sink, &slide, &window, cfg);
+        attach_file_drop(&fixed, &state, &sink, slide, window, cfg);
         attach_workspace_scroll(&fixed, &state, &sink);
         if cfg.preview.enabled {
-            let previews = Previews::new(app, monitor, &state, &sink, &slide, &window, cfg);
+            let previews = Previews::new(app, monitor, &state, &sink, slide, window, cfg);
             state.borrow_mut().previews = Some(previews);
         }
 
@@ -566,20 +657,11 @@ impl DockSurface {
             }
         }
 
-        surface.attach_peek(cfg);
-
-        // A rebuild replaces the surface, and the new one never receives an
-        // `enter` for a pointer that was already inside it — so after a drop
-        // or a config change the dock would decide the pointer had left and
-        // hide out from under the cursor. Ask the compositor where the pointer
-        // actually is instead of waiting to be told.
-        surface.sync_peek_to_pointer(cfg);
-
-        surface
+        state
     }
 
     pub fn close(&self) {
-        let previews = self.state.borrow().previews.clone();
+        let previews = self.state().borrow().previews.clone();
         if let Some(p) = previews {
             p.close();
         }
@@ -597,16 +679,17 @@ impl DockSurface {
         if fresh {
             // A window opened, closed or retitled under an open strip would
             // leave it showing what was, so it is redrawn from the new data.
-            let previews = self.state.borrow().previews.clone();
+            let previews = self.state().borrow().previews.clone();
             if let Some(p) = previews {
-                p.refresh(&self.state);
+                p.refresh(&self.state());
             }
         }
         fresh
     }
 
     fn refresh_in_place(&self, items: &[DockItem]) -> bool {
-        let mut s = self.state.borrow_mut();
+        let state = self.state();
+        let mut s = state.borrow_mut();
         if s.data.len() != items.len()
             || !s.data.iter().zip(items).all(|(a, b)| a.key == b.key)
         {
@@ -656,14 +739,15 @@ impl DockSurface {
     pub fn reorder(&self, items: &[DockItem]) -> bool {
         // The geometry this surface was built with — fitted to its monitor —
         // not the configured one, or a reorder would undo the fit.
-        let cfg = self.state.borrow().cfg.clone();
+        let cfg = self.state().borrow().cfg.clone();
         let cfg = &cfg;
         // The strip names a slot by index, which is about to mean another item.
-        let previews = self.state.borrow().previews.clone();
+        let previews = self.state().borrow().previews.clone();
         if let Some(p) = previews {
             p.hide();
         }
-        let mut s = self.state.borrow_mut();
+        let state = self.state();
+        let mut s = state.borrow_mut();
 
         // Where each new position's widget currently sits.
         let Some(from) = crate::state::match_permutation(&s.data, items) else {
@@ -739,15 +823,15 @@ impl DockSurface {
             h.target = 0.0;
         }
         drop(s);
-        ensure_ticking(&self.state);
+        ensure_ticking(&self.state());
         true
     }
 
     /// Give the item with `key` one breath of the launch pulse.
     pub fn pulse_key(&self, key: &str) {
-        let at = self.state.borrow().data.iter().position(|d| d.key == key);
+        let at = self.state().borrow().data.iter().position(|d| d.key == key);
         if let Some(i) = at {
-            pulse(&self.state, i);
+            pulse(&self.state(), i);
         }
     }
 
@@ -767,9 +851,9 @@ impl DockSurface {
 
     /// Pulse the item with `key` for an attention request.
     pub fn attention_key(&self, key: &str) {
-        let at = self.state.borrow().data.iter().position(|d| d.key == key);
+        let at = self.state().borrow().data.iter().position(|d| d.key == key);
         if let Some(i) = at {
-            attention(&self.state, i);
+            attention(&self.state(), i);
         }
     }
 
@@ -1314,9 +1398,30 @@ struct Slide {
     extent: f64,
     ticking: bool,
     last_us: i64,
+    /// New icons arrived while something held the dock, and are waiting for
+    /// the last hold to go.
+    swap_waiting: bool,
+    /// Asks for the dock's state again, which brings those icons in.
+    resync: Option<Rc<dyn Fn()>>,
 }
 
 impl Slide {
+    /// Whether a swap of the icons has to wait: a menu or a drag hangs off
+    /// them, and would be taken away mid-use. Records that one is waiting.
+    fn defer_swap(&mut self) -> bool {
+        if self.held > 0 {
+            self.swap_waiting = true;
+        }
+        self.held > 0
+    }
+
+    /// Let go of one hold. True when that was the last one and new icons
+    /// were waiting for it.
+    fn release(&mut self) -> bool {
+        self.held = self.held.saturating_sub(1);
+        self.held == 0 && std::mem::take(&mut self.swap_waiting)
+    }
+
     /// Where the slide should settle, from policy, peek and hold state.
     fn target(&self) -> f64 {
         if self.away {
@@ -1961,13 +2066,14 @@ fn hold(
     // (see GRAB_SETTLE_MS), so it is checked again once things settle.
     let inside = if take { None } else { Some(pointer_inside(window)) };
     let mut recheck = None;
+    let mut resync = None;
 
     {
         let mut s = slide.borrow_mut();
         if take {
             s.held += 1;
-        } else {
-            s.held = s.held.saturating_sub(1);
+        } else if s.release() {
+            resync = s.resync.clone();
         }
         tracing::debug!(take, held = s.held, ?inside, "hold");
         if !take && s.held == 0 {
@@ -1986,6 +2092,11 @@ fn hold(
             drop(s);
             animate_slide_on(slide, window, cfg);
         }
+    }
+
+    // After the borrow: it reaches back into the dock.
+    if let Some(resync) = resync {
+        resync();
     }
 
     if let Some(generation) = recheck {
@@ -3013,7 +3124,23 @@ mod tests {
             extent: 80.0,
             ticking: false,
             last_us: 0,
+            swap_waiting: false,
+            resync: None,
         }
+    }
+
+    #[test]
+    fn new_icons_wait_until_nothing_holds_the_dock() {
+        // A menu or a drag hangs off the icons, so swapping them out from
+        // under it would take it away mid-use.
+        let mut s = slide();
+        assert!(!s.defer_swap(), "nothing holds it: swap now");
+        s.held = 2;
+        assert!(s.defer_swap());
+        assert!(!s.release(), "one hold is still on");
+        assert!(s.release(), "the last hold is gone: swap now");
+        s.held = 1;
+        assert!(!s.release(), "no swap was waiting");
     }
 
     #[test]
