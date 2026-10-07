@@ -16,15 +16,15 @@ helps other people find it.
 ## Install
 
 ```bash
-curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.4.0/omarchy-dock-1.4.0-1-x86_64.pkg.tar.zst
-echo "8b2d8f3b3f9d9e1d3c52db074a14edb6a123b02318aef4ed242ec6865a4297ec  omarchy-dock-1.4.0-1-x86_64.pkg.tar.zst" | sha256sum -c - &&
-  sudo pacman -U omarchy-dock-1.4.0-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/szlukabence/omarchy-dock/releases/download/v1.4.1/omarchy-dock-1.4.1-1-x86_64.pkg.tar.zst
+echo "f571b189c7422ef750b85cea7015ed5fa8baf7c23f7ec55892053c9f7206d6e1  omarchy-dock-1.4.1-1-x86_64.pkg.tar.zst" | sha256sum -c - &&
+  sudo pacman -U omarchy-dock-1.4.1-1-x86_64.pkg.tar.zst
 omarchy plugin add https://github.com/szlukabence/omarchy-dock.git --enable
 omarchy-dockctl install
 ```
 
 The first lines install the dock as an ordinary pacman package from the
-[v1.4.0 release](https://github.com/szlukabence/omarchy-dock/releases/tag/v1.4.0) —
+[v1.4.1 release](https://github.com/szlukabence/omarchy-dock/releases/tag/v1.4.1) —
 prebuilt, nothing to compile. The next adds the Omarchy plugin that starts and
 stops it; the last adds the theme hook and menu entries.
 
