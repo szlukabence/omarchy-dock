@@ -17,7 +17,7 @@ const SEPARATOR_EXTENT: f64 = 13.0;
 /// icon's width — the same narrow pill the bar's workspace widget draws.
 const WORKSPACE_EXTENT_RATIO: f64 = 0.5;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Geometry {
     pub window_w: f64,
     pub window_h: f64,
@@ -36,6 +36,9 @@ pub struct Geometry {
     pub anchor: (f64, f64),
     /// Unit vector pointing away from the screen edge.
     pub lift_dir: (f64, f64),
+    /// Room added at each end of the long axis, beyond what the items need:
+    /// a shrinking dock keeps its old length while its icons glide in.
+    pub pad: f64,
 }
 
 impl Geometry {
@@ -98,6 +101,7 @@ impl Geometry {
                     (icon, icon / 2.0)
                 },
                 lift_dir: if cfg.dock.position == Position::Left { (1.0, 0.0) } else { (-1.0, 0.0) },
+                pad: 0.0,
             }
         } else {
             let panel_w = run + px * 2.0;
@@ -127,6 +131,7 @@ impl Geometry {
                     (icon / 2.0, 0.0)
                 },
                 lift_dir: if cfg.dock.position == Position::Bottom { (0.0, -1.0) } else { (0.0, 1.0) },
+                pad: 0.0,
             }
         }
     }
@@ -145,6 +150,24 @@ impl Geometry {
             (-1.0, 0.0) => (self.panel_x + self.panel_w - thick - 3.0, sy + (icon - len) / 2.0),
             _ => (self.panel_x + 3.0, sy + (icon - len) / 2.0),
         })
+    }
+
+    /// The same layout with `pad` of room at each end of the long axis
+    /// instead of whatever it had.
+    pub fn padded(&self, pad: f64) -> Geometry {
+        let d = pad - self.pad;
+        let mut g = self.clone();
+        g.pad = pad;
+        if g.horizontal() {
+            g.window_w += 2.0 * d;
+            g.panel_x += d;
+            g.slots.iter_mut().for_each(|s| s.0 += d);
+        } else {
+            g.window_h += 2.0 * d;
+            g.panel_y += d;
+            g.slots.iter_mut().for_each(|s| s.1 += d);
+        }
+        g
     }
 
     /// True when the dock runs horizontally, so indicators are wide and short.
@@ -175,5 +198,31 @@ impl Geometry {
             let (w, h) = if self.horizontal() { (e, cross) } else { (cross, e) };
             x >= *sx && x <= sx + w && y >= *sy && y <= sy + h
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_at_the_ends_moves_everything_along_and_comes_off_again() {
+        let mut cfg = Config::default();
+        for position in [Position::Bottom, Position::Left] {
+            cfg.dock.position = position;
+            let g = Geometry::compute(&cfg, &[ItemKind::App, ItemKind::Separator, ItemKind::App]);
+            let p = g.padded(20.0);
+            let h = g.horizontal();
+            let along = |v: (f64, f64)| if h { v.0 } else { v.1 };
+            let length = |g: &Geometry| if h { g.window_w } else { g.window_h };
+            assert_eq!(length(&p), length(&g) + 40.0);
+            for (a, b) in g.slots.iter().zip(&p.slots) {
+                assert_eq!(along(*b), along(*a) + 20.0);
+            }
+            assert_eq!(along((p.panel_x, p.panel_y)), along((g.panel_x, g.panel_y)) + 20.0);
+            assert_eq!(p.panel_w, g.panel_w);
+            assert_eq!(p.panel_h, g.panel_h);
+            assert_eq!(p.padded(0.0), g, "{position:?}");
+        }
     }
 }

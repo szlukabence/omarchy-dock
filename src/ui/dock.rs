@@ -19,6 +19,7 @@ use crate::config::{Config, Hover, Position};
 use crate::runtime::DockCommand;
 use crate::state::{DockItem, Dragged, ItemKind};
 use crate::ui::menu::{self, MenuAction};
+use crate::ui::glide::{self, Rect};
 use crate::ui::preview::{self, Panel};
 use crate::ui::Geometry;
 
@@ -123,6 +124,15 @@ struct State {
     /// the drop position while dragging. Its own spring so it composes with
     /// magnification rather than fighting it.
     shifts: Vec<Spring>,
+    /// Scale per slot while icons glide after a swap: from the size an icon
+    /// was drawn at, or from nothing for a new one, to 1. Apart from the zoom
+    /// spring, which may overshoot; this one must not.
+    grows: Vec<Spring>,
+    /// The glass panel, and its ease from `panel_from` to where the geometry
+    /// puts it: 0 at the start, 1 there.
+    panel: gtk::Widget,
+    panel_from: Rect,
+    panel_glide: Spring,
     /// Rendered index the drop would insert before, while a drag is over the
     /// dock.
     drop_at: Option<usize>,
@@ -155,7 +165,9 @@ impl State {
         // 0..1 as the spring travels from rest to full zoom.
         let p = if zoom > 1.0 { ((s.pos - 1.0) / (zoom - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
         let lift = self.cfg.magnify.lift * p;
-        let k = s.pos as f32;
+        // Never quite zero: a new icon starts from nothing, and a transform
+        // that scales to a point cannot be inverted for input.
+        let k = (s.pos * self.grows[i].pos).max(0.01) as f32;
 
         // The gap opens along the dock's long axis, which is the axis the
         // edge normal is *not* on.
@@ -176,6 +188,23 @@ impl State {
     fn apply(&self, i: usize) {
         self.fixed.set_child_transform(&self.items[i], Some(&self.transform_for(i)));
 
+        // The running dot travels with its icon along the dock, so it does
+        // not wait at the new spot while the icon glides there. A divider's
+        // dot is never put in the dock.
+        if let Some(dot) = self.indicators.get(i).filter(|d| d.parent().is_some()) {
+            if let Some((ix, iy)) = indicator_origin(&self.geom, i, &self.cfg) {
+                let shift = self.shifts[i].pos;
+                let (dx, dy) = if self.geom.horizontal() { (shift, 0.0) } else { (0.0, shift) };
+                self.fixed.set_child_transform(
+                    dot,
+                    Some(&gsk::Transform::new().translate(&graphene::Point::new(
+                        (ix + dx) as f32,
+                        (iy + dy) as f32,
+                    ))),
+                );
+            }
+        }
+
         // The plate follows the slot along the dock's axis so it travels with
         // a drop gap, but it deliberately does not zoom or lift: it is
         // the seat the icon sits in, not part of the icon.
@@ -195,6 +224,49 @@ impl State {
             let level =
                 if self.pulses[i].is_some() { self.pulse_levels[i] } else { self.hovers[i].pos };
             plate.set_opacity(level.clamp(0.0, 1.0));
+        }
+    }
+
+    /// The panel's rectangle as drawn now.
+    fn panel_rect(&self) -> Rect {
+        self.panel_from.lerp(&panel_target(&self.geom), self.panel_glide.pos)
+    }
+
+    fn place_panel(&self) {
+        let (x, y, w, h) = xywh(&self.geom, &self.panel_rect());
+        self.panel.set_size_request(w as i32, h as i32);
+        self.fixed.move_(&self.panel, x, y);
+    }
+
+    /// The dock as drawn right now, for new icons to glide from.
+    fn before(&self) -> glide::Before {
+        let h = self.geom.horizontal();
+        let n = self.items.len().min(self.data.len());
+        glide::Before {
+            keys: self.data[..n].iter().map(|d| crate::state::match_key(d).to_string()).collect(),
+            centres: (0..n)
+                .map(|i| {
+                    let (x, y) = self.geom.slots[i];
+                    (if h { x } else { y }) + self.shifts[i].pos + self.geom.extents[i] / 2.0
+                })
+                .collect(),
+            sizes: (0..n)
+                .map(|i| self.cfg.dock.icon_size * self.springs[i].pos * self.grows[i].pos)
+                .collect(),
+            length: if h { self.geom.window_w } else { self.geom.window_h },
+            depth: if h { self.geom.window_h } else { self.geom.window_w },
+            panel: self.panel_rect(),
+        }
+    }
+
+    /// Take off the room a shrinking dock kept while its icons glided in.
+    fn unpad(&mut self) {
+        self.geom = self.geom.padded(0.0);
+        self.fixed.set_size_request(self.geom.window_w as i32, self.geom.window_h as i32);
+        self.panel_from = panel_target(&self.geom);
+        self.place_panel();
+        for i in 0..self.items.len() {
+            self.apply(i);
         }
     }
 
@@ -273,7 +345,7 @@ impl DockSurface {
             resync: Some(resync),
         }));
 
-        let state = Self::contents(app, cfg, items, monitor, sink.clone(), &slide, &window);
+        let state = Self::contents(app, cfg, items, monitor, sink.clone(), &slide, &window, None);
         window.set_child(Some(&state.borrow().fixed));
 
         let surface = Self {
@@ -316,6 +388,7 @@ impl DockSurface {
             return;
         }
         let old = self.state();
+        let before = old.borrow().before();
         let previews = old.borrow().previews.clone();
         if let Some(p) = previews {
             p.close();
@@ -328,6 +401,7 @@ impl DockSurface {
             self.sink.clone(),
             &self.slide,
             &self.window,
+            Some(&before),
         );
         self.window.set_child(Some(&state.borrow().fixed));
         *self.state.borrow_mut() = state;
@@ -368,9 +442,19 @@ impl DockSurface {
         sink: ActionSink,
         slide: &Rc<RefCell<Slide>>,
         window: &gtk::ApplicationWindow,
+        before: Option<&glide::Before>,
     ) -> Rc<RefCell<State>> {
         let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
         let geom = Geometry::compute(cfg, &kinds);
+        // Icons that were already in the dock start where they were drawn.
+        let glide = before.map(|b| {
+            let keys: Vec<&str> = items.iter().map(crate::state::match_key).collect();
+            glide::plan(b, &keys, &glide_layout(&geom, cfg))
+        });
+        let geom = match &glide {
+            Some(g) => geom.padded(g.pad),
+            None => geom,
+        };
         // Slot order, for the test hooks that address items by index.
         tracing::debug!(
             slots = ?items.iter().enumerate().map(|(i, it)| format!("{i}:{}", it.key)).collect::<Vec<_>>(),
@@ -547,6 +631,10 @@ impl DockSurface {
             items: widgets,
             plates,
             hovers: vec![Spring::at(0.0); widget_count],
+            grows: vec![Spring::at(1.0); widget_count],
+            panel: panel.clone().upcast(),
+            panel_from: panel_target(&geom),
+            panel_glide: Spring::at(1.0),
             slot_index: slot_index.clone(),
             geom,
             cfg: cfg.clone(),
@@ -655,6 +743,28 @@ impl DockSurface {
                     move || attention(&st, i),
                 );
             }
+        }
+
+        if let Some(g) = glide {
+            let mut s = state.borrow_mut();
+            for (j, start) in g.starts.iter().enumerate().take(widget_count) {
+                match start {
+                    Some((shift, scale)) => {
+                        s.shifts[j].pos = *shift;
+                        s.grows[j].pos = *scale;
+                    }
+                    None => s.grows[j].pos = 0.0,
+                }
+            }
+            s.panel_from = g.panel;
+            s.panel_glide.pos = 0.0;
+            // The first frame already shows where everything starts.
+            for i in 0..s.items.len() {
+                s.apply(i);
+            }
+            s.place_panel();
+            drop(s);
+            ensure_ticking(&state);
         }
 
         state
@@ -770,6 +880,7 @@ impl DockSurface {
         s.pulse_levels = from.iter().map(|&i| s.pulse_levels[i]).collect();
         s.shifts = from.iter().map(|&i| s.shifts[i]).collect();
         s.hovers = from.iter().map(|&i| s.hovers[i]).collect();
+        s.grows = from.iter().map(|&i| s.grows[i]).collect();
         s.slot_index = from.iter().map(|&i| s.slot_index[i].clone()).collect();
         s.data = items.to_vec();
 
@@ -787,7 +898,8 @@ impl DockSurface {
 
         // Kinds may have moved, so slot extents change with them.
         let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind).collect();
-        s.geom = Geometry::compute(cfg, &kinds);
+        // Keeping any room a glide still has at the ends.
+        s.geom = Geometry::compute(cfg, &kinds).padded(s.geom.pad);
 
         // Re-place everything. Position lives in the child transform, so this
         // is the same call that drives magnification.
@@ -1792,6 +1904,47 @@ fn attach_drop(
 }
 
 /// Where an item's running indicator goes, in surface coordinates.
+/// A surface rectangle in terms of the dock's axes.
+fn rect_of(geom: &Geometry, x: f64, y: f64, w: f64, h: f64) -> Rect {
+    if geom.horizontal() {
+        Rect { along: x, across: y, length: w, depth: h }
+    } else {
+        Rect { along: y, across: x, length: h, depth: w }
+    }
+}
+
+/// Back from the dock's axes to x, y, width and height.
+fn xywh(geom: &Geometry, r: &Rect) -> (f64, f64, f64, f64) {
+    if geom.horizontal() {
+        (r.along, r.across, r.length, r.depth)
+    } else {
+        (r.across, r.along, r.depth, r.length)
+    }
+}
+
+/// Where the geometry puts the panel.
+fn panel_target(geom: &Geometry) -> Rect {
+    rect_of(geom, geom.panel_x, geom.panel_y, geom.panel_w, geom.panel_h)
+}
+
+/// A new layout as the glide sees it.
+fn glide_layout(geom: &Geometry, cfg: &Config) -> glide::Layout {
+    let h = geom.horizontal();
+    glide::Layout {
+        centres: geom
+            .slots
+            .iter()
+            .zip(&geom.extents)
+            .map(|(&(x, y), e)| (if h { x } else { y }) + e / 2.0)
+            .collect(),
+        icon: cfg.dock.icon_size,
+        length: if h { geom.window_w } else { geom.window_h },
+        depth: if h { geom.window_h } else { geom.window_w },
+        // Bottom and right docks lift towards smaller coordinates.
+        far_edge: geom.lift_dir.0 + geom.lift_dir.1 < 0.0,
+    }
+}
+
 fn indicator_origin(geom: &Geometry, i: usize, cfg: &Config) -> Option<(f64, f64)> {
     let (len, thick) = if geom.horizontal() { (6.0, 3.0) } else { (3.0, 6.0) };
     geom.indicator_at(i, cfg.dock.icon_size, len, thick)
@@ -3029,7 +3182,8 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
             let zoom_busy = !s.springs[i].settled();
             let shift_busy = !s.shifts[i].settled();
             let hover_busy = !s.hovers[i].settled();
-            if !zoom_busy && !shift_busy && !hover_busy {
+            let grow_busy = !s.grows[i].settled();
+            if !zoom_busy && !shift_busy && !hover_busy && !grow_busy {
                 if s.pulses[i].is_some() {
                     s.apply(i);
                 }
@@ -3053,6 +3207,16 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                     moving = true;
                 }
             }
+            if grow_busy {
+                // Critically damped like the gap: the shell's motion eases and
+                // never overshoots.
+                s.grows[i].step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+                if s.grows[i].settled() {
+                    s.grows[i].settle();
+                } else {
+                    moving = true;
+                }
+            }
             if shift_busy {
                 // Critically damped: the gap should part cleanly and hold,
                 // not wobble while the user is aiming a drop.
@@ -3064,6 +3228,19 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                 }
             }
             s.apply(i);
+        }
+
+        if !s.panel_glide.settled() {
+            s.panel_glide.step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+            if s.panel_glide.settled() {
+                s.panel_glide.settle();
+            } else {
+                moving = true;
+            }
+            s.place_panel();
+        }
+        if !moving && s.geom.pad > 0.0 {
+            s.unpad();
         }
 
         if moving {

@@ -2,6 +2,7 @@
 
 pub mod dock;
 pub mod geometry;
+pub mod glide;
 pub mod menu;
 pub mod preview;
 pub mod settings;
