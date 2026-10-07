@@ -69,6 +69,13 @@ const HOVER_DAMPING: f64 = 80.0;
 const SHIFT_STIFFNESS: f64 = 900.0;
 const SHIFT_DAMPING: f64 = 60.0;
 
+/// Spring for the glide after the dock's apps change: icons sliding aside and
+/// easing to their new size, a new one growing in, and the panel following.
+/// About 0.4 s, much softer than the drop gap, which tracks the pointer;
+/// critically damped (2*sqrt(144) = 24), so it never overshoots.
+const GLIDE_STIFFNESS: f64 = 144.0;
+const GLIDE_DAMPING: f64 = 24.0;
+
 /// How long window previews stay up after the pointer leaves their icon. Long
 /// enough to cross the gap between the dock and the strip, short enough that
 /// sweeping past an icon does not leave a strip behind.
@@ -133,6 +140,9 @@ struct State {
     panel: gtk::Widget,
     panel_from: Rect,
     panel_glide: Spring,
+    /// Whether the slots' shifts are a glide rather than a drop gap, which
+    /// moves at the pointer's pace.
+    gliding: bool,
     /// Rendered index the drop would insert before, while a drag is over the
     /// dock.
     drop_at: Option<usize>,
@@ -635,6 +645,7 @@ impl DockSurface {
             panel: panel.clone().upcast(),
             panel_from: panel_target(&geom),
             panel_glide: Spring::at(1.0),
+            gliding: false,
             slot_index: slot_index.clone(),
             geom,
             cfg: cfg.clone(),
@@ -758,6 +769,7 @@ impl DockSurface {
             }
             s.panel_from = g.panel;
             s.panel_glide.pos = 0.0;
+            s.gliding = true;
             // The first frame already shows where everything starts.
             for i in 0..s.items.len() {
                 s.apply(i);
@@ -1777,6 +1789,8 @@ fn set_drop_gap(state: &Rc<RefCell<State>>, at: Option<usize>, icon: f64) {
             return;
         }
         s.drop_at = at;
+        // A drag takes the shifts over from any glide, at its own pace.
+        s.gliding = false;
 
         // Split the gap either side of the insertion point, so the parting is
         // symmetric and the dock does not visibly grow past its own panel.
@@ -3208,9 +3222,7 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                 }
             }
             if grow_busy {
-                // Critically damped like the gap: the shell's motion eases and
-                // never overshoots.
-                s.grows[i].step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+                s.grows[i].step(dt, GLIDE_STIFFNESS, GLIDE_DAMPING);
                 if s.grows[i].settled() {
                     s.grows[i].settle();
                 } else {
@@ -3218,9 +3230,15 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
                 }
             }
             if shift_busy {
-                // Critically damped: the gap should part cleanly and hold,
-                // not wobble while the user is aiming a drop.
-                s.shifts[i].step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+                // Critically damped either way: the gap should part cleanly
+                // and hold, not wobble while the user is aiming a drop, and a
+                // glide takes its own, slower pace.
+                let (k, c) = if s.gliding {
+                    (GLIDE_STIFFNESS, GLIDE_DAMPING)
+                } else {
+                    (SHIFT_STIFFNESS, SHIFT_DAMPING)
+                };
+                s.shifts[i].step(dt, k, c);
                 if s.shifts[i].settled() {
                     s.shifts[i].settle();
                 } else {
@@ -3231,7 +3249,7 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
         }
 
         if !s.panel_glide.settled() {
-            s.panel_glide.step(dt, SHIFT_STIFFNESS, SHIFT_DAMPING);
+            s.panel_glide.step(dt, GLIDE_STIFFNESS, GLIDE_DAMPING);
             if s.panel_glide.settled() {
                 s.panel_glide.settle();
             } else {
@@ -3239,8 +3257,11 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
             }
             s.place_panel();
         }
-        if !moving && s.geom.pad > 0.0 {
-            s.unpad();
+        if !moving {
+            s.gliding = false;
+            if s.geom.pad > 0.0 {
+                s.unpad();
+            }
         }
 
         if moving {
