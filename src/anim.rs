@@ -1,7 +1,5 @@
 //! Animation primitives.
 
-use crate::config::Config;
-
 /// Damped harmonic oscillator, integrated semi-implicitly.
 ///
 /// Preferred over fixed-duration easing because it is interruptible: when the
@@ -39,9 +37,5 @@ impl Spring {
     pub fn settle(&mut self) {
         self.pos = self.target;
         self.vel = 0.0;
-    }
-
-    pub fn step_cfg(&mut self, dt: f64, cfg: &Config) {
-        self.step(dt, cfg.magnify.stiffness, cfg.damping());
     }
 }

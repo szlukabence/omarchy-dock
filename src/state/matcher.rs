@@ -33,13 +33,18 @@ pub struct Matcher {
     entries: Vec<Entry>,
     /// Lowercased match key -> index into `entries`.
     keys: HashMap<String, usize>,
+    /// Lowercased desktop id -> index into `entries`, the first of each.
+    /// `by_id` runs for every pin on every refresh, so it must not scan.
+    ids: HashMap<String, usize>,
 }
 
 impl Matcher {
     pub fn build(entries: Vec<Entry>) -> Self {
         let mut keys: HashMap<String, usize> = HashMap::new();
+        let mut ids: HashMap<String, usize> = HashMap::new();
 
         for (i, e) in entries.iter().enumerate() {
+            ids.entry(e.id.to_lowercase()).or_insert(i);
             // Weakest keys first so stronger ones overwrite them.
             if let Some(exe) = exec_basename(&e.exec) {
                 keys.entry(exe).or_insert(i);
@@ -53,7 +58,7 @@ impl Matcher {
             }
         }
 
-        Self { entries, keys }
+        Self { entries, keys, ids }
     }
 
     /// Resolve a Hyprland window class to its desktop entry.
@@ -73,8 +78,7 @@ impl Matcher {
 
     /// Look an entry up by its desktop id, for pinned items.
     pub fn by_id(&self, id: &str) -> Option<&Entry> {
-        let id = id.to_lowercase();
-        self.entries.iter().find(|e| e.id.to_lowercase() == id)
+        self.ids.get(&id.to_lowercase()).map(|i| &self.entries[*i])
     }
 
     /// Resolve a pinned id to its desktop entry.
@@ -310,6 +314,18 @@ mod tests {
         // Exact desktop id first — the key map would otherwise answer.
         assert_eq!(m.by_id("Hermes").unwrap().exec, "hermes-tui");
         assert_eq!(m.resolve_pin("Hermes").unwrap().exec, "hermes-tui");
+    }
+
+    #[test]
+    fn an_id_is_found_whatever_its_case_and_the_first_of_a_kind_wins() {
+        // Desktop ids are case-insensitive here. Ids that differ only in case
+        // are kept apart by the scan, and the first in its order answers.
+        let m = Matcher::build(vec![
+            entry("Firefox", None, "firefox-first"),
+            entry("firefox", None, "firefox-second"),
+        ]);
+        assert_eq!(m.by_id("FIREFOX").unwrap().exec, "firefox-first");
+        assert!(m.by_id("chromium").is_none());
     }
 
     #[test]

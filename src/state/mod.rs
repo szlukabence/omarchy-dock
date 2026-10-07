@@ -668,6 +668,9 @@ pub struct DockState {
     recording: bool,
     /// Downloads in progress in the Downloads folder.
     downloads: usize,
+    /// The Downloads folder, read once from `user-dirs.dirs` as the file
+    /// watcher does, rather than on every refresh.
+    downloads_dir: Option<std::path::PathBuf>,
 }
 
 impl DockState {
@@ -687,11 +690,16 @@ impl DockState {
             unread: HashMap::new(),
             recording: false,
             downloads: 0,
+            downloads_dir: dirs::download_dir(),
         }
     }
 
     pub fn downloads(&self) -> usize {
         self.downloads
+    }
+
+    pub fn downloads_dir(&self) -> Option<&std::path::Path> {
+        self.downloads_dir.as_deref()
     }
 
     pub fn set_downloads(&mut self, n: usize) {
@@ -1169,11 +1177,10 @@ impl DockState {
             }
         }
 
-        let downloads_dir = dirs::download_dir();
         for folder in cfg.items.folders.iter().filter(|f| f.enabled) {
             let path = crate::config::expand_tilde(&folder.path);
             let downloading =
-                if downloads_dir.as_ref() == Some(&path) { self.downloads } else { 0 };
+                if self.downloads_dir() == Some(path.as_path()) { self.downloads } else { 0 };
             let icon = if folder.icon.is_empty() { "folder".to_string() } else { folder.icon.clone() };
             items.push(DockItem {
                 kind: ItemKind::Folder,

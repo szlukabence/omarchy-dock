@@ -606,7 +606,7 @@ pub fn run() -> glib::ExitCode {
                         // A download landing gets one breath on its stack,
                         // the same "done" the dock gives a launch.
                         if finished {
-                            if let Some(dir) = dirs::download_dir() {
+                            if let Some(dir) = app.state.downloads_dir() {
                                 let key = format!("__folder:{}", dir.display());
                                 for d in &app.docks {
                                     d.pulse_key(&key);
@@ -641,7 +641,9 @@ pub fn run() -> glib::ExitCode {
                         }
                     }
                     AppEvent::HyprSnapshot { clients, monitors, workspaces, focused } => {
-                        tracing::info!(
+                        // Debug, not info: this runs on every focus and
+                        // workspace change.
+                        tracing::debug!(
                             windows = clients.len(),
                             monitors = monitors.len(),
                             "state snapshot"

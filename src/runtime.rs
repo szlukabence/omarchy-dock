@@ -134,7 +134,13 @@ pub fn spawn(tx: Sender, tray: bool, media: bool, badges: bool) -> std::io::Resu
     let (badges_tx, badges_rx) = tokio::sync::watch::channel(badges);
 
     std::thread::Builder::new().name("omarchy-dock-async".into()).spawn(move || {
-        let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        // Two workers, not one per core: everything here waits on a socket
+        // or the bus, and nothing blocks a worker for long.
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!(error = %e, "cannot start async runtime");

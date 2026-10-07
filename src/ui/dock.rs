@@ -2876,7 +2876,9 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
         let dt = (now - s.last_us) as f64 / 1_000_000.0;
         s.last_us = now;
 
-        let cfg = s.cfg.clone();
+        // The two numbers the springs need, not a copy of the whole config
+        // on every frame.
+        let (stiffness, damping) = (s.cfg.magnify.stiffness, s.cfg.damping());
         let mut moving = false;
         for i in 0..s.springs.len() {
             if let Some(mut p) = s.pulses[i] {
@@ -2933,7 +2935,7 @@ fn ensure_ticking(state: &Rc<RefCell<State>>) {
             }
 
             if zoom_busy {
-                s.springs[i].step_cfg(dt, &cfg);
+                s.springs[i].step(dt, stiffness, damping);
                 if s.springs[i].settled() {
                     s.springs[i].settle();
                 } else {
