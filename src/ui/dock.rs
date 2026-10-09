@@ -1602,6 +1602,10 @@ fn clip_input(window: &gtk::ApplicationWindow, slide: &Slide) {
         _ => gtk::cairo::RectangleInt::new(from, 0, to - from, ALL),
     };
     surface.set_input_region(Some(&gtk::cairo::Region::create_rectangle(&rect)));
+    // GTK hands the region to the compositor with the next frame it draws,
+    // and moving the surface draws none: without one, a hidden dock keeps the
+    // region it had on screen, which misses the sliver it left there.
+    window.queue_draw();
 }
 
 fn extent_for(cfg: &Config, geom: &Geometry) -> f64 {
