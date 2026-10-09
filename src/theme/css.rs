@@ -47,7 +47,9 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
     // In the Omarchy style every colour comes from the shell tokens, so the
     // dock cannot drift from the bar. In glass it comes from the palette.
     let (panel, fg) = if omarchy {
-        (shell.popups.clone(), shell.popups.text)
+        // Drawn like a popup, but bordered like the windows it sits beside.
+        let border_width = shell.window_border.unwrap_or(shell.popups.border_width);
+        (Surface { border_width, ..shell.popups.clone() }, shell.popups.text)
     } else {
         (
             Surface {
@@ -601,6 +603,42 @@ mod tests {
         let css = border_rules(&border, 1.0, 1.0, None);
         assert!(!css.contains("border-image"));
         assert!(css.contains("#808080") || css.contains("128, 128, 128"));
+    }
+
+    /// The `.dock-panel` rule, alone.
+    fn panel_rule(css: &str) -> &str {
+        let start = css.find("\n.dock-panel {").expect("a panel rule");
+        let end = start + css[start..].find('}').unwrap();
+        &css[start..end]
+    }
+
+    #[test]
+    fn the_panel_border_is_as_thick_as_the_windows_border() {
+        let (cfg, palette, mut shell) = setup(Style::Omarchy);
+        shell.popups.border_width = 1.0;
+        shell.window_border = Some(3.0);
+        let css = generate(&cfg, &palette, &shell);
+        assert!(panel_rule(&css).contains("border: 3px solid"), "{}", panel_rule(&css));
+        // Menus keep the shell's own width: they are not next to windows.
+        assert!(css.contains("border: 1px solid"));
+
+        // A theme with no window borders gets a dock with none.
+        shell.window_border = Some(0.0);
+        let css = generate(&cfg, &palette, &shell);
+        assert!(panel_rule(&css).contains("border: none"), "{}", panel_rule(&css));
+
+        // Without Hyprland to ask, the shell's width stands.
+        shell.window_border = None;
+        let css = generate(&cfg, &palette, &shell);
+        assert!(panel_rule(&css).contains("border: 1px solid"), "{}", panel_rule(&css));
+    }
+
+    #[test]
+    fn a_glass_panel_keeps_its_hairline() {
+        let (cfg, palette, mut shell) = setup(Style::Glass);
+        shell.window_border = Some(3.0);
+        let css = generate(&cfg, &palette, &shell);
+        assert!(panel_rule(&css).contains("border: 1px solid"), "{}", panel_rule(&css));
     }
 
     #[test]

@@ -37,6 +37,9 @@ pub enum HyprEvent {
     MonitorRemoved(String),
     /// Fullscreen state changed; the dock hides for fullscreen windows.
     Fullscreen(bool),
+    /// Hyprland read its config again: a theme switch, or the user's own
+    /// edit. The dock reads Hyprland's border width and rounding.
+    ConfigReloaded,
     /// The event socket dropped and was re-established. Listeners must
     /// resynchronise, since events emitted while disconnected are lost.
     Reconnected,
@@ -102,6 +105,7 @@ pub fn parse(line: &str) -> Option<HyprEvent> {
         "focusedmon" => HyprEvent::FocusedMonitor(data.split(',').next().unwrap_or("").to_string()),
         "monitorremoved" => HyprEvent::MonitorRemoved(data.to_string()),
         "fullscreen" => HyprEvent::Fullscreen(data.trim() == "1"),
+        "configreloaded" => HyprEvent::ConfigReloaded,
         // `windowtitle` (v1) is superseded by v2, which carries the title too.
         // Layout, submap and screencast events are not dock-relevant.
         _ => return None,
@@ -172,6 +176,12 @@ mod tests {
                 title: "Omarchy dock, phase 2 - Visual Studio Code".into(),
             })
         );
+    }
+
+    #[test]
+    fn a_config_reload_is_reported() {
+        // Empty payload: the event only says that the config was read again.
+        assert_eq!(parse("configreloaded>>"), Some(HyprEvent::ConfigReloaded));
     }
 
     #[test]

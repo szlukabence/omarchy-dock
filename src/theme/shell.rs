@@ -10,9 +10,10 @@
 //! not ship the file at all: Omarchy generates it, but a hand-written or older
 //! theme may not have one.
 //!
-//! Two details are not in this file and are read from elsewhere:
+//! Three details are not in this file and are read from elsewhere:
 //! corner radius, which the shell mirrors from Hyprland's
-//! `decoration:rounding`, and the bar's position, which lives in `shell.json`.
+//! `decoration:rounding`, the windows' border width, Hyprland's
+//! `general:border_size`, and the bar's position, which lives in `shell.json`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -191,6 +192,9 @@ pub struct Shell {
     pub notifications: Surface,
     pub controls: Controls,
     pub metrics: Metrics,
+    /// How thick Hyprland draws window borders, when Hyprland says. A dock
+    /// that stays on screen sits next to windows, so its panel matches them.
+    pub window_border: Option<f64>,
 }
 
 impl Shell {
@@ -250,6 +254,7 @@ impl Shell {
                 spacing_tokens: HashMap::new(),
                 font_tokens: HashMap::new(),
             },
+            window_border: None,
         }
     }
 
@@ -263,12 +268,13 @@ impl Shell {
 
     /// The active theme's tokens, or palette-derived defaults.
     pub fn current(palette: &Palette) -> Self {
-        super::current_theme_dir()
+        let shell = super::current_theme_dir()
             .and_then(|d| Shell::load(&d, palette))
             .unwrap_or_else(|| {
                 tracing::debug!("theme ships no shell.toml; deriving tokens from the palette");
                 Shell::fallback(palette)
-            })
+            });
+        Self { window_border: super::hyprland_border_size(), ..shell }
     }
 
     fn from_table(table: &toml::Table, palette: &Palette) -> Self {
@@ -381,7 +387,7 @@ impl Shell {
             font_tokens: numeric_keys(font.as_ref(), &["base-size"]),
         };
 
-        Self { bar, popups, tooltip, menu, notifications, controls, metrics }
+        Self { bar, popups, tooltip, menu, notifications, controls, metrics, window_border: None }
     }
 }
 

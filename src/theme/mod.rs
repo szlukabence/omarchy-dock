@@ -223,12 +223,24 @@ pub fn icon_theme() -> Option<String> {
 /// Hyprland default when anything goes wrong, including not running under
 /// Hyprland at all.
 pub fn hyprland_rounding() -> Option<f64> {
+    hyprland_int("decoration:rounding")
+}
+
+/// Hyprland's `general:border_size`: how thick window borders are drawn. A
+/// theme may set it, so it is read live rather than assumed.
+pub fn hyprland_border_size() -> Option<f64> {
+    hyprland_int("general:border_size")
+}
+
+/// An int option of Hyprland's, as a number. `None` when it is not set, or
+/// Hyprland cannot be asked.
+fn hyprland_int(option: &str) -> Option<f64> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
     let path = crate::hypr::request_socket().ok()?;
     let mut stream = UnixStream::connect(path).ok()?;
-    stream.write_all(b"j/getoption decoration:rounding").ok()?;
+    stream.write_all(format!("j/getoption {option}").as_bytes()).ok()?;
     stream.shutdown(std::net::Shutdown::Write).ok();
 
     let mut body = String::new();

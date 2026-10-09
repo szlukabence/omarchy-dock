@@ -190,6 +190,11 @@ impl App {
                 self.request_snapshot();
                 false
             }
+            ConfigReloaded => {
+                // The panel's border and corners follow Hyprland's.
+                self.on_control(crate::ipc_ctl::Control::Restyle, gtk_app);
+                false
+            }
             WindowTitle { addr, title } => {
                 // Titles show in the window list and the previews. The key
                 // sequence does not change, so this is a cheap in-place
