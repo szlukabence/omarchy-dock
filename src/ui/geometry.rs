@@ -170,6 +170,17 @@ impl Geometry {
         g
     }
 
+    /// How far out from the screen edge the glass panel reaches: the edge
+    /// offset plus the panel's depth. The headroom beyond it is transparent.
+    pub fn reach(&self) -> f64 {
+        match self.lift_dir {
+            (0.0, -1.0) => self.window_h - self.panel_y,
+            (0.0, _) => self.panel_y + self.panel_h,
+            (-1.0, 0.0) => self.window_w - self.panel_x,
+            _ => self.panel_x + self.panel_w,
+        }
+    }
+
     /// True when the dock runs horizontally, so indicators are wide and short.
     pub fn horizontal(&self) -> bool {
         self.lift_dir.0 == 0.0
@@ -223,6 +234,21 @@ mod tests {
             assert_eq!(p.panel_w, g.panel_w);
             assert_eq!(p.panel_h, g.panel_h);
             assert_eq!(p.padded(0.0), g, "{position:?}");
+        }
+    }
+
+    #[test]
+    fn the_panel_reaches_its_offset_and_depth_out_from_the_screen_edge() {
+        let mut cfg = Config::default();
+        cfg.dock.edge_offset = 12;
+        for position in [Position::Bottom, Position::Top, Position::Left, Position::Right] {
+            cfg.dock.position = position;
+            let g = Geometry::compute(&cfg, &[ItemKind::App, ItemKind::App]);
+            let depth = if g.horizontal() { g.panel_h } else { g.panel_w };
+            assert_eq!(g.reach(), 12.0 + depth, "{position:?}");
+            // The headroom beyond it is what a reserved dock leaves to windows.
+            let surface = if g.horizontal() { g.window_h } else { g.window_w };
+            assert_eq!(surface - g.reach(), cfg.headroom(), "{position:?}");
         }
     }
 }

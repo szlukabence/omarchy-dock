@@ -348,6 +348,7 @@ impl DockSurface {
             // Set from the icons' geometry by `fit_to_contents`.
             travel: 0.0,
             extent: 0.0,
+            reach: None,
             away: false,
             ticking: false,
             last_us: 0,
@@ -370,6 +371,8 @@ impl DockSurface {
         };
         surface.fit_to_contents();
         window.present();
+        // There was no surface to clip before it was presented.
+        clip_input(&window, &surface.slide.borrow());
 
         surface.attach_peek(cfg);
 
@@ -440,6 +443,11 @@ impl DockSurface {
         // left behind as a pointer trigger.
         slide.travel = travel_for(&s.cfg, &s.geom);
         slide.extent = extent_for(&s.cfg, &s.geom);
+        slide.reach = s.cfg.dock.reserve_space.then(|| s.geom.reach());
+        if s.cfg.dock.reserve_space {
+            self.window.set_exclusive_zone(exclusive_zone(&s.geom));
+        }
+        clip_input(&self.window, &slide);
     }
 
     /// The icons, their panel, and every controller that reads them.
@@ -1477,6 +1485,7 @@ fn animate_slide_on(
 
         let margin = s.base_margin - s.spring.pos.round() as i32;
         win.set_margin(s.edge, margin);
+        clip_input(&win, &s);
 
         if settled {
             tracing::debug!(
@@ -1520,6 +1529,10 @@ struct Slide {
     travel: f64,
     /// The surface's full depth: how far it moves to leave the screen whole.
     extent: f64,
+    /// How far out from the screen edge the panel reaches, when the dock
+    /// reserves its space. Only that band takes the pointer then: the
+    /// headroom beyond it hangs over the windows.
+    reach: Option<f64>,
     ticking: bool,
     last_us: i64,
     /// New icons arrived while something held the dock, and are waiting for
@@ -1546,6 +1559,18 @@ impl Slide {
         self.held == 0 && std::mem::take(&mut self.swap_waiting)
     }
 
+    /// The part of the surface's depth that takes the pointer, from its
+    /// start to its end, or `None` for all of it. It follows the slide, so
+    /// the sliver a hidden dock leaves on screen still takes the pointer.
+    fn input_band(&self) -> Option<(f64, f64)> {
+        let reach = self.reach?;
+        let pos = self.spring.pos.max(0.0);
+        Some(match self.edge {
+            Edge::Bottom | Edge::Right => ((self.extent - reach - pos).max(0.0), self.extent),
+            _ => (0.0, (reach + pos).min(self.extent)),
+        })
+    }
+
     /// Where the slide should settle, from policy, peek and hold state.
     fn target(&self) -> f64 {
         if self.away {
@@ -1559,6 +1584,26 @@ impl Slide {
 }
 
 /// The surface's depth away from its screen edge.
+/// The screen space a reserving dock takes: up to the far side of its panel.
+/// Hyprland adds its usual gap beyond that, as it does for the bar.
+fn exclusive_zone(geom: &Geometry) -> i32 {
+    geom.reach().ceil() as i32
+}
+
+/// Let the surface take the pointer only within its slide's input band.
+fn clip_input(window: &gtk::ApplicationWindow, slide: &Slide) {
+    let (Some(surface), Some((from, to))) = (window.surface(), slide.input_band()) else { return };
+    // Along the dock, all of it: the surface's length changes with its
+    // icons, and the compositor keeps the region within the surface anyway.
+    const ALL: i32 = 1 << 16;
+    let (from, to) = (from.floor() as i32, to.ceil() as i32);
+    let rect = match slide.edge {
+        Edge::Bottom | Edge::Top => gtk::cairo::RectangleInt::new(0, from, ALL, to - from),
+        _ => gtk::cairo::RectangleInt::new(from, 0, to - from, ALL),
+    };
+    surface.set_input_region(Some(&gtk::cairo::Region::create_rectangle(&rect)));
+}
+
 fn extent_for(cfg: &Config, geom: &Geometry) -> f64 {
     if cfg.dock.position.is_vertical() { geom.window_w } else { geom.window_h }
 }
@@ -2373,9 +2418,9 @@ fn init_layer_shell(
     window.set_anchor(edge, true);
     window.set_margin(edge, 0);
 
-    if cfg.dock.reserve_space {
-        window.auto_exclusive_zone_enable();
-    } else {
+    // A dock that reserves space takes it from its geometry, in
+    // `fit_to_contents`: not the whole surface, whose headroom is empty.
+    if !cfg.dock.reserve_space {
         // Float over windows without reserving screen space.
         window.set_exclusive_zone(0);
     }
@@ -2887,16 +2932,11 @@ impl Previews {
         let (slot, window_len) = if vertical { (sy, g.window_h) } else { (sx, g.window_w) };
         let along = (span - window_len) / 2.0 + slot + extent / 2.0;
 
-        let mut from_edge = match s.cfg.dock.position {
-            Position::Bottom => g.window_h - g.panel_y,
-            Position::Top => g.panel_y + g.panel_h,
-            Position::Left => g.panel_x + g.panel_w,
-            Position::Right => g.window_w - g.panel_x,
-        };
+        let mut from_edge = g.reach();
         // A dock that reserves its space has already taken that much off the
         // area the strip is placed in.
         if s.cfg.dock.reserve_space {
-            from_edge -= if vertical { g.window_w } else { g.window_h };
+            from_edge -= exclusive_zone(g) as f64;
         }
         Some(preview::Anchor { along, span, from_edge })
     }
@@ -3320,6 +3360,7 @@ mod tests {
             base_margin: 0,
             travel: 76.0,
             extent: 80.0,
+            reach: None,
             ticking: false,
             last_us: 0,
             swap_waiting: false,
@@ -3339,6 +3380,30 @@ mod tests {
         assert!(s.release(), "the last hold is gone: swap now");
         s.held = 1;
         assert!(!s.release(), "no swap was waiting");
+    }
+
+    #[test]
+    fn a_reserving_dock_takes_input_only_where_its_panel_reaches() {
+        let mut s = slide();
+        assert_eq!(s.input_band(), None, "a floating dock takes it everywhere");
+
+        // Shown: the panel band at the screen edge, not the headroom over
+        // the windows.
+        s.reach = Some(50.0);
+        assert_eq!(s.input_band(), Some((30.0, 80.0)));
+        // Slid down by 20: the band moves up the surface with the screen
+        // edge, so what is left on screen still takes the pointer.
+        s.spring = Spring::at(20.0);
+        assert_eq!(s.input_band(), Some((10.0, 80.0)));
+        s.spring = Spring::at(76.0);
+        assert_eq!(s.input_band(), Some((0.0, 80.0)), "the sliver peeks");
+
+        // A top dock measures from the other side.
+        s.edge = Edge::Top;
+        s.spring = Spring::at(0.0);
+        assert_eq!(s.input_band(), Some((0.0, 50.0)));
+        s.spring = Spring::at(20.0);
+        assert_eq!(s.input_band(), Some((0.0, 70.0)));
     }
 
     #[test]
