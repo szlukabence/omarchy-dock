@@ -77,6 +77,7 @@ pub fn should_hide(
     cfg: &Config,
     dock: &Rect,
     monitor_id: i32,
+    shown_special: Option<&str>,
     clients: &[Client],
     focused: Option<&Client>,
 ) -> bool {
@@ -87,7 +88,12 @@ pub fn should_hide(
             // Only the focused window matters: a background window under the
             // dock is not something the user is looking at.
             let Some(c) = focused else { return false };
-            if c.monitor != monitor_id || c.is_special() || !c.mapped || c.hidden {
+            if c.monitor != monitor_id || !c.mapped || c.hidden {
+                return false;
+            }
+            // A scratchpad shown over the workspace covers the dock like any
+            // window; one put away is not on screen, focused or not.
+            if c.is_special() && shown_special != Some(c.workspace.name.as_str()) {
                 return false;
             }
             let _ = clients;
@@ -141,11 +147,11 @@ mod tests {
         let c = cfg(HideMode::Intelligent);
         // A window filling the screen covers the dock.
         let big = client((0, 0), (1728, 1152));
-        assert!(should_hide(&c, &DOCK, 0, &[], Some(&big)));
+        assert!(should_hide(&c, &DOCK, 0, None, &[], Some(&big)));
 
         // A window stopping above the dock does not.
         let small = client((0, 0), (1728, 900));
-        assert!(!should_hide(&c, &DOCK, 0, &[], Some(&small)));
+        assert!(!should_hide(&c, &DOCK, 0, None, &[], Some(&small)));
     }
 
     #[test]
@@ -153,31 +159,39 @@ mod tests {
         let c = cfg(HideMode::Intelligent);
         // Bottom edge exactly meets the dock's top edge.
         let flush = client((0, 0), (1728, 1000));
-        assert!(!should_hide(&c, &DOCK, 0, &[], Some(&flush)));
+        assert!(!should_hide(&c, &DOCK, 0, None, &[], Some(&flush)));
     }
 
     #[test]
-    fn windows_on_other_monitors_and_scratchpads_are_ignored() {
+    fn windows_on_other_monitors_are_ignored() {
         let c = cfg(HideMode::Intelligent);
         let mut other = client((0, 0), (1728, 1152));
         other.monitor = 1;
-        assert!(!should_hide(&c, &DOCK, 0, &[], Some(&other)));
+        assert!(!should_hide(&c, &DOCK, 0, None, &[], Some(&other)));
+    }
 
+    #[test]
+    fn a_scratchpad_counts_only_while_it_is_shown() {
+        let c = cfg(HideMode::Intelligent);
         let mut scratch = client((0, 0), (1728, 1152));
         scratch.workspace.name = "special:scratchpad".into();
-        assert!(!should_hide(&c, &DOCK, 0, &[], Some(&scratch)));
+        // Shown over the workspace, it covers the dock like any window.
+        assert!(should_hide(&c, &DOCK, 0, Some("special:scratchpad"), &[], Some(&scratch)));
+        // Put away, or another special workspace shown instead: not there.
+        assert!(!should_hide(&c, &DOCK, 0, None, &[], Some(&scratch)));
+        assert!(!should_hide(&c, &DOCK, 0, Some("special:minimized"), &[], Some(&scratch)));
     }
 
     #[test]
     fn empty_desktop_keeps_the_dock_visible() {
         let c = cfg(HideMode::Intelligent);
-        assert!(!should_hide(&c, &DOCK, 0, &[], None));
+        assert!(!should_hide(&c, &DOCK, 0, None, &[], None));
     }
 
     #[test]
     fn the_other_modes_ignore_geometry_entirely() {
         let big = client((0, 0), (1728, 1152));
-        assert!(!should_hide(&cfg(HideMode::Never), &DOCK, 0, &[], Some(&big)));
-        assert!(should_hide(&cfg(HideMode::Always), &DOCK, 0, &[], None));
+        assert!(!should_hide(&cfg(HideMode::Never), &DOCK, 0, None, &[], Some(&big)));
+        assert!(should_hide(&cfg(HideMode::Always), &DOCK, 0, None, &[], None));
     }
 }

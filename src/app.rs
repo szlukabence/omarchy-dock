@@ -434,6 +434,11 @@ impl App {
                 &self.cfg,
                 &rect,
                 monitor.id,
+                monitor
+                    .special_workspace
+                    .as_ref()
+                    .map(|w| w.name.as_str())
+                    .filter(|n| !n.is_empty()),
                 self.state.clients(),
                 focused,
             );
