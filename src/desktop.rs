@@ -188,6 +188,22 @@ pub fn icon_file(name: &str) -> Option<PathBuf> {
     icon_file_in(&data_dirs(), name)
 }
 
+/// Whether `path` is named `.png` but holds something else.
+///
+/// Omarchy's web-app installer saves a site's icon as `<name>.png` whatever
+/// the site served, so WebP and `.ico` data end up under PNG names. GTK 4.24
+/// draws an icon by its extension and draws nothing for those, so the dock
+/// loads them itself. A file that cannot be read is left to GTK.
+pub fn mislabelled_png(path: &Path) -> bool {
+    use std::io::Read;
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    let named_png = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    let mut head = [0u8; 8];
+    named_png
+        && std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head)).is_ok()
+        && &head != SIGNATURE
+}
+
 fn icon_file_in(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') {
         return None;
@@ -352,6 +368,26 @@ mod tests {
             std::fs::write(p, b"x").unwrap();
         }
         root
+    }
+
+    #[test]
+    fn a_png_name_on_other_data_is_caught() {
+        let root = data_dir("mislabelled", &[]);
+        std::fs::create_dir_all(&root).unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let p = root.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        // What Omarchy's web-app installer saves when a site serves WebP or
+        // an .ico: the data as it came, under a .png name.
+        assert!(super::mislabelled_png(&write("webp.png", b"RIFF\x10\0\0\0WEBPVP8 ")));
+        assert!(super::mislabelled_png(&write("ico.PNG", b"\0\0\x01\0\x04\0\x40\x40")));
+        // A real PNG, anything not named .png, and a file that cannot be read
+        // are left to GTK.
+        assert!(!super::mislabelled_png(&write("real.png", b"\x89PNG\r\n\x1a\n\0\0")));
+        assert!(!super::mislabelled_png(&write("logo.svg", b"<svg/>")));
+        assert!(!super::mislabelled_png(&root.join("missing.png")));
     }
 
     #[test]
