@@ -153,34 +153,7 @@ impl App {
             Urgent(addr) => {
                 tracing::debug!(%addr, "urgent");
                 if self.state.set_urgent(addr.clone()) {
-                    // Refresh first: a rebuild would drop a pulse started
-                    // before it.
-                    self.sync(gtk_app);
-                    if self.cfg.items.urgent_pulse {
-                        // The app's icon, never a workspace or scratchpad tile
-                        // that also lists the window.
-                        let items = self.current_items();
-                        let key = items
-                            .iter()
-                            .find(|i| i.kind == crate::state::ItemKind::App && i.windows.contains(&addr))
-                            .map(|i| i.key.clone());
-                        if let Some(key) = key {
-                            for d in &self.docks {
-                                d.attention_key(&key);
-                            }
-                        }
-                    }
-                    // Out of a hidden dock only where nothing is being
-                    // watched: not over fullscreen, a recording or the
-                    // screensaver.
-                    let quiet = !self.state.has_fullscreen()
-                        && !self.state.screensaver_showing()
-                        && !crate::omarchy::is_recording();
-                    if self.cfg.autohide.reveal_on_attention && quiet {
-                        for d in &self.docks {
-                            d.reveal_for_attention(&self.cfg);
-                        }
-                    }
+                    self.attend(&addr, gtk_app);
                 }
                 false
             }
@@ -446,6 +419,36 @@ impl App {
         }
     }
 
+    /// Pulse a window's app and reveal the dock for its attention request.
+    fn attend(&mut self, addr: &crate::hypr::Address, gtk_app: &gtk::Application) {
+        // Refresh first: a rebuild would drop a pulse started before it.
+        self.sync(gtk_app);
+        if self.cfg.items.urgent_pulse {
+            // The app's icon, never a workspace or scratchpad tile that also
+            // lists the window.
+            let items = self.current_items();
+            let key = items
+                .iter()
+                .find(|i| i.kind == crate::state::ItemKind::App && i.windows.contains(addr))
+                .map(|i| i.key.clone());
+            if let Some(key) = key {
+                for d in &self.docks {
+                    d.attention_key(&key);
+                }
+            }
+        }
+        // Out of a hidden dock only where nothing is being watched: not over
+        // fullscreen, a recording or the screensaver.
+        let quiet = !self.state.has_fullscreen()
+            && !self.state.screensaver_showing()
+            && !crate::omarchy::is_recording();
+        if self.cfg.autohide.reveal_on_attention && quiet {
+            for d in &self.docks {
+                d.reveal_for_attention(&self.cfg);
+            }
+        }
+    }
+
     /// Ask the async worker to re-query the full window list.
     fn request_snapshot(&self) {
         if let Some(w) = &self.worker {
@@ -679,6 +682,11 @@ pub fn run() -> glib::ExitCode {
                         app.state.set_focused(focused);
                         if !app.follow_focused_monitor(&gtk_app) {
                             app.sync(&gtk_app);
+                        }
+                        // Attention asked for by windows this snapshot first
+                        // shows: a new app's own window, now in front, is not.
+                        for addr in app.state.settle_urgent() {
+                            app.attend(&addr, &gtk_app);
                         }
                     }
                     AppEvent::Hypr(e) => app.on_hypr(e, &gtk_app),

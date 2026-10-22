@@ -656,6 +656,9 @@ pub struct DockState {
     media: Vec<crate::media::Player>,
     focused: Option<Address>,
     urgent: Vec<Address>,
+    /// Attention requests from windows not known yet, with how many
+    /// snapshots have come since without them. See `settle_urgent`.
+    waiting_urgent: Vec<(Address, u8)>,
     /// A minimized window already sent home by `recall`, so it is not sent
     /// twice while the snapshot showing it gone is still on its way.
     recalled: Option<Address>,
@@ -685,6 +688,7 @@ impl DockState {
             media: Vec::new(),
             focused: None,
             urgent: Vec::new(),
+            waiting_urgent: Vec::new(),
             recalled: None,
             burst_from: None,
             unread: HashMap::new(),
@@ -914,6 +918,7 @@ impl DockState {
     pub fn remove_client(&mut self, addr: &Address) {
         self.clients.retain(|c| &c.address != addr);
         self.urgent.retain(|a| a != addr);
+        self.waiting_urgent.retain(|(a, _)| a != addr);
         if self.focused.as_ref() == Some(addr) {
             self.focused = None;
         }
@@ -930,14 +935,47 @@ impl DockState {
     /// Record an attention request. Returns whether it counts — a window in
     /// front has the user's attention already — so the caller knows whether
     /// to pulse. A repeat request counts again.
+    ///
+    /// A window not known yet waits for the next snapshot instead: Chromium
+    /// asks for attention for its own new window just before Hyprland
+    /// reports it, and then focuses it, so a new app would otherwise hold the
+    /// dock out and pulse as if it needed something.
     pub fn set_urgent(&mut self, addr: Address) -> bool {
         if self.focused.as_ref() == Some(&addr) {
+            return false;
+        }
+        if !self.clients.iter().any(|c| c.address == addr) {
+            if !self.waiting_urgent.iter().any(|(a, _)| a == &addr) {
+                self.waiting_urgent.push((addr, 0));
+            }
             return false;
         }
         if !self.urgent.contains(&addr) {
             self.urgent.push(addr);
         }
         true
+    }
+
+    /// After a snapshot, decide the attention requests that waited for it:
+    /// one from the window now in front is dropped, one from a window now
+    /// known counts, and is returned so the caller can pulse it. One whose
+    /// window has not turned up after two snapshots is forgotten.
+    pub fn settle_urgent(&mut self) -> Vec<Address> {
+        let mut counted = Vec::new();
+        for (addr, missed) in std::mem::take(&mut self.waiting_urgent) {
+            if self.focused.as_ref() == Some(&addr) {
+                continue;
+            }
+            if self.clients.iter().any(|c| c.address == addr) {
+                if !self.urgent.contains(&addr) {
+                    self.urgent.push(addr.clone());
+                }
+                counted.push(addr);
+            } else if missed < 1 {
+                self.waiting_urgent.push((addr, missed + 1));
+            }
+        }
+        counted
     }
 
     pub fn set_title(&mut self, addr: &Address, title: String) {
@@ -1719,6 +1757,44 @@ mod focus_tests {
         assert!(s.set_urgent(Address::parse("b")));
         // A second request is still news: it may pulse again.
         assert!(s.set_urgent(Address::parse("b")));
+    }
+
+    #[test]
+    fn a_window_asking_for_attention_as_it_opens_does_not_count() {
+        // Chromium asks for attention for its own new window a moment before
+        // Hyprland reports that window, and then focuses it.
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(!s.set_urgent(Address::parse("new")), "unknown yet: it waits");
+        s.set_clients(vec![client("a"), client("new")]);
+        s.set_focused(Some(Address::parse("new")));
+        assert_eq!(s.settle_urgent(), Vec::<Address>::new());
+        assert!(s.urgent.is_empty());
+    }
+
+    #[test]
+    fn a_window_that_opens_behind_and_asks_for_attention_counts_once_seen() {
+        let mut s = DockState::new(vec![]);
+        s.set_clients(vec![client("a")]);
+        s.set_focused(Some(Address::parse("a")));
+        assert!(!s.set_urgent(Address::parse("bg")));
+        s.set_clients(vec![client("a"), client("bg")]);
+        assert_eq!(s.settle_urgent(), vec![Address::parse("bg")]);
+        assert_eq!(s.urgent, vec![Address::parse("bg")]);
+        assert_eq!(s.settle_urgent(), Vec::<Address>::new(), "counted once");
+
+        // One that never shows up is forgotten after a second snapshot: the
+        // first may have been on its way before the window opened.
+        assert!(!s.set_urgent(Address::parse("ghost")));
+        assert_eq!(s.settle_urgent(), Vec::<Address>::new());
+        s.set_clients(vec![client("a"), client("ghost")]);
+        assert_eq!(s.settle_urgent(), vec![Address::parse("ghost")]);
+        assert!(!s.set_urgent(Address::parse("gone")));
+        s.settle_urgent();
+        s.settle_urgent();
+        s.set_clients(vec![client("a"), client("gone")]);
+        assert_eq!(s.settle_urgent(), Vec::<Address>::new());
     }
 
     fn parked(a: &str) -> Client {
