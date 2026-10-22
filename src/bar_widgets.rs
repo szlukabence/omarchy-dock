@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -116,14 +116,29 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
             dir.display()
         );
     }
-    let text = match std::fs::read_to_string(shell_json) {
-        Ok(text) => text,
+    reconcile(id, hide, &shell_json, &record, &mut shell_call)
+}
+
+/// What `sync` does once it knows where the files are, with `call` asking
+/// the shell.
+///
+/// The shell writes shell.json before it answers, but the answer can come
+/// back late or garbled while the change went through. So the record follows
+/// what shell.json says after each call, not the reply: it is kept while the
+/// widget is off the bar, and goes only once it is back. Dropping it on a lost
+/// reply left the widget hidden with nothing to put it back.
+fn reconcile(
+    id: &str,
+    hide: bool,
+    shell_json: &Path,
+    record: &Path,
+    call: &mut dyn FnMut(&[&str]) -> Result<bool>,
+) -> Result<()> {
+    let Some(shell) = read_shell(shell_json)? else {
         // No shell config: no bar to change.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).context("reading shell.json"),
+        return Ok(());
     };
-    let shell: Value = serde_json::from_str(&text).context("parsing shell.json")?;
-    let saved: Option<Placement> = std::fs::read_to_string(&record)
+    let saved: Option<Placement> = std::fs::read_to_string(record)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
 
@@ -131,30 +146,53 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
         (true, Some(here), _) => {
             // Recorded first: if the shell then removes the widget but the
             // dock dies before noting it, the widget can still come back.
-            crate::safe_write::replace(&record, serde_json::to_string_pretty(&here)?.as_bytes())?;
-            if !shell_call(&["shell", "setPluginEnabled", id, "false"])? {
-                std::fs::remove_file(&record).ok();
-                anyhow::bail!("the shell would not disable {id}");
+            crate::safe_write::replace(record, serde_json::to_string_pretty(&here)?.as_bytes())?;
+            let answer = call(&["shell", "setPluginEnabled", id, "false"]);
+            match on_bar(shell_json, id) {
+                Some(false) => tracing::info!(id, ?here, "hid bar widget"),
+                Some(true) => {
+                    std::fs::remove_file(record).ok();
+                    answer?;
+                    anyhow::bail!("the shell would not disable {id}");
+                }
+                None => anyhow::bail!("cannot tell whether the shell disabled {id}; keeping its record"),
             }
-            tracing::info!(id, ?here, "hid bar widget");
         }
         (false, None, Some(saved)) => {
             let placement = restore_placement(&shell, &saved).to_string();
-            if shell_call(&["shell", "enablePlugin", id, &placement])? {
-                std::fs::remove_file(&record).ok();
+            let answer = call(&["shell", "enablePlugin", id, &placement]);
+            if on_bar(shell_json, id) == Some(true) {
+                std::fs::remove_file(record).ok();
                 tracing::info!(id, %placement, "restored bar widget");
             } else {
+                answer?;
                 anyhow::bail!("the shell would not re-enable {id}");
             }
         }
         // The user put it back themselves while hiding was off; it is theirs
         // again, and the record is stale.
         (false, Some(_), Some(_)) => {
-            std::fs::remove_file(&record).ok();
+            std::fs::remove_file(record).ok();
         }
         _ => {}
     }
     Ok(())
+}
+
+/// shell.json, parsed. `None` when there is none.
+fn read_shell(path: &Path) -> Result<Option<Value>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("reading shell.json"),
+    };
+    Ok(Some(serde_json::from_str(&text).context("parsing shell.json")?))
+}
+
+/// Whether widget `id` is on the bar now, by shell.json. `None` when that
+/// cannot be told.
+fn on_bar(shell_json: &Path, id: &str) -> Option<bool> {
+    read_shell(shell_json).ok().flatten().map(|s| locate(&s, id).is_some())
 }
 
 #[cfg(test)]
@@ -204,6 +242,58 @@ mod tests {
             restore_placement(&bar(&["other"], &["menu", "argus"]), &saved),
             serde_json::json!({ "section": "left", "index": 1 })
         );
+    }
+
+    /// A throwaway shell.json holding `left`, and where the record goes.
+    fn scratch(tag: &str, left: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("omarchy-dock-bar-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = dir.join("shell.json");
+        std::fs::write(&shell, bar(left, &[]).to_string()).unwrap();
+        (shell, dir.join("record.json"))
+    }
+
+    /// A shell that lays the bar out as `left` and then answers `reply`.
+    fn shell_that(shell: &std::path::Path, left: &[&str], reply: bool) -> impl FnMut(&[&str]) -> Result<bool> {
+        let (shell, layout) = (shell.to_path_buf(), bar(left, &[]).to_string());
+        move |_| {
+            std::fs::write(&shell, &layout).unwrap();
+            Ok(reply)
+        }
+    }
+
+    #[test]
+    fn a_widget_the_shell_hid_keeps_its_record_whatever_the_shell_answered() {
+        // The shell writes shell.json and then answers; a reply that comes
+        // back garbled or late must not cost the record of where it sat.
+        let (shell, record) = scratch("hid", &["menu", WORKSPACES]);
+        reconcile(WORKSPACES, true, &shell, &record, &mut shell_that(&shell, &["menu"], false)).unwrap();
+        assert!(record.exists(), "the widget is off the bar: keep the record");
+
+        // So turning hiding off still brings it back.
+        reconcile(WORKSPACES, false, &shell, &record, &mut shell_that(&shell, &["menu", WORKSPACES], true)).unwrap();
+        assert!(!record.exists());
+    }
+
+    #[test]
+    fn a_widget_the_shell_left_on_the_bar_drops_its_record() {
+        let (shell, record) = scratch("refused", &["menu", WORKSPACES]);
+        let left = &["menu", WORKSPACES];
+        assert!(reconcile(WORKSPACES, true, &shell, &record, &mut shell_that(&shell, left, false)).is_err());
+        assert!(!record.exists());
+    }
+
+    #[test]
+    fn the_record_goes_only_once_the_widget_is_back() {
+        // The shell says "ok" but the widget is not on the bar: keep trying.
+        let (shell, record) = scratch("restore", &["menu"]);
+        std::fs::write(&record, r#"{"section":"left","index":1,"after":"menu","before":null}"#).unwrap();
+        assert!(reconcile(WORKSPACES, false, &shell, &record, &mut shell_that(&shell, &["menu"], true)).is_err());
+        assert!(record.exists());
+        // It came back though the reply was lost: done.
+        reconcile(WORKSPACES, false, &shell, &record, &mut shell_that(&shell, &["menu", WORKSPACES], false)).unwrap();
+        assert!(!record.exists());
     }
 
     #[test]
