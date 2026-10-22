@@ -312,8 +312,8 @@ between markers and never rewritten.
 
 Beyond that the dock also opens the shell's real surfaces (right-click the
 launcher: Omarchy menu, themes, backgrounds, clipboard, emojis) rather than
-drawing its own, reports through Omarchy notifications, and offsets itself past
-the bar when both want the same screen edge (`dock.avoid_bar`).
+drawing its own, and reports through Omarchy notifications. On the bar's screen
+edge it sits next to the bar, which reserves its own space.
 
 ## Blur
 
@@ -370,7 +370,6 @@ Notable keys:
 | `items.glyph_ui` | Draw launcher, folders, drives and Trash as monochrome glyphs (default: on) |
 | `items.show_drives` | Show plugged-in removable drives beside Trash (default: on) |
 | `items.urgent_pulse` | Pulse an app's icon three times when it asks for attention; its red dot stays until you look (default: on) |
-| `dock.avoid_bar` | Offset past the Omarchy bar when both share an edge (default: on) |
 
 The dock can host the **system tray** itself: it registers as a
 StatusNotifierItem host alongside the shell's, so items appear in both until

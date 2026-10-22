@@ -49,16 +49,24 @@ struct App {
     tx: crate::event::Sender,
     /// Watches removable drives while they are shown.
     drives: Option<crate::drives::DriveWatcher>,
+    /// GTK's icon theme before the dock chose one, to go back to when it no
+    /// longer wants a particular one.
+    system_icon_theme: Option<String>,
+    /// Whether the dock has set GTK's icon theme.
+    icon_theme_set: bool,
 }
 
 impl App {
     fn restyle(&mut self) {
-        self.palette = if self.cfg.theme.follow_omarchy {
+        // From the config as it is now: `cfg` is still the one before the
+        // change, and reading it applied each change one change late.
+        let follow = self.raw_cfg.theme.follow_omarchy;
+        self.palette = if follow {
             Palette::current()
         } else {
             Palette::default()
         };
-        self.shell = if self.cfg.theme.follow_omarchy {
+        self.shell = if follow {
             Shell::current(&self.palette)
         } else {
             Shell::fallback(&self.palette)
@@ -78,28 +86,44 @@ impl App {
     /// Point GTK at the icon theme the user configured, or the one the active
     /// Omarchy theme requests. Extra search paths are prepended so a user's
     /// own icons win over system ones.
-    fn apply_icon_theme(&self) {
+    fn apply_icon_theme(&mut self) {
         let Some(display) = gdk::Display::default() else { return };
         let icons = gtk::IconTheme::for_display(&display);
 
+        // Once each: this runs on every restyle.
+        let known = icons.search_path();
         for path in &self.cfg.theme.icon_paths {
-            icons.add_search_path(crate::config::expand_tilde(path));
+            let path = crate::config::expand_tilde(path);
+            if !known.contains(&path) {
+                icons.add_search_path(path);
+            }
         }
 
-        let name = if !self.cfg.theme.icon_theme.is_empty() {
+        let wanted = if !self.cfg.theme.icon_theme.is_empty() {
             Some(self.cfg.theme.icon_theme.clone())
         } else if self.cfg.theme.follow_omarchy {
             crate::theme::icon_theme()
         } else {
             None
         };
-
-        if let Some(name) = name {
-            if icons.theme_name() != name.as_str() {
-                tracing::info!(theme = %name, "icon theme set");
-                icons.set_theme_name(Some(&name));
-            }
+        // The display's icon theme follows GTK's `gtk-icon-theme-name`
+        // setting and refuses to be renamed itself (a GTK critical, and no
+        // change), so the setting is what is set. With no wish, it goes back
+        // to what it was, if the dock had changed it.
+        let name = match wanted {
+            Some(name) => name,
+            None if self.icon_theme_set => match &self.system_icon_theme {
+                Some(name) => name.clone(),
+                None => return,
+            },
+            None => return,
+        };
+        let Some(settings) = gtk::Settings::default() else { return };
+        if settings.gtk_icon_theme_name().as_deref() != Some(name.as_str()) {
+            tracing::info!(theme = %name, "icon theme set");
+            settings.set_gtk_icon_theme_name(Some(&name));
         }
+        self.icon_theme_set = true;
     }
 
     /// Watch for drives only while the dock shows them.
@@ -585,6 +609,10 @@ pub fn run() -> glib::ExitCode {
             docks: Vec::new(),
             tx: drive_tx.clone(),
             drives: None,
+            system_icon_theme: gtk::Settings::default()
+                .and_then(|s| s.gtk_icon_theme_name())
+                .map(|n| n.to_string()),
+            icon_theme_set: false,
         };
         app.state.set_recording(crate::omarchy::is_recording());
         app.sync_drive_watcher();
@@ -701,22 +729,26 @@ pub fn run() -> glib::ExitCode {
                             let on = next.items.notification_badges;
                             w.badges.send_if_modified(|v| std::mem::replace(v, on) != on);
                         }
-                        // Geometry-affecting changes need new surfaces;
+                        // Geometry-affecting changes need new surfaces; ones
+                        // the icons read need new icons, in the same window;
                         // anything else is just a restyle, which is far
                         // cheaper and preserves hover state.
-                        let structural = needs_rebuild(&app.raw_cfg, &next);
+                        let change = change_of(&app.raw_cfg, &next);
                         app.raw_cfg = next;
                         // restyle re-derives `cfg` from the new raw config and
                         // the current shell scale.
                         app.restyle();
                         app.sync_drive_watcher();
-                        if structural {
-                            app.rebuild(&gtk_app);
-                        } else {
+                        match change {
+                            Change::Window => app.rebuild(&gtk_app),
+                            Change::Contents if !app.docks.is_empty() => {
+                                let items = app.current_items();
+                                app.replace(&items);
+                            }
                             // Item changes (reordering, pinning) go through
                             // sync, which reorders in place where it can
                             // rather than recreating the surface.
-                            app.sync(&gtk_app);
+                            _ => app.sync(&gtk_app),
                         }
                     }
                 }
@@ -761,24 +793,6 @@ fn effective(mut cfg: Config, shell: &crate::theme::shell::Shell) -> Config {
         }
     }
 
-    // ── clearing the bar ────────────────────────────────────────────────────
-    // The Omarchy bar is a layer surface too, and nothing stops the two from
-    // being anchored to the same screen edge. Clear it rather than moving the
-    // dock elsewhere: the user picked the dock's edge, and sitting invisibly
-    // underneath the bar is the one outcome nobody wants.
-    //
-    // Added after scaling, because the bar's thickness is measured in final
-    // pixels — it already carries the shell's font scale — and must not be
-    // scaled a second time.
-    if cfg.dock.avoid_bar {
-        let clearance =
-            crate::omarchy::bar_clearance(cfg.dock.position, crate::omarchy::bar(shell));
-        if clearance > 0.0 {
-            tracing::info!(clearance, position = ?cfg.dock.position, "clearing the Omarchy bar");
-            cfg.dock.edge_offset += clearance.round() as i32;
-        }
-    }
-
     cfg
 }
 
@@ -799,9 +813,39 @@ fn geometry_inputs(cfg: &Config) -> [i64; 6] {
     ]
 }
 
-/// Whether a config change alters surface geometry or item set.
+/// What a config change needs redone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    /// Nothing the docks read: the items are refreshed in place.
+    None,
+    /// Something the icons read when they are built: they are built again,
+    /// in the same window.
+    Contents,
+    /// Something a dock's window is made with: the window is made again.
+    Window,
+}
+
+fn change_of(old: &Config, new: &Config) -> Change {
+    if needs_rebuild(old, new) {
+        return Change::Window;
+    }
+    // The pinned list's order is the one change sync() applies to the icons
+    // in place; a drag has already moved them by the time it is saved.
+    let without_pins = |c: &Config| {
+        let mut c = c.clone();
+        c.items.pinned.sort();
+        toml::to_string(&c).ok()
+    };
+    if without_pins(old) == without_pins(new) { Change::None } else { Change::Contents }
+}
+
+/// Whether a config change alters surface geometry or item set, or the
+/// timings hover-to-reveal was wired to the window with.
 fn needs_rebuild(old: &Config, new: &Config) -> bool {
     old.dock.position != new.dock.position
+        || old.autohide.reveal_delay_ms != new.autohide.reveal_delay_ms
+        || old.autohide.hide_delay_ms != new.autohide.hide_delay_ms
+        || old.autohide.slide_ms != new.autohide.slide_ms
         || old.dock.icon_size != new.dock.icon_size
         || old.dock.padding_x != new.dock.padding_x
         || old.dock.padding_y != new.dock.padding_y
@@ -1059,6 +1103,50 @@ fn choose_monitor(
     match mode {
         crate::config::MonitorMode::Focused => focused.and_then(find).or(primary).unwrap_or(0),
         _ => primary.unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::{change_of, Change};
+    use crate::config::{Config, Hover, Position};
+
+    fn after(edit: impl FnOnce(&mut Config)) -> Change {
+        let old = Config::default();
+        let mut new = old.clone();
+        edit(&mut new);
+        change_of(&old, &new)
+    }
+
+    #[test]
+    fn a_setting_the_icons_read_rebuilds_them() {
+        // Read when the icons are built, so a live change has to build them
+        // again: without it, the old value stayed until something else did.
+        assert_eq!(after(|c| c.dock.tooltip_delay_ms += 100), Change::Contents);
+        assert_eq!(after(|c| c.magnify.hover = Hover::Scale), Change::Contents);
+        assert_eq!(after(|c| c.preview.delay_ms += 100), Change::Contents);
+        assert_eq!(after(|c| c.magnify.stiffness += 10.0), Change::Contents);
+    }
+
+    #[test]
+    fn a_setting_the_window_reads_rebuilds_the_window() {
+        // Hover-to-reveal is wired to the window once, with its timings.
+        assert_eq!(after(|c| c.autohide.reveal_delay_ms += 100), Change::Window);
+        assert_eq!(after(|c| c.autohide.hide_delay_ms += 100), Change::Window);
+        assert_eq!(after(|c| c.autohide.slide_ms += 100), Change::Window);
+        assert_eq!(after(|c| c.dock.position = Position::Top), Change::Window);
+    }
+
+    #[test]
+    fn reordering_pins_or_saving_unchanged_leaves_the_icons_alone() {
+        // A drag reorders the icons in place; rebuilding them after it would
+        // only undo that.
+        assert_eq!(after(|_| {}), Change::None);
+        let mut old = Config::default();
+        old.items.pinned = vec!["a".into(), "b".into()];
+        let mut new = old.clone();
+        new.items.pinned.reverse();
+        assert_eq!(change_of(&old, &new), Change::None);
     }
 }
 

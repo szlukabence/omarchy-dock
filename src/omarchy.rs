@@ -1,6 +1,6 @@
 //! Talking to the rest of Omarchy at runtime.
 //!
-//! Three things live here, and they share a principle: where Omarchy already
+//! What lives here shares a principle: where Omarchy already
 //! has a way to do something, use it rather than reimplementing it.
 //!
 //! * **Shell surfaces.** `omarchy-shell` forwards IPC to the running shell, so
@@ -9,13 +9,9 @@
 //! * **Notifications.** `omarchy notification send` goes through the shell's
 //!   own notification service, so the dock's messages are styled and grouped
 //!   like every other notification on the desktop.
-//! * **The bar.** `shell.json` says where the bar is. A dock that ignored it
-//!   would happily park itself on top of the bar.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-
-use crate::config::Position;
 
 /// Run a command without waiting for it, and without letting its output leak
 /// into the dock's own log.
@@ -162,91 +158,9 @@ pub fn is_recording() -> bool {
     RECORDING_MARKER.exists()
 }
 
-// ── the bar ─────────────────────────────────────────────────────────────────
-
-/// Where the Omarchy bar is and how thick it is, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bar {
-    pub position: Position,
-    pub thickness: f64,
-}
-
-fn shell_json_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("omarchy/shell.json")
-}
-
-/// Read the bar's placement from `shell.json` and its thickness from the
-/// theme's `[bar]` tokens.
-///
-/// Returns `None` when there is no Omarchy shell config to read, which is the
-/// "there is no bar to avoid" case.
-pub fn bar(shell: &crate::theme::shell::Shell) -> Option<Bar> {
-    let text = std::fs::read_to_string(shell_json_path()).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let position = match json.get("bar")?.get("position")?.as_str()? {
-        "bottom" => Position::Bottom,
-        "left" => Position::Left,
-        "right" => Position::Right,
-        _ => Position::Top,
-    };
-
-    // The bar's cross-axis size is a `shell.toml` token, and it scales with
-    // the font the same way the dock now does.
-    let base = if position.is_vertical() {
-        shell.bar.size_vertical
-    } else {
-        shell.bar.size_horizontal
-    };
-    let thickness = if shell.bar.scale_with_font {
-        base * shell.metrics.font_scale()
-    } else {
-        base
-    };
-
-    let bar = Bar { position, thickness: thickness.round() };
-    tracing::debug!(?bar, "omarchy bar");
-    Some(bar)
-}
-
-/// Extra gap the dock needs so it does not sit underneath the bar.
-///
-/// Only matters when both are on the same screen edge: elsewhere they cannot
-/// overlap. Stacking the dock above the bar is the least surprising answer —
-/// moving the dock to another edge would silently override a position the user
-/// chose, and doing nothing would hide the dock behind the bar.
-pub fn bar_clearance(dock: Position, bar: Option<Bar>) -> f64 {
-    match bar {
-        Some(b) if b.position == dock => b.thickness,
-        _ => 0.0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn bar_at(position: Position) -> Bar {
-        Bar { position, thickness: 26.0 }
-    }
-
-    #[test]
-    fn the_dock_clears_a_bar_on_its_own_edge() {
-        assert_eq!(bar_clearance(Position::Top, Some(bar_at(Position::Top))), 26.0);
-    }
-
-    #[test]
-    fn a_bar_on_another_edge_needs_no_clearance() {
-        // The common case: bar on top, dock on the bottom.
-        assert_eq!(bar_clearance(Position::Bottom, Some(bar_at(Position::Top))), 0.0);
-        assert_eq!(bar_clearance(Position::Bottom, Some(bar_at(Position::Left))), 0.0);
-    }
-
-    #[test]
-    fn no_bar_means_no_clearance() {
-        assert_eq!(bar_clearance(Position::Bottom, None), 0.0);
-    }
 
     #[test]
     fn every_surface_has_a_label_and_is_offered() {
