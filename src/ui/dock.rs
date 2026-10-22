@@ -326,7 +326,6 @@ impl DockSurface {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
             .decorated(false)
-            .resizable(false)
             .build();
         let edge = init_layer_shell(&window, cfg, monitor);
 
@@ -349,6 +348,7 @@ impl DockSurface {
             travel: 0.0,
             extent: 0.0,
             reach: None,
+            length: 0.0,
             away: false,
             ticking: false,
             last_us: 0,
@@ -371,8 +371,22 @@ impl DockSurface {
         };
         surface.fit_to_contents();
         window.present();
-        // There was no surface to clip before it was presented.
+        // There was no surface to clip before it was presented, and the
+        // stretch that takes the pointer is worked out from the length the
+        // compositor gives it, which comes later and changes with the screen.
         clip_input(&window, &surface.slide.borrow());
+        if let Some(gdk_surface) = window.surface() {
+            let (win, slide) = (window.downgrade(), surface.slide.clone());
+            let last = Cell::new((0, 0));
+            gdk_surface.connect_layout(move |_, w, h| {
+                if last.replace((w, h)) == (w, h) {
+                    return;
+                }
+                if let (Some(win), Ok(s)) = (win.upgrade(), slide.try_borrow()) {
+                    clip_input(&win, &s);
+                }
+            });
+        }
 
         surface.attach_peek(cfg);
 
@@ -444,6 +458,10 @@ impl DockSurface {
         slide.travel = travel_for(&s.cfg, &s.geom);
         slide.extent = extent_for(&s.cfg, &s.geom);
         slide.reach = s.cfg.dock.reserve_space.then(|| s.geom.reach());
+        // Not the room a shrinking dock keeps while its icons glide in,
+        // which is empty by the time anyone could aim at it.
+        let g = s.geom.padded(0.0);
+        slide.length = if g.horizontal() { g.window_w } else { g.window_h };
         if s.cfg.dock.reserve_space {
             self.window.set_exclusive_zone(exclusive_zone(&s.geom));
         }
@@ -481,6 +499,12 @@ impl DockSurface {
 
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(geom.window_w as i32, geom.window_h as i32);
+        // The window spans the screen edge; the icons sit in the middle of it.
+        if geom.horizontal() {
+            fixed.set_halign(gtk::Align::Center);
+        } else {
+            fixed.set_valign(gtk::Align::Center);
+        }
 
         // Panel first so items draw over it.
         let panel = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1533,6 +1557,9 @@ struct Slide {
     /// reserves its space. Only that band takes the pointer then: the
     /// headroom beyond it hangs over the windows.
     reach: Option<f64>,
+    /// The dock's length along the screen edge. The surface spans the edge,
+    /// with the dock centred on it, and only this stretch takes the pointer.
+    length: f64,
     ticking: bool,
     last_us: i64,
     /// New icons arrived while something held the dock, and are waiting for
@@ -1571,6 +1598,17 @@ impl Slide {
         })
     }
 
+    /// The part of the surface's length that takes the pointer, from its
+    /// start to its end, or `None` for all of it while the compositor has
+    /// not sized the surface yet.
+    fn input_span(&self, surface_len: f64) -> Option<(f64, f64)> {
+        if surface_len <= 0.0 {
+            return None;
+        }
+        let from = ((surface_len - self.length) / 2.0).max(0.0);
+        Some((from, (from + self.length).min(surface_len)))
+    }
+
     /// Where the slide should settle, from policy, peek and hold state.
     fn target(&self) -> f64 {
         if self.away {
@@ -1592,14 +1630,21 @@ fn exclusive_zone(geom: &Geometry) -> i32 {
 
 /// Let the surface take the pointer only within its slide's input band.
 fn clip_input(window: &gtk::ApplicationWindow, slide: &Slide) {
-    let (Some(surface), Some((from, to))) = (window.surface(), slide.input_band()) else { return };
-    // Along the dock, all of it: the surface's length changes with its
-    // icons, and the compositor keeps the region within the surface anyway.
+    let Some(surface) = window.surface() else { return };
+    // The compositor keeps the region within the surface anyway.
     const ALL: i32 = 1 << 16;
-    let (from, to) = (from.floor() as i32, to.ceil() as i32);
-    let rect = match slide.edge {
-        Edge::Bottom | Edge::Top => gtk::cairo::RectangleInt::new(0, from, ALL, to - from),
-        _ => gtk::cairo::RectangleInt::new(from, 0, to - from, ALL),
+    let span = |band: Option<(f64, f64)>| match band {
+        Some((from, to)) => (from.floor() as i32, to.ceil() as i32),
+        None => (0, ALL),
+    };
+    let horizontal = matches!(slide.edge, Edge::Bottom | Edge::Top);
+    let length = if horizontal { surface.width() } else { surface.height() };
+    let (along, along_end) = span(slide.input_span(length as f64));
+    let (across, across_end) = span(slide.input_band());
+    let rect = if horizontal {
+        gtk::cairo::RectangleInt::new(along, across, along_end - along, across_end - across)
+    } else {
+        gtk::cairo::RectangleInt::new(across, along, across_end - across, along_end - along)
     };
     surface.set_input_region(Some(&gtk::cairo::Region::create_rectangle(&rect)));
     // GTK hands the region to the compositor with the next frame it draws,
@@ -2421,6 +2466,19 @@ fn init_layer_shell(
     };
     window.set_anchor(edge, true);
     window.set_margin(edge, 0);
+    // The surface spans the whole edge, so its length never changes with
+    // the icons. Hyprland animates a layer surface's change of size, and its
+    // first frames draw the new dock in the old one's box, smearing its last
+    // column of pixels out to the old length. The icons are centred on it,
+    // and only their own stretch takes the pointer (`clip_input`).
+    let ends = match edge {
+        Edge::Bottom | Edge::Top => [Edge::Left, Edge::Right],
+        _ => [Edge::Top, Edge::Bottom],
+    };
+    for end in ends {
+        window.set_anchor(end, true);
+        window.set_margin(end, 0);
+    }
 
     // A dock that reserves space takes it from its geometry, in
     // `fit_to_contents`: not the whole surface, whose headroom is empty.
@@ -3365,6 +3423,7 @@ mod tests {
             travel: 76.0,
             extent: 80.0,
             reach: None,
+            length: 300.0,
             ticking: false,
             last_us: 0,
             swap_waiting: false,
@@ -3408,6 +3467,18 @@ mod tests {
         assert_eq!(s.input_band(), Some((0.0, 50.0)));
         s.spring = Spring::at(20.0);
         assert_eq!(s.input_band(), Some((0.0, 70.0)));
+    }
+
+    #[test]
+    fn only_the_docks_own_stretch_of_the_screen_edge_takes_input() {
+        let mut s = slide();
+        // The surface spans the edge, with the dock centred along it.
+        assert_eq!(s.input_span(1000.0), Some((350.0, 650.0)));
+        // Before the compositor has sized the surface, all of it.
+        assert_eq!(s.input_span(0.0), None);
+        // A dock too long for the edge never claims beyond the surface.
+        s.length = 1200.0;
+        assert_eq!(s.input_span(1000.0), Some((0.0, 1000.0)));
     }
 
     #[test]

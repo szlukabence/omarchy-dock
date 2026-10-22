@@ -74,7 +74,9 @@ pub struct Layout {
 pub struct Glide {
     /// Room added at each end of the new surface. A shrinking dock keeps its
     /// old length until the glide is over, or the icons and panel ends that
-    /// start outside the new surface would be cut off.
+    /// start outside the new surface would be cut off. Whole pixels: the dock
+    /// is centred on its window, and a whole pixel off each end keeps it
+    /// centred on the same pixel, so taking the room off moves nothing.
     pub pad: f64,
     /// For each new slot: how far along the axis its icon starts from the
     /// slot, and the scale it starts at. `None` for a new item, which grows in
@@ -87,7 +89,7 @@ pub struct Glide {
 /// Work out where everything starts when `before` turns into `after`, whose
 /// items have the match keys `keys`.
 pub fn plan(before: &Before, keys: &[&str], after: &Layout) -> Glide {
-    let pad = ((before.length - after.length) / 2.0).max(0.0);
+    let pad = ((before.length - after.length) / 2.0).max(0.0).ceil();
     // What to add to a position in the old surface to name the same place on
     // screen in the new one: both are centred, so half the change in length.
     let delta = (after.length + 2.0 * pad - before.length) / 2.0;
@@ -200,7 +202,7 @@ mod tests {
         let keys = ["a", "b", "c"];
         let a = layout(&keys, 60.0);
         let g = plan(&b, &keys, &a);
-        assert!(close(a.length + 2.0 * g.pad, b.length), "the surface keeps its old length");
+        assert!(a.length + 2.0 * g.pad >= b.length, "the surface keeps its old length");
         assert_nothing_jumps(&b, &keys, &a, &g);
         // The panel starts as long as it was, where it was on screen.
         assert!(close(g.panel.length, b.panel.length));
@@ -208,6 +210,17 @@ mod tests {
             on_screen(g.panel.along, a.length + 2.0 * g.pad),
             on_screen(b.panel.along, b.length)
         ));
+    }
+
+    #[test]
+    fn the_room_a_shrinking_dock_keeps_is_whole_pixels() {
+        // A divider 13 wide leaves: half its room is not a whole pixel.
+        let b = before(&["a", "|", "b"], 60.0);
+        let mut a = layout(&["a", "b"], 60.0);
+        a.length = b.length - 17.0;
+        let g = plan(&b, &["a", "b"], &a);
+        assert_eq!(g.pad, 9.0);
+        assert_nothing_jumps(&b, &["a", "b"], &a, &g);
     }
 
     #[test]
