@@ -71,8 +71,23 @@ pub async fn active_window() -> Result<Option<Client>> {
 fn truncate(s: &str) -> String {
     let s = s.trim();
     if s.len() > 200 {
-        format!("{}…", &s[..200])
+        // At a character boundary: a reply full of titles is rarely ASCII.
+        let end = (0..=200).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        format!("{}…", &s[..end])
     } else {
         s.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_long_reply_is_cut_between_characters() {
+        // Byte 200 falls inside an "é": cutting there would panic.
+        let reply = format!("a{}", "é".repeat(150));
+        let cut = super::truncate(&reply);
+        assert!(cut.ends_with('…'));
+        assert_eq!(cut.trim_end_matches('…'), format!("a{}", "é".repeat(99)));
+        assert_eq!(super::truncate(" short "), "short");
     }
 }

@@ -60,16 +60,18 @@ impl Rgb {
     /// every card's hairline read heavier than Omarchy draws it.
     pub fn parse_rgba(s: &str) -> Option<(Self, f64)> {
         let rgb = Self::parse(s)?;
+        let s = s.trim();
         let body = s
-            .trim()
             .strip_prefix("rgba(")
+            .or_else(|| s.strip_prefix("rgb("))
             .and_then(|r| r.strip_suffix(')'))
-            .unwrap_or(s.trim());
+            .unwrap_or(s);
         let hex = body.trim().trim_start_matches('#');
-        let alpha = if hex.len() >= 8 {
-            u8::from_str_radix(&hex[6..8], 16).map(|a| a as f64 / 255.0).unwrap_or(1.0)
-        } else {
-            1.0
+        // `get`, not indexing: past the six digits `parse` checked, the text
+        // need not be ASCII, and slicing inside a character panics.
+        let alpha = match hex.get(6..8) {
+            Some(aa) => u8::from_str_radix(aa, 16).map(|a| a as f64 / 255.0).unwrap_or(1.0),
+            None => 1.0,
         };
         Some((rgb, alpha))
     }
@@ -253,4 +255,21 @@ fn hyprland_int(option: &str) -> Option<f64> {
         return None;
     }
     v.get("int").and_then(|n| n.as_f64()).filter(|n| *n >= 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Rgb;
+
+    #[test]
+    fn a_colour_with_odd_spacing_is_read_without_panicking() {
+        // A full-width space is trimmed as whitespace but is three bytes long,
+        // so slicing the untrimmed text by byte offsets would land inside it.
+        let (rgb, alpha) = Rgb::parse_rgba("rgb(\u{3000}aabbccdd)").unwrap();
+        assert_eq!(rgb, Rgb { r: 0xaa, g: 0xbb, b: 0xcc });
+        assert!((alpha - f64::from(0xdd_u8) / 255.0).abs() < 1e-9);
+        let (_, alpha) = Rgb::parse_rgba("rgba(11223380)").unwrap();
+        assert!((alpha - f64::from(0x80_u8) / 255.0).abs() < 1e-9);
+        assert_eq!(Rgb::parse_rgba("#112233").unwrap().1, 1.0);
+    }
 }

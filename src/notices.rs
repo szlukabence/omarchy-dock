@@ -68,8 +68,10 @@ fn origin(hints: &HashMap<String, OwnedValue>, body: &str, browser: bool) -> Opt
     }
     if let Some(i) = body.find("href=") {
         let rest = &body[i + 5..];
+        // The quote may be any character, and one of several bytes: slice
+        // past all of it, or a notification could panic the dock.
         let quote = rest.chars().next()?;
-        let url = rest[1..].split(quote).next()?;
+        let url = rest[quote.len_utf8()..].split(quote).next()?;
         if let Some(host) = url_host(url) {
             return Some(host);
         }
@@ -213,6 +215,17 @@ mod tests {
         let h = hints(&[("x-kde-origin-name", "https://outlook.live.com")]);
         let n = notice("Chromium".into(), 0, "whatever", &h).unwrap();
         assert_eq!(n.origin.as_deref(), Some("outlook.live.com"));
+    }
+
+    #[test]
+    fn a_link_quoted_with_a_character_of_several_bytes_is_read() {
+        // Any program can send a notification, so its body must never be
+        // able to stop the dock: the quote here is three bytes long.
+        let h = hints(&[("desktop-entry", "chromium")]);
+        let n = notice("Chromium".into(), 0, "<a href=“https://x.com/“>x</a>", &h).unwrap();
+        assert_eq!(n.origin.as_deref(), Some("x.com"));
+        let n = notice("Chromium".into(), 0, "href=é", &h).unwrap();
+        assert_eq!(n.origin, None);
     }
 
     #[test]
