@@ -645,6 +645,14 @@ fn install_blur(path: PathBuf) -> Result<Report> {
             })
         }
     };
+    if next == existing {
+        return Ok(Report {
+            label: "hyprland blur",
+            path,
+            installed: true,
+            note: Some("already up to date".into()),
+        });
+    }
     let errors_before = hyprland_errors();
     write_file(&path, &next)?;
 
@@ -1723,6 +1731,20 @@ mod tests {
         for path in [&menu, &looknfeel] {
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn a_blur_block_already_up_to_date_is_left_as_it_is() {
+        // Rewriting it would reload Hyprland on every install for nothing.
+        let (dir, _) = scratch("blur-current");
+        std::fs::create_dir_all(&dir).unwrap();
+        let looknfeel = dir.join("looknfeel.lua");
+        let text = format!("-- mine\n\n{}\n", hypr_block());
+        std::fs::write(&looknfeel, &text).unwrap();
+        let report = install_blur(looknfeel.clone()).unwrap();
+        assert!(report.installed);
+        assert_eq!(report.note.as_deref(), Some("already up to date"));
+        assert_eq!(std::fs::read_to_string(&looknfeel).unwrap(), text);
     }
 
     #[test]

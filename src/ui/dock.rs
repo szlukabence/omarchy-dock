@@ -379,11 +379,12 @@ impl DockSurface {
             let (win, slide) = (window.downgrade(), surface.slide.clone());
             let last = Cell::new((0, 0));
             gdk_surface.connect_layout(move |_, w, h| {
-                if last.replace((w, h)) == (w, h) {
+                if last.get() == (w, h) {
                     return;
                 }
                 if let (Some(win), Ok(s)) = (win.upgrade(), slide.try_borrow()) {
                     clip_input(&win, &s);
+                    last.set((w, h));
                 }
             });
         }
@@ -431,6 +432,11 @@ impl DockSurface {
             Some(&before),
         );
         self.window.set_child(Some(&state.borrow().fixed));
+        // The window is resizable, so the compositor can size it along the
+        // edge, and GTK keeps a resizable window at its size when its
+        // content gets smaller. Ask for the least, which GTK raises to what
+        // the icons need: a dock whose icons shrank to fit gets shallower.
+        self.window.set_default_size(1, 1);
         *self.state.borrow_mut() = state;
         self.fit_to_contents();
         // A dock whose depth changed slides by a different amount.

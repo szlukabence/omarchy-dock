@@ -103,19 +103,27 @@ pub fn replace_older_dock() {
     if !predates_rename(&comm) {
         return;
     }
+    let gone = |tries: u32| {
+        (0..tries).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            exited(std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().as_deref())
+        })
+    };
+    // It may be on its way out already, told by the plugin it was swapped
+    // for: a second signal makes it quit without giving back the bar's
+    // workspaces.
+    if gone(10) {
+        return;
+    }
     tracing::info!(pid, "stopping the dock this one replaces");
     // SAFETY: kill(2) only sends a signal; the pid is the socket's peer.
     unsafe { libc::kill(pid, libc::SIGTERM) };
-    for _ in 0..100 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if exited(std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().as_deref()) {
-            return;
-        }
+    if !gone(100) {
+        tracing::warn!(pid, "the dock this one replaces is still running");
     }
-    tracing::warn!(pid, "the dock this one replaces is still running");
 }
 
-/// The process at the other end of a Unix socket.
+/// The process at the other end of a Unix socket, if it is the user's own.
 fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
     use std::os::fd::AsRawFd;
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
@@ -130,7 +138,10 @@ fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
             &mut len,
         )
     } == 0;
-    (ok && cred.pid > 0).then_some(cred.pid)
+    // The runtime directory is the user's own; this is only in case.
+    // SAFETY: getuid(2) cannot fail.
+    let mine = cred.uid == unsafe { libc::getuid() };
+    (ok && mine && cred.pid > 0).then_some(cred.pid)
 }
 
 /// Whether a process has exited, from its `/proc/<pid>/stat`: gone, or a

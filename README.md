@@ -52,7 +52,8 @@ and restart the dock from the Omarchy menu: **Dock → Restart**. Coming from
 new program name. A plugin added with `omarchy plugin add` is a git checkout,
 which `install` leaves alone, so update that one with `omarchy plugin update
 io.github.szlukabence.omarchy-dock`. A dock from before the rename that is
-still running is stopped by the new one when it starts.
+still running is stopped by the new one when it starts. No dock after logging
+in? Run `omarchy-dockctl install`.
 
 ### Building it yourself
 
@@ -133,7 +134,7 @@ left alone and reported, never treated as empty. Every write goes to a
 temporary file that is then renamed into place, so a crash or a full disk
 leaves the old file whole, and a symlinked file stays a symlink. A symlinked
 plugin directory — a development checkout, say — is neither written into nor
-removed. `install --blur` reloads Hyprland and, if that brings new config
+removed. Writing the blur block reloads Hyprland and, if that brings new config
 errors, puts `looknfeel.lua` back as it was, unless it changed in the meantime.
 
 ## What it does
@@ -238,7 +239,7 @@ ever in response to an explicit action:
 | `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout, or holds anything the dock did not write |
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
-| `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only** | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
+| `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only**; a later plain `install` brings that block up to date | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
 | `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys |
 | The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off, or stopping the dock, puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
 | `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |
@@ -324,8 +325,8 @@ omarchy-dockctl uninstall
 | Menu entries | `Dock` on the Omarchy menu and in its search: reveal, auto-hide, settings, reload, restart |
 
 Everything lands in `~/.config/omarchy/` — plus the copies kept in
-`~/.local/state/omarchy-dock/`, and `~/.config/hypr/looknfeel.lua` with
-`--blur` — and is removed by `uninstall`, except anything that is no longer as
+`~/.local/state/omarchy-dock/`, and `~/.config/hypr/looknfeel.lua` once you
+have used `--blur` — and is removed by `uninstall`, except anything that is no longer as
 the dock wrote it. The menu extension file is shared with you, so it is edited
 between markers and never rewritten.
 

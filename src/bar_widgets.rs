@@ -122,11 +122,13 @@ pub fn sync(id: &str, hide: bool) -> Result<()> {
 /// What `sync` does once it knows where the files are, with `call` asking
 /// the shell.
 ///
-/// The shell writes shell.json before it answers, but the answer can come
-/// back late or garbled while the change went through. So the record follows
-/// what shell.json says after each call, not the reply: it is kept while the
-/// widget is off the bar, and goes only once it is back. Dropping it on a lost
-/// reply left the widget hidden with nothing to put it back.
+/// The answer can come back late or garbled while the change went through,
+/// and the shell saves shell.json in the background, so an "ok" can arrive
+/// before the file says so. So the record follows what shell.json says after
+/// each call, given a moment to catch up with an "ok", not the reply: it is
+/// kept while the widget is off the bar, and goes only once it is back.
+/// Dropping it on a lost reply left the widget hidden with nothing to put it
+/// back.
 fn reconcile(
     id: &str,
     hide: bool,
@@ -148,8 +150,13 @@ fn reconcile(
             // dock dies before noting it, the widget can still come back.
             crate::safe_write::replace(record, serde_json::to_string_pretty(&here)?.as_bytes())?;
             let answer = call(&["shell", "setPluginEnabled", id, "false"]);
-            match on_bar(shell_json, id) {
+            match settle(shell_json, id, false, &answer) {
                 Some(false) => tracing::info!(id, ?here, "hid bar widget"),
+                // It said it did: a record left over is harmless, as the
+                // next sync drops it while the widget is on the bar.
+                Some(true) if matches!(answer, Ok(true)) => {
+                    anyhow::bail!("the shell said it disabled {id}, but it is still on the bar")
+                }
                 Some(true) => {
                     std::fs::remove_file(record).ok();
                     answer?;
@@ -161,7 +168,7 @@ fn reconcile(
         (false, None, Some(saved)) => {
             let placement = restore_placement(&shell, &saved).to_string();
             let answer = call(&["shell", "enablePlugin", id, &placement]);
-            if on_bar(shell_json, id) == Some(true) {
+            if settle(shell_json, id, true, &answer) == Some(true) {
                 std::fs::remove_file(record).ok();
                 tracing::info!(id, %placement, "restored bar widget");
             } else {
@@ -187,6 +194,22 @@ fn read_shell(path: &Path) -> Result<Option<Value>> {
         Err(e) => return Err(e).context("reading shell.json"),
     };
     Ok(Some(serde_json::from_str(&text).context("parsing shell.json")?))
+}
+
+/// Whether widget `id` is on the bar, by shell.json, once the shell has had
+/// a moment to save a change it answered "ok" to.
+fn settle(shell_json: &Path, id: &str, want: bool, answer: &Result<bool>) -> Option<bool> {
+    let mut now = on_bar(shell_json, id);
+    if matches!(answer, Ok(true)) {
+        for _ in 0..20 {
+            if now == Some(want) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            now = on_bar(shell_json, id);
+        }
+    }
+    now
 }
 
 /// Whether widget `id` is on the bar now, by shell.json. `None` when that
@@ -273,6 +296,31 @@ mod tests {
 
         // So turning hiding off still brings it back.
         reconcile(WORKSPACES, false, &shell, &record, &mut shell_that(&shell, &["menu", WORKSPACES], true)).unwrap();
+        assert!(!record.exists());
+    }
+
+    /// A shell that answers "ok" at once and lays the bar out as `left` a
+    /// moment later: it saves shell.json in the background.
+    fn shell_that_saves_late(shell: &std::path::Path, left: &[&str]) -> impl FnMut(&[&str]) -> Result<bool> {
+        let (shell, layout) = (shell.to_path_buf(), bar(left, &[]).to_string());
+        move |_| {
+            let (shell, layout) = (shell.clone(), layout.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                std::fs::write(&shell, &layout).unwrap();
+            });
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn a_shell_that_saves_after_it_answers_is_waited_for() {
+        let (shell, record) = scratch("late", &["menu", WORKSPACES]);
+        reconcile(WORKSPACES, true, &shell, &record, &mut shell_that_saves_late(&shell, &["menu"])).unwrap();
+        assert!(record.exists(), "hidden, once the shell has saved: keep the record");
+
+        reconcile(WORKSPACES, false, &shell, &record, &mut shell_that_saves_late(&shell, &["menu", WORKSPACES]))
+            .unwrap();
         assert!(!record.exists());
     }
 
