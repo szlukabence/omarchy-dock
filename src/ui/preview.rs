@@ -30,7 +30,7 @@ use crate::config::Position;
 use crate::hypr::Address;
 
 /// Layer namespace, so Hyprland rules can target the strip separately.
-pub const NAMESPACE: &str = "omarchy-dock-preview";
+pub const NAMESPACE: &str = "berth-preview";
 
 /// Most tiles shown at once. An app with more windows than this is already
 /// better served by its workspace strip than by a row of postage stamps.

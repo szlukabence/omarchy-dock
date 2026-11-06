@@ -38,8 +38,8 @@ cd "$root/packaging/local"
 # thing here.
 makepkg -si
 
-command -v omarchy-dock >/dev/null 2>&1 ||
-  die "the package installed but omarchy-dock is not on PATH.
+command -v berth >/dev/null 2>&1 ||
+  die "the package installed but berth, the dock, is not on PATH.
   If you have a stale copy in ~/.local/bin, remove it — that directory can
   precede /usr/bin and would shadow the package."
 
@@ -51,7 +51,7 @@ cat <<'EOF'
 
 Done. Start it now with:
 
-  omarchy-dock &
+  berth &
 
 or just log out and back in — the plugin starts it with the shell.
 

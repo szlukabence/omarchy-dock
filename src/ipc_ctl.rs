@@ -78,6 +78,70 @@ pub fn parse(line: &str) -> Option<Control> {
     }
 }
 
+/// Whether a process named `comm` is a dock from before the program was
+/// renamed `berth`: Omarchy 4.5 ships a command of its own at the old name.
+fn predates_rename(comm: &str) -> bool {
+    comm.trim_end() == "omarchy-dock"
+}
+
+/// Stop a dock from before the rename, if one is running, before this one
+/// starts.
+///
+/// Upgrading leaves that dock running, and nothing at the new name reaches
+/// it: `pkill -x berth` misses it, `pkill -x omarchy-dock` would also hit
+/// Omarchy's own command of that name, and GTK hands this launch over to it
+/// as the app's running instance and exits. Whatever holds the control
+/// socket is a dock, so its process is ours to stop. This waits for it to be
+/// gone: on the way out it gives back the bar's workspaces, which this one
+/// would otherwise race.
+pub fn replace_older_dock() {
+    let Some(path) = socket_path() else { return };
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(&path) else { return };
+    let Some(pid) = peer_pid(&stream) else { return };
+    drop(stream);
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    if !predates_rename(&comm) {
+        return;
+    }
+    tracing::info!(pid, "stopping the dock this one replaces");
+    // SAFETY: kill(2) only sends a signal; the pid is the socket's peer.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if exited(std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().as_deref()) {
+            return;
+        }
+    }
+    tracing::warn!(pid, "the dock this one replaces is still running");
+}
+
+/// The process at the other end of a Unix socket.
+fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` describe a buffer of exactly a `ucred`.
+    let ok = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    } == 0;
+    (ok && cred.pid > 0).then_some(cred.pid)
+}
+
+/// Whether a process has exited, from its `/proc/<pid>/stat`: gone, or a
+/// zombie waiting for its parent.
+fn exited(stat: Option<&str>) -> bool {
+    let Some(stat) = stat else { return true };
+    // The state follows the name, which is in brackets and may hold either.
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next());
+    matches!(state, Some("Z" | "X"))
+}
+
 /// Serve the control socket until the process exits.
 pub async fn serve(tx: Sender) -> Result<()> {
     let path = socket_path().context("XDG_RUNTIME_DIR is not set; no control socket")?;
@@ -85,9 +149,17 @@ pub async fn serve(tx: Sender) -> Result<()> {
     // A stale socket from a crashed instance would make bind() fail. Removing
     // it is safe: a live instance would still be holding the path, and we
     // check for that first by trying to connect.
+    //
+    // A dock this one replaced may still be on its way out, so it is given a
+    // few seconds to let go.
     if path.exists() {
-        if UnixStream::connect(&path).await.is_ok() {
-            anyhow::bail!("another omarchy-dock is already running at {}", path.display());
+        let mut tries = 0;
+        while UnixStream::connect(&path).await.is_ok() {
+            tries += 1;
+            if tries == 50 {
+                anyhow::bail!("another dock is already running at {}", path.display());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         std::fs::remove_file(&path).ok();
     }
@@ -123,6 +195,24 @@ pub async fn serve(tx: Sender) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_dock_from_before_the_rename_is_replaced() {
+        // What /proc/<pid>/comm reads, newline and all.
+        assert!(predates_rename("omarchy-dock\n"));
+        // A second berth is not replaced: two docks would fight.
+        assert!(!predates_rename("berth\n"));
+        assert!(!predates_rename("omarchy-dockctl\n"));
+    }
+
+    #[test]
+    fn a_process_that_is_gone_or_a_zombie_has_exited() {
+        assert!(exited(None));
+        assert!(exited(Some("4321 (omarchy-dock) Z 1 4321 4321 0 -1")));
+        // The name is in brackets and may hold spaces or brackets itself.
+        assert!(!exited(Some("4321 (a) b) S 1 4321 4321 0 -1")));
+        assert!(!exited(Some("4321 (omarchy-dock) S 1 4321 4321 0 -1")));
+    }
 
     #[test]
     fn activate_is_one_based_on_the_wire() {

@@ -1,4 +1,4 @@
-//! `omarchy-dockctl` — send a command to a running omarchy-dock.
+//! `omarchy-dockctl` — send a command to the running dock, `berth`.
 //!
 //! Exists because a layer-shell surface cannot bind global hotkeys. Wire it up
 //! in `~/.config/hypr/bindings.lua`:
@@ -117,7 +117,7 @@ fn send(command: &str) -> Result<(), String> {
     let path = socket_path()
         .ok_or("XDG_RUNTIME_DIR is not set, so there is no dock to reach")?;
     let mut stream = UnixStream::connect(&path).map_err(|e| {
-        format!("cannot reach the dock at {}: {e}\nis omarchy-dock running?", path.display())
+        format!("cannot reach the dock at {}: {e}\nis the dock (berth) running?", path.display())
     })?;
     // One command per line; the dock reads lines.
     stream

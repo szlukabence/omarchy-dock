@@ -432,7 +432,7 @@ fn menu_block() -> String {
         r#""dock.toggle_autohide": {"icon":"\uf070","label":"Toggle auto-hide","action":"omarchy-dockctl toggle-autohide"}"#,
         r#""dock.settings": {"icon":"\uf013","label":"Settings","description":"Open the dock settings window","action":"omarchy-dockctl settings"}"#,
         r#""dock.reload": {"icon":"\uf021","label":"Reload","description":"Re-read config and rebuild","action":"omarchy-dockctl reload"}"#,
-        r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x omarchy-dock; setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"}"#,
+        r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x berth; setsid uwsm-app -- berth >/dev/null 2>&1 &"}"#,
     ];
 
     let mut out = String::from(MENU_BEGIN);
@@ -586,7 +586,7 @@ fn hypr_block() -> String {
          -- does nothing until the subsystem is on — so this turns it on, then\n\
          -- opts only the dock's own layer into it.\n\
          hl.config({{ decoration = {{ blur = {{ enabled = true, size = 6, passes = 3 }} }} }})\n\
-         hl.layer_rule({{ match = {{ namespace = \"^omarchy-dock$\" }}, blur = true, ignore_alpha = 0.2 }})\n\
+         hl.layer_rule({{ match = {{ namespace = \"^berth$\" }}, blur = true, ignore_alpha = 0.2 }})\n\
          {HYPR_END}"
     )
 }
@@ -610,6 +610,12 @@ fn blur_is_enabled() -> bool {
                 .or_else(|| v.get("int").and_then(|n| n.as_i64()).map(|n| n == 1))
         })
         .unwrap_or(false)
+}
+
+/// Whether the user once ran `install --blur`: our block is in the file.
+fn opted_into_blur(path: &Path) -> bool {
+    let Ok(Some(text)) = read_existing(path) else { return false };
+    matches!(find_block(&text, HYPR_BEGIN, HYPR_END), Block::Found(..))
 }
 
 fn install_blur(path: PathBuf) -> Result<Report> {
@@ -1221,8 +1227,9 @@ fn install_into(out: &mut Vec<Report>, blur: bool, keys: Option<&str>) -> Result
     }
 
     // Blur is opt-in: it turns the effect on for the *whole* desktop, which
-    // Omarchy deliberately ships off, and only the glass style needs it.
-    if blur {
+    // Omarchy deliberately ships off, and only the glass style needs it. A
+    // block from an earlier opt-in is brought up to date either way.
+    if blur || opted_into_blur(&looknfeel_path()) {
         out.push(install_blur(looknfeel_path())?);
     } else if !blur_is_enabled() {
         out.push(Report {
@@ -1716,6 +1723,23 @@ mod tests {
         for path in [&menu, &looknfeel] {
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn a_blur_block_already_there_counts_as_opted_in() {
+        // So a plain install brings its rule up to date, as when the dock's
+        // layer was renamed, without anyone opting in afresh.
+        let (dir, _) = scratch("blur-optin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let looknfeel = dir.join("looknfeel.lua");
+        assert!(!opted_into_blur(&looknfeel), "no file");
+        std::fs::write(&looknfeel, "-- mine\n").unwrap();
+        assert!(!opted_into_blur(&looknfeel));
+        std::fs::write(&looknfeel, format!("-- mine\n\n{HYPR_BEGIN}\nold rule\n{HYPR_END}\n")).unwrap();
+        assert!(opted_into_blur(&looknfeel));
+        // A start marker alone is not ours to finish.
+        std::fs::write(&looknfeel, format!("{HYPR_BEGIN}\nold rule\n")).unwrap();
+        assert!(!opted_into_blur(&looknfeel));
     }
 
     #[test]

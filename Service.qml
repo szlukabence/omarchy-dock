@@ -3,11 +3,12 @@ import Quickshell.Io
 
 // Installed by omarchy-dock. Removed by `omarchy-dockctl uninstall`.
 //
-// omarchy-dock is a separate GTK4 layer-shell process rather than QML, so this
-// plugin supervises it instead of drawing it: enabling the plugin starts the
-// dock, disabling it stops the dock. That is what makes the dock appear in
-// `omarchy menu plugin` and the plugin managers alongside every other
-// component, and gives it an autostart tied to the shell's own lifecycle.
+// The dock is a separate GTK4 layer-shell process, `berth`, rather than QML,
+// so this plugin supervises it instead of drawing it: enabling the plugin
+// starts the dock, disabling it stops the dock. That is what makes the dock
+// appear in `omarchy menu plugin` and the plugin managers alongside every
+// other component, and gives it an autostart tied to the shell's own
+// lifecycle.
 Item {
   id: root
 
@@ -24,19 +25,19 @@ Item {
   Process {
     id: starter
     command: ["bash", "-lc",
-      "if ! command -v omarchy-dock >/dev/null 2>&1; then " +
+      "if ! command -v berth >/dev/null 2>&1; then " +
         "omarchy notification send --app-name Dock -u critical " +
         "'Dock is not installed' " +
         "'This plugin is only the supervisor. Install it as described at github.com/szlukabence/omarchy-dock#install (the package is checked against a SHA-256), or build it: cd ~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock && ./install.sh'; " +
         "exit 0; " +
       "fi; " +
-      "pgrep -x omarchy-dock >/dev/null || setsid uwsm-app -- omarchy-dock >/dev/null 2>&1 &"]
+      "pgrep -x berth >/dev/null || setsid uwsm-app -- berth >/dev/null 2>&1 &"]
     running: true
   }
 
   Process {
     id: stopper
-    command: ["pkill", "-x", "omarchy-dock"]
+    command: ["pkill", "-x", "berth"]
   }
 
   // Stopping on teardown is what makes disabling the plugin actually disable

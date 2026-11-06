@@ -34,6 +34,7 @@ optdepends=(
 )
 
 conflicts=('omarchy-dock-bin')
+install=omarchy-dock.install
 
 # !debug because the release profile carries no debug symbols, so the split
 # debug package makepkg would otherwise build is empty and just noise.
@@ -46,12 +47,12 @@ build() {
   export RUSTUP_TOOLCHAIN=$_rustver
   export CARGO_TARGET_DIR="$_root/target"
   # The magnification spike is a development artefact and is not shipped.
-  cargo build --locked --release --bin omarchy-dock --bin omarchy-dockctl
+  cargo build --locked --release --bin berth --bin omarchy-dockctl
 }
 
 package() {
   cd "$_root"
-  install -Dm0755 "target/release/omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
+  install -Dm0755 "target/release/berth" "$pkgdir/usr/bin/berth"
   install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/omarchy-dock/README.md"
   install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/omarchy-dock/LICENSE"

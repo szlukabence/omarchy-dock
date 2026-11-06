@@ -28,7 +28,7 @@ use crate::ui::Geometry;
 pub type ActionSink = Rc<dyn Fn(MenuAction)>;
 
 /// Must match the Hyprland `layerrule` namespace.
-pub const LAYER_NAMESPACE: &str = "omarchy-dock";
+pub const LAYER_NAMESPACE: &str = "berth";
 
 /// Launch feedback: the slot's hover fill breathes while the app starts.
 ///

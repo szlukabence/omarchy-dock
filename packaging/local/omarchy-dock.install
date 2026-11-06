@@ -1,0 +1,14 @@
+# Shown once, to anyone upgrading from before the dock was renamed.
+post_upgrade() {
+  if (( $(vercmp "$2" 1.4.4) < 0 )); then
+    cat <<'MSG'
+==> The dock program is now called berth: Omarchy 4.5 ships a command of its
+    own at the old name, omarchy-dock. As your own user, not with sudo, run
+
+      omarchy-dockctl install
+
+    so the plugin starts the dock by its new name, then restart it from the
+    Omarchy menu: Dock, Restart.
+MSG
+  fi
+}

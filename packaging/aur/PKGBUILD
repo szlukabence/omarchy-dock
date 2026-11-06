@@ -45,6 +45,7 @@ optdepends=(
 
 # Pacman should auto-remove the prebuilt variant when switching to source.
 conflicts=('omarchy-dock-bin')
+install=omarchy-dock.install
 
 makedepends+=('git')
 # !debug: the release profile carries no symbols, so the split debug package
@@ -64,18 +65,18 @@ build() {
   export RUSTUP_TOOLCHAIN=$_rustver
   export CARGO_TARGET_DIR=target
   # The magnification spike is a development artefact and is not shipped.
-  cargo build --frozen --release --bin omarchy-dock --bin omarchy-dockctl
+  cargo build --frozen --release --bin berth --bin omarchy-dockctl
 }
 
 check() {
   cd "$pkgname"
   export RUSTUP_TOOLCHAIN=$_rustver
-  cargo test --frozen --release --bin omarchy-dock --bin omarchy-dockctl
+  cargo test --frozen --release --bin berth --bin omarchy-dockctl
 }
 
 package() {
   cd "$pkgname"
-  install -Dm0755 "target/release/omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
+  install -Dm0755 "target/release/berth" "$pkgdir/usr/bin/berth"
   install -Dm0755 "target/release/omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

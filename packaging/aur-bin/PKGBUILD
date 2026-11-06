@@ -28,6 +28,7 @@ optdepends=(
 )
 
 conflicts=('omarchy-dock')
+install=omarchy-dock-bin.install
 provides=('omarchy-dock')
 
 options=('!debug')
@@ -35,7 +36,7 @@ source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgn
 sha256sums=('ff01e0950805b5b8fb81e00caa426b0f9ed95a548d027f358463f8fc288540b3')
 
 package() {
-  install -Dm0755 "omarchy-dock" "$pkgdir/usr/bin/omarchy-dock"
+  install -Dm0755 "berth" "$pkgdir/usr/bin/berth"
   install -Dm0755 "omarchy-dockctl" "$pkgdir/usr/bin/omarchy-dockctl"
   install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$_pkgname/README.md"
   install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"

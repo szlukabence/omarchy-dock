@@ -341,7 +341,7 @@ fn build(app: &gtk::Application) {
 
     if std::env::var("SPIKE_NO_LAYER").is_err() {
         window.init_layer_shell();
-        window.set_namespace(Some("omarchy-dock"));
+        window.set_namespace(Some("berth"));
         window.set_layer(Layer::Top);
         window.set_anchor(Edge::Bottom, true);
         window.set_margin(Edge::Bottom, 12);

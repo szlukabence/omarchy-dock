@@ -51,7 +51,7 @@ if [[ $(rustc --version) != "rustc $rustver "* ]]; then
   echo "error: this is $(rustc --version), the release needs Rust $rustver" >&2
   exit 1
 fi
-cargo test --locked --release --bin omarchy-dock --bin omarchy-dockctl
+cargo test --locked --release --bin berth --bin omarchy-dockctl
 
 # The package is built by the same PKGBUILD that installs a checkout locally,
 # so what is released is what was tested above, not a second clone of it.
@@ -67,10 +67,10 @@ cp "packaging/local/$pkg" dist/
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-install -m0755 target/release/omarchy-dock target/release/omarchy-dockctl "$stage/"
+install -m0755 target/release/berth target/release/omarchy-dockctl "$stage/"
 install -m0644 README.md LICENSE THIRD_PARTY_NOTICES "$stage/"
 tar -czf "dist/omarchy-dock-$version-$arch.tar.gz" --owner=0 --group=0 -C "$stage" \
-  omarchy-dock omarchy-dockctl README.md LICENSE THIRD_PARTY_NOTICES
+  berth omarchy-dockctl README.md LICENSE THIRD_PARTY_NOTICES
 
 (cd dist && sha256sum -- * > SHA256SUMS)
 echo

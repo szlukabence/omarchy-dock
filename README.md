@@ -35,6 +35,25 @@ reviewed along with the code: if the file on the release is ever replaced,
 install the file: `pacman -U <url>` does not work here, because Arch's default
 `pacman.conf` requires a signature for packages fetched from a URL.
 
+The package is called `omarchy-dock`, and the program it installs is `berth`.
+Omarchy 4.5 ships a command of its own named `omarchy-dock` (and a dock of its
+own for floating workspaces), so the dock's program took a name of its own.
+
+### Upgrading
+
+Install the new package with the lines above, then, as your own user:
+
+```bash
+omarchy-dockctl install
+```
+
+and restart the dock from the Omarchy menu: **Dock → Restart**. Coming from
+1.4.3 or earlier, `install` is what moves the plugin and the menu over to the
+new program name. A plugin added with `omarchy plugin add` is a git checkout,
+which `install` leaves alone, so update that one with `omarchy plugin update
+io.github.szlukabence.omarchy-dock`. A dock from before the rename that is
+still running is stopped by the new one when it starts.
+
 ### Building it yourself
 
 ```bash
@@ -324,7 +343,7 @@ does nothing until the blur subsystem is on. Add to `~/.config/hypr/looknfeel.lu
 
 ```lua
 hl.config({ decoration = { blur = { enabled = true, size = 6, passes = 3 } } })
-hl.layer_rule({ match = { namespace = "^omarchy-dock$" }, blur = true, ignore_alpha = 0.2 })
+hl.layer_rule({ match = { namespace = "^berth$" }, blur = true, ignore_alpha = 0.2 })
 ```
 
 ## Configuration
