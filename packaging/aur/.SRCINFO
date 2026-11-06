@@ -1,8 +1,9 @@
 pkgbase = omarchy-dock
 	pkgdesc = A fast, modern dock for Omarchy (Hyprland / Arch), in Rust + GTK4
-	pkgver = 1.4.3
+	pkgver = 1.4.4
 	pkgrel = 1
 	url = https://github.com/szlukabence/omarchy-dock
+	install = omarchy-dock.install
 	arch = x86_64
 	arch = aarch64
 	license = MIT
@@ -23,7 +24,7 @@ pkgbase = omarchy-dock
 	optdepends = gvfs-afc: iPhones
 	conflicts = omarchy-dock-bin
 	options = !debug
-	source = omarchy-dock::git+https://github.com/szlukabence/omarchy-dock.git#commit=cc3d413c4b6724820cc708655c22c86133d3c013
-	sha256sums = 4ba3c7a770bcab72fec34366787e2259e3fb9d754e36ebe8f37ea074fd3a296f
+	source = omarchy-dock::git+https://github.com/szlukabence/omarchy-dock.git#commit=348ae083bd7ed36ed35dec58b06b16da1311e6ab
+	sha256sums = 6fe13ede4840405dc287f6d9223b24d9dce75f4de2530c854c56300380f984a0
 
 pkgname = omarchy-dock

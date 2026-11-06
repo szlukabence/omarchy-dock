@@ -8,7 +8,7 @@
 
 pkgname=omarchy-dock-bin
 _pkgname=omarchy-dock
-pkgver=1.4.3
+pkgver=1.4.4
 pkgrel=1
 pkgdesc="A fast, modern dock for Omarchy (Hyprland / Arch) — prebuilt binaries"
 arch=('x86_64')
@@ -33,7 +33,7 @@ provides=('omarchy-dock')
 
 options=('!debug')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
-sha256sums=('ff01e0950805b5b8fb81e00caa426b0f9ed95a548d027f358463f8fc288540b3')
+sha256sums=('a8c317b358294c2712633f59e332e705d96344d3f9bc32c433944b424d09285f')
 
 package() {
   install -Dm0755 "berth" "$pkgdir/usr/bin/berth"
