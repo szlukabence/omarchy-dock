@@ -1286,6 +1286,13 @@ fn uninstall_into(out: &mut Vec<Report>) -> Result<()> {
         .map(|e| format!("could not put the bar's workspaces back: {e}"));
     out.push(Report { label: "bar workspaces", path: shell_json_path(), installed: false, note });
 
+    // Switch Omarchy's own dock back on if the dock switched it off; one the
+    // user switched off stays off.
+    let note = crate::bar_widgets::sync_plugin(crate::bar_widgets::OMARCHY_DOCK, false)
+        .err()
+        .map(|e| format!("could not switch Omarchy's dock back on: {e}"));
+    out.push(Report { label: "Omarchy's dock", path: shell_json_path(), installed: false, note });
+
     // Drop the shell.json reference before the files, so the shell is never
     // pointed at a plugin directory that has just been deleted.
     set_plugin_enabled(false)?;

@@ -585,7 +585,7 @@ pub fn run() -> glib::ExitCode {
         }
 
         let cfg = Config::load();
-        sync_bar_workspaces(&cfg);
+        sync_shell_plugins(&cfg);
         let provider = gtk::CssProvider::new();
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
@@ -723,7 +723,7 @@ pub fn run() -> glib::ExitCode {
                     AppEvent::FocusSettled => app.settle_focus(),
                     AppEvent::ConfigChanged => {
                         let next = Config::load();
-                        sync_bar_workspaces(&next);
+                        sync_shell_plugins(&next);
                         // Starts or stops watching notifications with it.
                         if let Some(w) = &app.worker {
                             let on = next.items.notification_badges;
@@ -756,13 +756,17 @@ pub fn run() -> glib::ExitCode {
         });
     });
 
-    // The bar's workspaces are hidden only while the dock is there to show
-    // its own. Stopping the dock — disabling the plugin, logging out, a
-    // `pkill` — sends a signal, so every way out puts them back; the next
-    // start takes them out again if the setting is still on.
+    // The bar's workspaces are hidden, and Omarchy's dock switched off, only
+    // while this dock is there to stand in for them. Stopping it — disabling
+    // the plugin, logging out, a `pkill` — sends a signal, so every way out
+    // puts them back; the next start takes them out again if the settings
+    // are still on.
     gtk_app.connect_shutdown(|_| {
         if let Err(e) = crate::bar_widgets::sync(crate::bar_widgets::WORKSPACES, false) {
             tracing::warn!(error = %e, "cannot give the bar back its workspaces");
+        }
+        if let Err(e) = crate::bar_widgets::sync_plugin(crate::bar_widgets::OMARCHY_DOCK, false) {
+            tracing::warn!(error = %e, "cannot switch Omarchy's dock back on");
         }
     });
 
@@ -1042,13 +1046,18 @@ fn watch_signals(tx: crate::event::Sender) {
     }
 }
 
-/// Hide the bar's workspace widget while the dock shows workspaces, or put it
-/// back. Off the GTK thread: it talks to the shell, which takes a moment.
-fn sync_bar_workspaces(cfg: &Config) {
+/// Hide the bar's workspace widget while the dock shows workspaces, and
+/// switch Omarchy's own dock off while this one stands in for it, or give
+/// them back. Off the GTK thread: it talks to the shell, which takes a moment.
+fn sync_shell_plugins(cfg: &Config) {
     let hide = cfg.workspaces.enabled && cfg.workspaces.hide_bar_workspaces;
+    let replace = cfg.dock.replace_omarchy_dock;
     std::thread::spawn(move || {
         if let Err(e) = crate::bar_widgets::sync(crate::bar_widgets::WORKSPACES, hide) {
             tracing::warn!(error = %e, "cannot sync the bar's workspaces");
+        }
+        if let Err(e) = crate::bar_widgets::sync_plugin(crate::bar_widgets::OMARCHY_DOCK, replace) {
+            tracing::warn!(error = %e, "cannot sync Omarchy's dock");
         }
     });
 }

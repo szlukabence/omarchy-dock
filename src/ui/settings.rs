@@ -195,6 +195,9 @@ fn build_window() -> gtk::Window {
     list.append(&toggle("Reserve screen space", cfg.dock.reserve_space, |v| {
         edit(move |c| c.dock.reserve_space = v)
     }));
+    list.append(&toggle("Replace Omarchy's dock", cfg.dock.replace_omarchy_dock, |v| {
+        edit(move |c| c.dock.replace_omarchy_dock = v)
+    }));
 
     list.append(&separator());
 

@@ -117,6 +117,9 @@ pub struct Dock {
     pub radius: f64,
     /// Reserve screen space so windows never sit under the dock.
     pub reserve_space: bool,
+    /// Switch Omarchy's own dock off while this one runs, so there is one
+    /// dock on a floating workspace rather than two.
+    pub replace_omarchy_dock: bool,
     /// How long the pointer must rest on an icon before its name appears.
     pub tooltip_delay_ms: u64,
 }
@@ -355,6 +358,7 @@ impl Default for Dock {
             spacing: None,
             radius: 22.0,
             reserve_space: false,
+            replace_omarchy_dock: true,
             tooltip_delay_ms: 400,
         }
     }

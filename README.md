@@ -38,6 +38,9 @@ install the file: `pacman -U <url>` does not work here, because Arch's default
 The package is called `omarchy-dock`, and the program it installs is `berth`.
 Omarchy 4.5 ships a command of its own named `omarchy-dock` (and a dock of its
 own for floating workspaces), so the dock's program took a name of its own.
+While it runs, the dock switches Omarchy's own dock off, so a floating
+workspace shows one dock rather than two; turn `dock.replace_omarchy_dock` off
+to keep both.
 
 ### Upgrading
 
@@ -241,6 +244,7 @@ ever in response to an explicit action:
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only**; a later plain `install` brings that block up to date | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
 | `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys |
+| `disabledPlugins` in `shell.json` | `dock.replace_omarchy_dock` (on by default) | Switches Omarchy's own dock (`omarchy.dock`, Omarchy 4.5 and later) off through the shell, as `omarchy plugin disable` does, while the dock runs; turning the setting off, stopping the dock, or `uninstall` switches it back on. Only one the dock switched off is switched back on: the record of that is kept in `~/.local/state/omarchy-dock/` |
 | The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off, or stopping the dock, puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
 | `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |
 
@@ -252,8 +256,9 @@ plugin of that name, and both are left alone. The files earlier releases wrote
 are kept in `resources/released/` for exactly these comparisons. Outside its
 own config directory, nothing is written on start, on poll, or on open, apart
 from the control socket `omarchy-dockctl` talks to, in your private
-`$XDG_RUNTIME_DIR` — and, with `hide_bar_workspaces` on, the check at start
-that the bar matches, undone when the dock stops. The dock saves its own `config.toml` only when you change
+`$XDG_RUNTIME_DIR` — and the checks at start that Omarchy's own dock is
+switched off (with `replace_omarchy_dock`, on by default) and that the bar
+matches (with `hide_bar_workspaces` on), both undone when the dock stops. The dock saves its own `config.toml` only when you change
 a setting from the dock (pinning, the settings window, the auto-hide toggle),
 and then edits it in place: only the setting you changed is rewritten, and your
 comments, layout and any keys it does not know stay as they were. While the
@@ -383,6 +388,7 @@ Notable keys:
 | `autohide.reveal_on_attention` | Slide a hidden dock out while an app's attention pulse runs — never over a fullscreen window, a recording or the screensaver (default: off) |
 | `dock.spacing` | Gap between icons; omit for automatic (derived from hover zoom) |
 | `dock.tooltip_delay_ms` | Delay before a hovered icon's name appears |
+| `dock.replace_omarchy_dock` | Switch Omarchy's own dock off while this one runs, and back on when it stops (default: on) |
 | `theme.style` | `omarchy` (default) \| `glass` |
 | `theme.follow_shell_scale` | Track the shell's spacing/font scale (default: on) |
 | `theme.radius` | Corner radius; omit to mirror Hyprland's `decoration:rounding` |
