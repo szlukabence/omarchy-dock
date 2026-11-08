@@ -434,7 +434,9 @@ fn menu_block() -> String {
         r#""dock.toggle_autohide": {"icon":"\uf070","label":"Toggle auto-hide","action":"omarchy-dockctl toggle-autohide"}"#,
         r#""dock.settings": {"icon":"\uf013","label":"Settings","description":"Open the dock settings window","action":"omarchy-dockctl settings"}"#,
         r#""dock.reload": {"icon":"\uf021","label":"Reload","description":"Re-read config and rebuild","action":"omarchy-dockctl reload"}"#,
-        r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x berth; setsid uwsm-app -- berth >/dev/null 2>&1 &"}"#,
+        // Started only once the old dock is gone: on its way out it still
+        // holds the app's name, and GTK would hand the new one over to it.
+        r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x berth; for i in $(seq 150); do pgrep -x berth >/dev/null || break; sleep 0.1; done; setsid uwsm-app -- berth >/dev/null 2>&1 &"}"#,
     ];
 
     let mut out = String::from(MENU_BEGIN);
@@ -1697,6 +1699,47 @@ mod tests {
         // Every row must be reachable without the dock running, or the menu
         // would offer dead entries after a crash.
         assert!(block.contains("omarchy-dockctl"));
+    }
+
+    #[test]
+    fn restart_starts_the_dock_only_once_the_old_one_is_gone() {
+        // A dock on its way out still holds the app's name, and GTK hands a
+        // new launch over to it, so the new one would quit with it.
+        let block = menu_block();
+        let row = block.lines().find(|l| l.contains("\"dock.restart\"")).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&format!("{{{}}}", row.trim().trim_end_matches(','))).unwrap();
+        let action = json["dock.restart"]["action"].as_str().unwrap();
+
+        let (dir, _) = scratch("restart");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.join("log");
+        let stub = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let log_s = log.display();
+        stub("pkill", &format!("echo pkill >> {log_s}"));
+        // The old dock answers to its name for three looks, then is gone.
+        stub("pgrep", &format!("echo pgrep >> {log_s}; [ $(grep -c pgrep {log_s}) -le 3 ]"));
+        stub("uwsm-app", &format!("echo start >> {log_s}"));
+
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let status = std::process::Command::new("bash").arg("-c").arg(action).env("PATH", path).status().unwrap();
+        assert!(status.success());
+        for _ in 0..50 {
+            if std::fs::read_to_string(&log).unwrap_or_default().contains("start") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let lines: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        assert_eq!(lines.first().map(String::as_str), Some("pkill"), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("start"), "{lines:?}");
+        assert_eq!(lines.iter().filter(|l| *l == "pgrep").count(), 4, "{lines:?}");
     }
 
     #[test]
