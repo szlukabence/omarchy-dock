@@ -228,6 +228,7 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
     } else {
         Surface { border: Border::solid(hairline_color(palette)), ..panel.clone() }
     };
+    let preview = if omarchy { shell.popups.clone() } else { menu.clone() };
     let (sel_bg, sel_alpha) = if omarchy {
         (shell.menu.selected_background, shell.menu.selected_background_alpha)
     } else {
@@ -293,13 +294,14 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
   background-color: {divider};
 }}
 
-/* Window previews: a strip of thumbnails above the hovered app. The same card
-   as a menu, because to the eye it is one. */
+/* Window previews: a strip of thumbnails above the hovered app. A popup, as
+   Omarchy draws its own dock's: [menu] is for full menu cards, and a theme
+   may give the two different borders. */
 .dock-preview-window {{ background: transparent; }}
 
 .dock-preview {{
-  background-color: {menu_bg};
-{menu_border}
+  background-color: {preview_bg};
+{preview_border}
   border-radius: {radius}px;
   padding: {pad}px;
 }}
@@ -334,6 +336,13 @@ pub fn generate(cfg: &Config, palette: &Palette, shell: &Shell) -> String {
             menu.border_alpha,
             menu.border_width,
             Some(&menu.background_css()),
+        ),
+        preview_bg = preview.background_css(),
+        preview_border = border_rules(
+            &preview.border,
+            preview.border_alpha,
+            preview.border_width,
+            Some(&preview.background_css()),
         ),
         menu_w = m.space("dropdown-width", 240.0).max(190.0),
         move_w = m.space("control-height", 28.0).max(24.0),
@@ -631,6 +640,27 @@ mod tests {
         shell.window_border = None;
         let css = generate(&cfg, &palette, &shell);
         assert!(panel_rule(&css).contains("border: 1px solid"), "{}", panel_rule(&css));
+    }
+
+    /// The `.dock-preview` rule, alone.
+    fn preview_rule(css: &str) -> &str {
+        let start = css.find("\n.dock-preview {").expect("a preview rule");
+        let end = start + css[start..].find('}').unwrap();
+        &css[start..end]
+    }
+
+    #[test]
+    fn the_preview_strip_is_drawn_as_a_popup_not_a_menu() {
+        // Omarchy draws a dock's popups, its own dock's included, from the
+        // [popups] tokens; [menu] is for full menu cards, and a theme may
+        // give the two different borders.
+        let (cfg, palette, mut shell) = setup(Style::Omarchy);
+        shell.popups.border = Border::solid(Rgb { r: 0xb9, g: 0x76, b: 0x70 });
+        shell.menu.surface.border = Border::solid(Rgb { r: 0xfd, g: 0xf9, b: 0xf8 });
+        let css = generate(&cfg, &palette, &shell);
+        let rule = preview_rule(&css);
+        assert!(rule.contains(&shell.popups.border.to_css_solid(shell.popups.border_alpha)), "{rule}");
+        assert!(!rule.contains(&shell.menu.surface.border.to_css_solid(shell.menu.surface.border_alpha)), "{rule}");
     }
 
     #[test]
