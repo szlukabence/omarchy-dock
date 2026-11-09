@@ -40,7 +40,12 @@ Omarchy 4.5 ships a command of its own named `omarchy-dock` (and a dock of its
 own for floating workspaces), so the dock's program took a name of its own.
 While it runs, the dock switches Omarchy's own dock off, so a floating
 workspace shows one dock rather than two; turn `dock.replace_omarchy_dock` off
-to keep both.
+to keep both. Omarchy's **Apps** (in the menu, and on Super+Alt+Space) opens the
+app grid of that dock, so `install` has the menu's Apps open the menu's own
+list of apps instead. With `install --keys`, Super+Alt+Space opens the grid
+when Omarchy's dock is running and that list when it is not; without it the
+shortcut is left alone, since the dock edits your keybindings only when asked
+to.
 
 ### Upgrading
 
@@ -241,9 +246,9 @@ ever in response to an explicit action:
 | `~/.config/omarchy/hooks/theme-set.d/omarchy-dock` | `dockctl install` | A hook that restyles the dock after a theme change |
 | `~/.config/omarchy/plugins/io.github.szlukabence.omarchy-dock/` | `dockctl install` | The supervisor plugin — skipped if it is a git checkout, or holds anything the dock did not write |
 | `~/.config/omarchy/shell.json` | `dockctl install` | One entry in `plugins[]`, which is how the shell records a plugin as enabled |
-| `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file |
+| `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `dockctl install` | A block between markers, spliced in rather than rewriting the file. Besides the **Dock** rows, it replaces Omarchy's **Apps** row with one that lists the apps in the menu itself, since the grid it opened belongs to Omarchy's own dock |
 | `~/.config/hypr/looknfeel.lua` | `dockctl install --blur` **only**; a later plain `install` brings that block up to date | Global blur plus a layer rule, needed only by `theme.style = "glass"` |
-| `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys |
+| `~/.config/hypr/bindings.lua` | `dockctl install --keys` **only** | A block between markers binding the dock-app hotkeys, and Super+Alt+Space to Omarchy's app grid, or to the menu's list of apps when Omarchy's dock is off |
 | `disabledPlugins` in `shell.json` | `dock.replace_omarchy_dock` (on by default) | Switches Omarchy's own dock (`omarchy.dock`, Omarchy 4.5 and later) off through the shell, as `omarchy plugin disable` does, while the dock runs; turning the setting off, stopping the dock, or `uninstall` switches it back on. Only one the dock switched off is switched back on: the record of that is kept in `~/.local/state/omarchy-dock/` |
 | The bar layout in `shell.json` | `workspaces.hide_bar_workspaces` **only** | Takes the bar's workspace widget out through the shell (as `omarchy plugin disable` does) while the dock shows workspaces; turning either off, or stopping the dock, puts it back exactly where it was. Its old position is kept in `~/.local/state/omarchy-dock/` |
 | `~/.local/state/omarchy-dock/plugin-files/` | `dockctl install` | Copies of the hook and plugin files as written, so `install` and `uninstall` can tell them from anything else |

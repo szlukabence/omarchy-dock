@@ -1,4 +1,4 @@
-# Shown once, to anyone upgrading from before the dock was renamed.
+# Shown once, to anyone upgrading from a release that needs `install` rerun.
 post_upgrade() {
   if (( $(vercmp "$2" 1.4.4) < 0 )); then
     cat <<'MSG'
@@ -9,6 +9,18 @@ post_upgrade() {
 
     so the plugin starts the dock by its new name, then restart it from the
     Omarchy menu: Dock, Restart.
+MSG
+  elif (( $(vercmp "$2" 1.4.5) < 0 )); then
+    cat <<'MSG'
+==> While the dock runs, Omarchy's own dock is switched off, and with it the
+    app grid behind Apps in the Omarchy menu. As your own user, not with sudo,
+    run
+
+      omarchy-dockctl install
+
+    so Apps opens the menu's list of apps instead (add --keys to fix
+    Super+Alt+Space too), then restart the dock from the Omarchy menu: Dock,
+    Restart.
 MSG
   fi
 }

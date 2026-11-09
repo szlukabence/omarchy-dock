@@ -419,6 +419,16 @@ fn plugin_is_enabled() -> bool {
 
 // ── menu extension ──────────────────────────────────────────────────────────
 
+/// What Super+Alt+Space runs: Omarchy's app grid, or the menu's own list of apps.
+///
+/// Omarchy's shortcut opens the grid of Omarchy's own dock, which is not
+/// there while this dock replaces it (the shell answers "Target not found"
+/// and exits 1). Right whichever way `dock.replace_omarchy_dock` is set, so
+/// nothing is rewritten when it flips. The `apps` menu row it falls back to
+/// has no action of its own (see `menu_block`), or this would loop.
+const APPS_COMMAND: &str =
+    "omarchy-shell omarchy.dock apps >/dev/null 2>&1 || omarchy-menu summon apps";
+
 /// Rows added to the Omarchy menu.
 ///
 /// Dotted ids give the tree its shape, so `dock.settings` lands inside `dock`
@@ -438,9 +448,16 @@ fn menu_block() -> String {
         // holds the app's name, and GTK would hand the new one over to it.
         r#""dock.restart": {"icon":"\uf01e","label":"Restart","action":"pkill -x berth; for i in $(seq 150); do pgrep -x berth >/dev/null || break; sleep 0.1; done; setsid uwsm-app -- berth >/dev/null 2>&1 &"}"#,
     ];
+    // Omarchy's own row, as its menu defines it, but without the action that
+    // opens the app grid of Omarchy's dock, which is not there while this
+    // dock replaces it. A row in the extension replaces the default one of
+    // that id whole, and without an action it opens the menu's own list of
+    // apps in place. It must stay without one: `omarchy-menu summon apps`, the
+    // shortcut's way out, runs the row's action when it has one.
+    let apps = r#""apps": {"icon":"\udb80\udc3b","label":"Apps","aliases":["app","applications"],"provider":"apps"}"#;
 
     let mut out = String::from(MENU_BEGIN);
-    for row in rows {
+    for row in rows.iter().copied().chain([apps]) {
         // Two spaces to match the file's own indentation. A trailing comma on
         // every row, including the last: JSONC allows it, and it means the
         // block can be removed without touching what follows.
@@ -967,6 +984,9 @@ fn keys_block(mods: &str) -> String {
          for i = 1, 9 do\n\
          \x20 o.bind(\"{mods} + code:\" .. tostring(i + 9), \"Dock app \" .. i, \"omarchy-dockctl activate \" .. i)\n\
          end\n\
+         -- Omarchy's Apps shortcut opens its own dock's app grid, which is gone\n\
+         -- while this dock replaces it; the menu's list of apps stands in.\n\
+         o.rebind(\"SUPER + ALT + SPACE\", \"Apps\", \"{APPS_COMMAND}\")\n\
          {KEYS_END}"
     )
 }
@@ -1699,6 +1719,75 @@ mod tests {
         // Every row must be reachable without the dock running, or the menu
         // would offer dead entries after a crash.
         assert!(block.contains("omarchy-dockctl"));
+    }
+
+    /// One row of the menu block, parsed.
+    fn menu_row(id: &str) -> serde_json::Value {
+        let block = menu_block();
+        let key = format!("\"{id}\":");
+        let row = block.lines().find(|l| l.trim_start().starts_with(&key)).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&format!("{{{}}}", row.trim().trim_end_matches(','))).unwrap();
+        json[id].clone()
+    }
+
+    /// Run `command` in bash with `omarchy-shell` answering `shell_exit` and
+    /// `omarchy-menu` logging what it was asked; returns the log.
+    fn run_apps(tag: &str, command: &str, shell_exit: i32) -> String {
+        let (dir, _) = scratch(tag);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.join("log");
+        let stub = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let log_s = log.display();
+        stub("omarchy-shell", &format!("echo \"shell $*\" >> {log_s}; echo 'Target not found.'; exit {shell_exit}"));
+        stub("omarchy-menu", &format!("echo \"menu $*\" >> {log_s}"));
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let out = std::process::Command::new("bash")
+            .args(["-c", command])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{command} failed");
+        assert!(out.stdout.is_empty(), "the shell's answer leaks: {:?}", out.stdout);
+        std::fs::read_to_string(log).unwrap_or_default()
+    }
+
+    #[test]
+    fn apps_in_the_menu_lists_the_apps_itself() {
+        // Omarchy's Apps row runs the app grid of its own dock, which is gone
+        // while this dock replaces it; the menu then just closes. Without an
+        // action the row opens the menu's own list of apps instead.
+        let row = menu_row("apps");
+        assert_eq!(row["label"], "Apps");
+        assert_eq!(row["provider"], "apps");
+        assert!(row["aliases"].as_array().unwrap().iter().any(|a| a == "applications"));
+        // `omarchy-menu summon apps` runs the row's action when it has one,
+        // so an action there would have the shortcut summon itself forever.
+        assert!(row.get("action").is_none());
+    }
+
+    #[test]
+    fn the_apps_shortcut_opens_omarchys_grid_or_else_the_menus_list() {
+        let running = run_apps("apps-grid", APPS_COMMAND, 0);
+        assert_eq!(running, "shell omarchy.dock apps\n");
+
+        let switched_off = run_apps("apps-list", APPS_COMMAND, 1);
+        assert_eq!(switched_off, "shell omarchy.dock apps\nmenu summon apps\n");
+    }
+
+    #[test]
+    fn the_keys_block_binds_the_apps_shortcut() {
+        let block = keys_block(DEFAULT_KEY_MODS);
+        let line = block.lines().find(|l| l.contains("SUPER + ALT + SPACE")).unwrap();
+        assert_eq!(line, format!("o.rebind(\"SUPER + ALT + SPACE\", \"Apps\", \"{APPS_COMMAND}\")"));
+        // Not mistaken for a number-row chord of our own on reinstall.
+        assert!(number_row_chords(&block).iter().all(|c| c == DEFAULT_KEY_MODS));
     }
 
     #[test]
