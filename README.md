@@ -272,8 +272,10 @@ notification rather than saved over what you wrote. The dock itself never runs
 `sudo` — the only privileged step is the `pacman` install you run — and
 `omarchy-dockctl install` and `uninstall` refuse to run as root, since
 everything they touch is in your home. It makes no network requests. `/tmp` is
-never written; the only thing read there is Omarchy's own screen-recording
-marker. Drives are mounted, unmounted and ejected only when you click, through
+never used. To know whether you are screen-recording, the dock watches the
+`omarchy-screenrecord-*` files Omarchy keeps in `$XDG_RUNTIME_DIR` (names only,
+never their contents) and asks `omarchy-capture-screenrecording --status`,
+which only reads. Drives are mounted, unmounted and ejected only when you click, through
 udisks2 and gvfs as you — the way your file manager does it — and the dock never
 writes to one.
 

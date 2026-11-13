@@ -1,11 +1,9 @@
 //! Debounced filesystem watching for live config and theme reload.
 //!
-//! Four things are watched:
+//! Three things are watched:
 //!   * `~/.config/omarchy-dock/`            — config.toml and style.css
 //!   * `~/.local/state/omarchy/current/`    — the active-theme symlink
 //!   * the theme directory it resolves to   — in-place palette edits
-//!   * `/tmp` for Omarchy's screen-recording marker — so the dock can get out
-//!     of the way of a recording, and come back when it stops
 //!
 //! Editors rarely write a file once; they truncate, write, rename, and often
 //! touch a backup alongside. Debouncing collapses that into a single reload.
@@ -53,13 +51,6 @@ fn run(tx: Sender) -> Result<()> {
         crate::desktop::search_dirs().into_iter().filter(|d| d.is_dir()).collect();
     for d in &app_dirs {
         debouncer.watch(d, RecursiveMode::NonRecursive).ok();
-    }
-    // The marker's *directory*, because the file itself does not exist most of
-    // the time and notify cannot watch a path that is not there yet.
-    if let Some(dir) = crate::omarchy::RECORDING_MARKER.parent() {
-        if dir.exists() {
-            debouncer.watch(dir, RecursiveMode::NonRecursive).ok();
-        }
     }
     if state_dir.exists() {
         debouncer.watch(&state_dir, RecursiveMode::NonRecursive)?;
@@ -167,17 +158,12 @@ fn run(tx: Sender) -> Result<()> {
             }
         }
 
-        let recording_changed =
-            paths.iter().any(|p| *p == crate::omarchy::RECORDING_MARKER.as_path());
-
         // Config first: a rebuild restyles anyway, so sending both would
         // duplicate the work.
         let event = if config_changed {
             Some(AppEvent::ConfigChanged)
         } else if style_changed {
             Some(AppEvent::StyleChanged)
-        } else if recording_changed {
-            Some(AppEvent::HidePolicyChanged)
         } else {
             None
         };

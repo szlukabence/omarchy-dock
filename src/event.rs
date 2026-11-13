@@ -15,9 +15,8 @@ pub enum AppEvent {
     /// A `.desktop` file was added, changed or removed, so an application was
     /// installed or uninstalled.
     DesktopEntriesChanged,
-    /// Something outside the config changed what the dock's hide policy should
-    /// decide — a screen recording starting or stopping, say.
-    HidePolicyChanged,
+    /// A screen recording started (`true`) or stopped (`false`).
+    Recording(bool),
     /// Active Omarchy theme or the user's `style.css` changed. Restyle only,
     /// which is far cheaper than a rebuild and keeps hover state intact.
     StyleChanged,

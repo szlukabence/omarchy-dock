@@ -35,6 +35,8 @@ struct App {
     cfg: Config,
     /// Reconciles pins against live Hyprland windows.
     state: DockState,
+    /// Whether Omarchy is screen-recording, as last reported by the watcher.
+    recording: bool,
     /// Channels to the async worker: resync requests and user commands.
     worker: Option<crate::runtime::Handles>,
     palette: Palette,
@@ -397,7 +399,7 @@ impl App {
         // Two things override the hide mode outright, because in both cases
         // the dock is in the way of something the user is deliberately
         // pointing at the screen — and `never` would otherwise pin it there.
-        if self.cfg.autohide.hide_while_recording && crate::omarchy::is_recording() {
+        if self.cfg.autohide.hide_while_recording && self.recording {
             tracing::debug!("hiding: screen recording in progress");
             self.set_hidden(true);
             return;
@@ -465,7 +467,7 @@ impl App {
         // fullscreen, a recording or the screensaver.
         let quiet = !self.state.has_fullscreen()
             && !self.state.screensaver_showing()
-            && !crate::omarchy::is_recording();
+            && !self.recording;
         if self.cfg.autohide.reveal_on_attention && quiet {
             for d in &self.docks {
                 d.reveal_for_attention(&self.cfg);
@@ -558,6 +560,7 @@ pub fn run() -> glib::ExitCode {
 
     // Each worker owns its own thread and never touches GTK.
     watch_signals(tx.clone());
+    crate::omarchy::spawn_recording_watcher(tx.clone());
     if let Err(e) = crate::config::watcher::spawn(tx.clone()) {
         tracing::error!(error = %e, "live reload unavailable");
     }
@@ -602,6 +605,7 @@ pub fn run() -> glib::ExitCode {
             raw_cfg: cfg.clone(),
             cfg,
             state: DockState::new(entries),
+            recording: false,
             worker: worker.clone(),
             palette: Palette::default(),
             shell: Shell::fallback(&Palette::default()),
@@ -614,7 +618,6 @@ pub fn run() -> glib::ExitCode {
                 .map(|n| n.to_string()),
             icon_theme_set: false,
         };
-        app.state.set_recording(crate::omarchy::is_recording());
         app.sync_drive_watcher();
         // Style before building, so surfaces map already themed and the user
         // never sees an unstyled frame.
@@ -647,8 +650,9 @@ pub fn run() -> glib::ExitCode {
                         }
                     }
                     // A recording started or stopped; nothing else changed.
-                    AppEvent::HidePolicyChanged => {
-                        app.state.set_recording(crate::omarchy::is_recording());
+                    AppEvent::Recording(on) => {
+                        app.recording = on;
+                        app.state.set_recording(on);
                         app.sync(&gtk_app);
                     }
                     AppEvent::Media(players) => {

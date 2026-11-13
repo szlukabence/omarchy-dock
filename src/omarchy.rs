@@ -145,17 +145,111 @@ pub fn notify(headline: &str, body: Option<&str>, glyph: Option<&str>) {
 
 // ── screen recording ────────────────────────────────────────────────────────
 
-/// Marker Omarchy's screen recorder writes while a recording is running.
-///
-/// `omarchy capture screenrecording` creates it on start and deletes it on
-/// stop, so its existence is the cheapest correct answer to "is the screen
-/// being recorded" — no polling, and a plain file the dock can watch.
-pub static RECORDING_MARKER: std::sync::LazyLock<PathBuf> =
-    std::sync::LazyLock::new(|| PathBuf::from("/tmp/omarchy-screenrecord-filename"));
+/// Prefix of every file `omarchy-capture-screenrecording` keeps in
+/// `$XDG_RUNTIME_DIR` (`-filename`, `-pid`, `-region`, `-starting`, …).
+const RECORDER_FILE_PREFIX: &str = "omarchy-screenrecord-";
 
-/// Whether a screen recording is in progress.
+/// How long a burst of recorder-file changes must be quiet before asking.
+const RECORDING_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The runtime directory Omarchy's recorder keeps its files in. `None` when
+/// `XDG_RUNTIME_DIR` is unset or not absolute, which switches recording
+/// detection off: there is no fallback to `/tmp`.
+pub fn runtime_dir_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let p = PathBuf::from(value?);
+    p.is_absolute().then_some(p)
+}
+
+/// Whether `path` is one of the recorder's own files.
+pub fn is_recorder_file(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with(RECORDER_FILE_PREFIX))
+}
+
+/// `omarchy-capture-screenrecording --status` exits 0 only while a recording
+/// of its own is running. A command that could not run, or was killed by a
+/// signal, is not a recording.
+pub fn recording_from_status(status: std::io::Result<std::process::ExitStatus>) -> bool {
+    status.is_ok_and(|s| s.code() == Some(0))
+}
+
+/// Ask Omarchy whether a recording is running. A marker file is not proof
+/// (a crashed recorder leaves its files behind), so the recorder's own
+/// read-only `--status` is the authority. Bounded, so a wedged recorder
+/// cannot stall the watcher.
 pub fn is_recording() -> bool {
-    RECORDING_MARKER.exists()
+    let child = Command::new("omarchy-capture-screenrecording")
+        .arg("--status")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else { return false };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return recording_from_status(Ok(status)),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                child.kill().ok();
+                child.wait().ok();
+                return false;
+            }
+        }
+    }
+}
+
+/// Watch the recorder's files and report whether a recording is running, as
+/// `AppEvent::Recording`: once at startup if one is, then after every change
+/// that flips the answer. Runs its own thread and never touches GTK.
+///
+/// Changes are debounced, and `--status` runs on this one thread, so there is
+/// never more than one at a time; a change arriving while one runs is queued
+/// and answered by the next run.
+pub fn spawn_recording_watcher(tx: crate::event::Sender) {
+    let Some(dir) = runtime_dir_from(std::env::var_os("XDG_RUNTIME_DIR")) else {
+        tracing::info!("XDG_RUNTIME_DIR unset: screen-recording detection is off");
+        return;
+    };
+    let spawned = std::thread::Builder::new().name("omarchy-dock-recording".into()).spawn(move || {
+        use notify::{RecursiveMode, Watcher};
+        let (raw_tx, raw_rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(raw_tx) {
+            Ok(w) => w,
+            Err(e) => return tracing::warn!(error = %e, "cannot watch for screen recordings"),
+        };
+        // Watched before the first check, so a change in between is not lost.
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            return tracing::warn!(error = %e, "cannot watch for screen recordings");
+        }
+        let mut last = is_recording();
+        if last && tx.send_blocking(crate::event::AppEvent::Recording(true)).is_err() {
+            return;
+        }
+        let relevant = |ev: notify::Result<notify::Event>| {
+            ev.is_ok_and(|e| !e.kind.is_access() && e.paths.iter().any(|p| is_recorder_file(p)))
+        };
+        while let Ok(ev) = raw_rx.recv() {
+            if !relevant(ev) {
+                continue;
+            }
+            // Wait for the burst to end, however long it runs.
+            while raw_rx.recv_timeout(RECORDING_DEBOUNCE).is_ok() {}
+            let now = is_recording();
+            if now != last {
+                last = now;
+                if tx.send_blocking(crate::event::AppEvent::Recording(now)).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "cannot watch for screen recordings");
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +264,35 @@ mod tests {
         for s in Surface::all() {
             assert!(!s.label().is_empty());
         }
+    }
+
+    #[test]
+    fn recorder_files_are_recognised_by_name() {
+        use std::path::Path;
+        for n in ["filename", "pid", "region", "starting", "cancel", "pa-modules", "preview-1.png"] {
+            assert!(is_recorder_file(Path::new(&format!("/run/user/1000/omarchy-screenrecord-{n}"))), "{n}");
+        }
+        assert!(!is_recorder_file(Path::new("/run/user/1000/omarchy-screenrecord")));
+        assert!(!is_recorder_file(Path::new("/run/user/1000/bus")));
+        assert!(!is_recorder_file(Path::new("/run/user/1000/")));
+    }
+
+    #[test]
+    fn runtime_dir_must_be_set_and_absolute() {
+        assert_eq!(runtime_dir_from(Some("/run/user/1000".into())), Some(PathBuf::from("/run/user/1000")));
+        assert_eq!(runtime_dir_from(None), None);
+        assert_eq!(runtime_dir_from(Some("tmp".into())), None);
+        assert_eq!(runtime_dir_from(Some("".into())), None);
+    }
+
+    #[test]
+    fn only_exit_zero_means_recording() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        assert!(recording_from_status(Ok(ExitStatus::from_raw(0))));
+        assert!(!recording_from_status(Ok(ExitStatus::from_raw(1 << 8))));
+        // Killed by a signal: no exit code at all.
+        assert!(!recording_from_status(Ok(ExitStatus::from_raw(9))));
+        assert!(!recording_from_status(Err(std::io::Error::from(std::io::ErrorKind::NotFound))));
     }
 }
