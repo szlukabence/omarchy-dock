@@ -62,6 +62,17 @@ impl Surface {
         }
     }
 
+    /// The `omarchy.menu` route this surface opens, or `None` for surfaces
+    /// that are plugins of their own. Omarchy 4.5 names them `appearance.*`.
+    fn menu_route(self) -> Option<&'static str> {
+        match self {
+            Surface::Menu => Some("root"),
+            Surface::Themes => Some("appearance.theme"),
+            Surface::Backgrounds => Some("appearance.background"),
+            Surface::Clipboard | Surface::Emojis => None,
+        }
+    }
+
     /// Everything the dock offers, in menu order.
     pub fn all() -> [Surface; 5] {
         [
@@ -80,12 +91,13 @@ impl Surface {
 /// exactly what `omarchy menu summon <route>` does — but calling the IPC
 /// directly skips a shell script and a `jq` invocation per click.
 pub fn open(surface: Surface) {
+    if let Some(route) = surface.menu_route() {
+        return menu_route(route);
+    }
     match surface {
-        Surface::Menu => menu_route("root"),
-        Surface::Themes => menu_route("style.theme"),
-        Surface::Backgrounds => menu_route("style.background"),
         Surface::Clipboard => spawn("omarchy-shell", &["-q", "shell", "toggle", "omarchy.clipboard"]),
         Surface::Emojis => spawn("omarchy-shell", &["-q", "shell", "toggle", "omarchy.emojis"]),
+        Surface::Menu | Surface::Themes | Surface::Backgrounds => {}
     }
 }
 
@@ -264,6 +276,17 @@ mod tests {
         for s in Surface::all() {
             assert!(!s.label().is_empty());
         }
+    }
+
+    #[test]
+    fn menu_surfaces_use_omarchy_4_5_routes() {
+        // Omarchy 4.5 renamed the Style menu to Appearance; an unknown route
+        // opens the root menu instead of the picker.
+        assert_eq!(Surface::Menu.menu_route(), Some("root"));
+        assert_eq!(Surface::Themes.menu_route(), Some("appearance.theme"));
+        assert_eq!(Surface::Backgrounds.menu_route(), Some("appearance.background"));
+        assert_eq!(Surface::Clipboard.menu_route(), None);
+        assert_eq!(Surface::Emojis.menu_route(), None);
     }
 
     #[test]
