@@ -498,22 +498,30 @@ pub fn splice_menu_block(existing: &str, block: &str) -> Option<String> {
     // and a preceding entry would be a syntax error. Omarchy ships this file
     // as nothing but comments, so "is there an entry above us" cannot be
     // answered by looking at the last character — it has to skip comments.
-    let needs_comma = last_significant_char(before).is_some_and(|c| c != ',' && c != '{');
-    let sep = if needs_comma { ",\n" } else { "\n" };
+    // The comma goes right after that entry, not after whatever follows it on
+    // the line: after a trailing `// comment` it would be part of the comment.
+    let mut before = before.to_string();
+    if let Some((i, c)) = last_significant(&before) {
+        if c != ',' && c != '{' {
+            before.insert(i + c.len_utf8(), ',');
+        }
+    }
 
-    Some(format!("{}{sep}{block}\n{after}", before.trim_end()))
+    Some(format!("{}\n{block}\n{after}", before.trim_end()))
 }
 
-/// The last character that is actual JSONC content, ignoring comments.
-///
-/// String contents count: a value ending in `"` is an entry we must put a
-/// comma after. Comments do not, which is the whole point — the extension file
-/// Omarchy ships is an empty object wrapped in a page of examples.
+/// [`last_significant`] without the offset, for the tests.
+#[cfg(test)]
 fn last_significant_char(s: &str) -> Option<char> {
     last_significant(s).map(|(_, c)| c)
 }
 
-/// [`last_significant_char`], with its byte offset in `s`.
+/// The last character that is actual JSONC content, ignoring comments, with
+/// its byte offset in `s`.
+///
+/// String contents count: a value ending in `"` is an entry we must put a
+/// comma after. Comments do not, which is the whole point — the extension file
+/// Omarchy ships is an empty object wrapped in a page of examples.
 fn last_significant(s: &str) -> Option<(usize, char)> {
     let mut last = None;
     let mut chars = s.char_indices().peekable();
@@ -575,11 +583,12 @@ pub fn remove_menu_block(existing: &str) -> String {
     // Only strip the comma we added, not one that belongs to the user's own
     // trailing entry — which is why this checks it is genuinely the last
     // significant character rather than just the last character.
-    let before = match last_significant_char(before) {
-        Some(',') => before.strip_suffix(',').unwrap_or(before),
-        _ => before,
+    // The comma is cut where it is, which is before any comment on its line.
+    let before = match last_significant(before) {
+        Some((i, ',')) => format!("{}{}", &before[..i], &before[i + 1..]),
+        _ => before.to_string(),
     };
-    format!("{before}\n{}", after.trim_start_matches('\n'))
+    format!("{}\n{}", before.trim_end(), after.trim_start_matches('\n'))
 }
 
 // ── Hyprland layer rule ─────────────────────────────────────────────────────
@@ -1662,6 +1671,15 @@ mod tests {
     }
 
     #[test]
+    fn the_comma_goes_before_a_trailing_comment_not_into_it() {
+        let existing = "{\n  \"a\": {\"label\":\"A\"} // mine\n}\n";
+        let out = splice_menu_block(existing, "BLOCK").unwrap();
+        // A comma after `// mine` would be part of the comment, and the file
+        // would no longer parse.
+        assert!(out.contains("\"A\"}, // mine\nBLOCK"), "{out}");
+    }
+
+    #[test]
     fn a_trailing_comma_is_not_doubled() {
         let existing = "{\n  \"a\": {\"label\":\"A\"},\n}\n";
         let out = splice_menu_block(existing, "BLOCK").unwrap();
@@ -1698,6 +1716,13 @@ mod tests {
         // The user's own entry survives, and no stray comma is left behind.
         assert!(removed.contains("\"a\""));
         assert!(!removed.contains("},\n\n}"), "{removed}");
+    }
+
+    #[test]
+    fn uninstalling_after_a_commented_entry_restores_it_exactly() {
+        let original = "{\n  \"a\": {\"label\":\"A\"} // mine\n}\n";
+        let installed = splice_menu_block(original, &wrapped("BLOCK")).unwrap();
+        assert_eq!(remove_menu_block(&installed), original);
     }
 
     #[test]
